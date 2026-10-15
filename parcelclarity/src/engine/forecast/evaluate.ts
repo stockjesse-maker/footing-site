@@ -240,12 +240,15 @@ export function evaluateForecast(input: unknown, deps: ForecastDeps, options: Fo
       for (const line of result.lines) {
         let amountE4 = new X(line.amountE4);
         let quantity = new X(line.quantity);
+        let lineShare = new X(1);
         if (line.basis === "order_driver") {
-          // The engine priced this order as one that qualifies; the expected value over all orders is the share of orders that do.
+          // The engine priced this order as one that qualifies; the expected value over all orders is the share of orders that do,
+          // and only that share of orders gets the line at all.
           const p = orderShareByRuleKey.get(line.ruleKey);
           if (p === undefined) throw new RangeError("an order-driver line was priced without an answered share");
           amountE4 = amountE4.times(p);
           quantity = quantity.times(p);
+          lineShare = p;
         }
         let acc = byRule.get(line.ruleKey);
         if (!acc) {
@@ -256,7 +259,7 @@ export function evaluateForecast(input: unknown, deps: ForecastDeps, options: Fo
         }
         acc.amountE4 = acc.amountE4.plus(rowWeight.times(amountE4));
         acc.quantity = acc.quantity.plus(rowWeight.times(quantity));
-        acc.lineWeight = acc.lineWeight.plus(rowWeight);
+        acc.lineWeight = acc.lineWeight.plus(rowWeight.times(lineShare));
       }
       for (const u of result.unresolved) {
         if (u.reason === "replaced") continue;

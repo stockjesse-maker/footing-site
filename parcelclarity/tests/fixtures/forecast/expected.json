@@ -1,7 +1,7 @@
 {
   "_comment": "FICTIONAL golden expectations for the forecast-from-assumptions engine, derived BY HAND from tests/fixtures/fees/RULES.md (sections A-D), schedules.json -> standard, the pricing fixtures (rate card, service terms, rules, pricing/expected.json totals) and m4-design-v2.md section 7, independent of src/engine/forecast. Every _working string shows the arithmetic. Money 'E4' = integer ten-thousandths of a dollar; cents/'monthly'/'perOrder' strings are HALF_UP 2 dp rounded once from the exact E4 figure. Weights are exact decimals (compare numerically; canonical form has no trailing zeros). Cell key = parcel<i>|zone<j>|service|res0|pkg1 with i, j the 0-based indexes into assumptions.parcels / assumptions.zones; 'service' is literal (one service); res0 = residentialPct 0; pkg1 = one package per order.",
   "_ambiguities": [
-    "A1/A7 inserts in a forecast: q = sharePct/100 x countPerOrder = 0.4 x 4 = 1.6 per order (expected value), THEN the free allowance of A1 is applied to that expected quantity: chargeable = max(0, 1.6 - 1) = 0.6 -> 0.6 x 0.25 = $0.15 (1500 E4) per order. The alternative 'expected charge' reading E[max(0, n - 1)] x rate = 0.4 x (4 - 1) x 0.25 = $0.30 (3000 E4) is NOT used; the two differ by Jensen's inequality and only coincide at sharePct = 100.",
+    "A1/A7 inserts in a forecast: A7 defines q PER ORDER (countPerOrder = 4 when the order qualifies, 0 otherwise) and A1 applies the free allowance to that order's q, so a qualifying order is charged max(0, 4 - 1) x 0.25 = $0.75 (7500 E4) and a non-qualifying order nothing (A5). The expected value over a mix in which 40.00% of orders qualify is 0.40 x 7500 = 3000 E4 = $0.30 per order, expected chargeable quantity 0.40 x 3 = 1.2; at 1000 orders this is the $300.00 a file run of 1000 such orders is charged under the same rule (400 qualifying orders x $0.75). The first draft of this fixture applied the allowance to the expected quantity 0.4 x 4 = 1.6 -> max(0, 1.6 - 1) = 0.6 x 0.25 = $0.15 (1500 E4); that quantity exists on no order under A7 and understates the charge (E[max(0, n - 1)] >= max(0, E[n] - 1)), so it was corrected when the golden test was written; the two readings coincide only at sharePct = 100.",
     "Forecast reclass: A8 alone would class pick_order and the packaging lines definite (no assumed quantity read); design section 7 [M5] re-classes every counted line of a forecast estimated, so shipping and processing definite = 0 and every order line below is 'estimated'. The month-basis admin line stays definite (design section 10 carve-out, RULES.md B1).",
     "Handling warning: every cell's shipping carries the conditional address-correction exposure (21.00) and undecided DAS lines, so OrderShippingInput.hasExposure = true and each order-fee result carries warning fee_base_excludes_exposure (A6). Tests may choose not to assert warnings.",
     "'replaced' entries (pack_other) are listed in OrderFeeResult.unresolved with reason replaced but do not make status partial (A10) and do not enter the minimum bucket's unresolvedRuleKeys, so the minimum stays 'exact'.",
@@ -37,9 +37,9 @@
           "lines": 1,
           "sharePct": "60.00",
           "status": "ok",
-          "orderFeesE4": 34410,
+          "orderFeesE4": 35910,
           "definiteE4": 0,
-          "estimatedE4": 34410,
+          "estimatedE4": 35910,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -51,7 +51,7 @@
               "replacedBy": "pack_mailer"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 9.8200 = 4910 E4 (exact, no rounding needed); total = 25000 + 3000 + 1500 + 4910 = 34410 E4 = $3.4410",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 9.8200 = 4910 E4 (exact, no rounding needed); total = 25000 + 3000 + 3000 + 4910 = 35910 E4 = $3.5910",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -72,9 +72,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -93,9 +93,9 @@
           "lines": 2,
           "sharePct": "40.00",
           "status": "ok",
-          "orderFeesE4": 44410,
+          "orderFeesE4": 45910,
           "definiteE4": 0,
-          "estimatedE4": 44410,
+          "estimatedE4": 45910,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -107,7 +107,7 @@
               "replacedBy": "pack_mailer"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 9.8200 = 4910 E4 (exact, no rounding needed); total = 25000 + 10000 + 3000 + 1500 + 4910 = 44410 E4 = $4.4410",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 9.8200 = 4910 E4 (exact, no rounding needed); total = 25000 + 10000 + 3000 + 3000 + 4910 = 45910 E4 = $4.5910",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -136,9 +136,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -152,12 +152,12 @@
           ]
         }
       ],
-      "expectedOrderFeesE4": 38410,
+      "expectedOrderFeesE4": 39910,
       "weighted": {
         "shippingE4": 41244000,
-        "processingE4": 16132200
+        "processingE4": 16762200
       },
-      "_working": "weight = 1000 x 60.00/100 (parcel0) x 70.00/100 (zone0) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 420.0000. expectedOrderFeesE4 = 0.60 x 34410 + 0.40 x 44410 = 20646 + 17764 = 38410. weighted shipping = 420.0000 x 98200 = 41244000; weighted processing = 420.0000 x 38410 = 16132200."
+      "_working": "weight = 1000 x 60.00/100 (parcel0) x 70.00/100 (zone0) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 420.0000. expectedOrderFeesE4 = 0.60 x 35910 + 0.40 x 45910 = 21546 + 18364 = 39910. weighted shipping = 420.0000 x 98200 = 41244000; weighted processing = 420.0000 x 39910 = 16762200."
     },
     "parcel0|zone1|service|res0|pkg1": {
       "parcelIndex": 0,
@@ -188,9 +188,9 @@
           "lines": 1,
           "sharePct": "60.00",
           "status": "ok",
-          "orderFeesE4": 36025,
+          "orderFeesE4": 37525,
           "definiteE4": 0,
-          "estimatedE4": 36025,
+          "estimatedE4": 37525,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -202,7 +202,7 @@
               "replacedBy": "pack_mailer"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.0500 = 6525 E4 (exact, no rounding needed); total = 25000 + 3000 + 1500 + 6525 = 36025 E4 = $3.6025",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 13.0500 = 6525 E4 (exact, no rounding needed); total = 25000 + 3000 + 3000 + 6525 = 37525 E4 = $3.7525",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -223,9 +223,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -244,9 +244,9 @@
           "lines": 2,
           "sharePct": "40.00",
           "status": "ok",
-          "orderFeesE4": 46025,
+          "orderFeesE4": 47525,
           "definiteE4": 0,
-          "estimatedE4": 46025,
+          "estimatedE4": 47525,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -258,7 +258,7 @@
               "replacedBy": "pack_mailer"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.0500 = 6525 E4 (exact, no rounding needed); total = 25000 + 10000 + 3000 + 1500 + 6525 = 46025 E4 = $4.6025",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 13.0500 = 6525 E4 (exact, no rounding needed); total = 25000 + 10000 + 3000 + 3000 + 6525 = 47525 E4 = $4.7525",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -287,9 +287,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -303,12 +303,12 @@
           ]
         }
       ],
-      "expectedOrderFeesE4": 40025,
+      "expectedOrderFeesE4": 41525,
       "weighted": {
         "shippingE4": 23490000,
-        "processingE4": 7204500
+        "processingE4": 7474500
       },
-      "_working": "weight = 1000 x 60.00/100 (parcel0) x 30.00/100 (zone1) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 180.0000. expectedOrderFeesE4 = 0.60 x 36025 + 0.40 x 46025 = 21615 + 18410 = 40025. weighted shipping = 180.0000 x 130500 = 23490000; weighted processing = 180.0000 x 40025 = 7204500."
+      "_working": "weight = 1000 x 60.00/100 (parcel0) x 30.00/100 (zone1) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 180.0000. expectedOrderFeesE4 = 0.60 x 37525 + 0.40 x 47525 = 22515 + 19010 = 41525. weighted shipping = 180.0000 x 130500 = 23490000; weighted processing = 180.0000 x 41525 = 7474500."
     },
     "parcel1|zone0|service|res0|pkg1": {
       "parcelIndex": 1,
@@ -339,9 +339,9 @@
           "lines": 1,
           "sharePct": "60.00",
           "status": "ok",
-          "orderFeesE4": 41710,
+          "orderFeesE4": 43210,
           "definiteE4": 0,
-          "estimatedE4": 41710,
+          "estimatedE4": 43210,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -353,7 +353,7 @@
               "replacedBy": "pack_box"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.4200 = 6710 E4 (exact, no rounding needed); total = 25000 + 8500 + 1500 + 6710 = 41710 E4 = $4.1710",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 13.4200 = 6710 E4 (exact, no rounding needed); total = 25000 + 8500 + 3000 + 6710 = 43210 E4 = $4.3210",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -374,9 +374,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -395,9 +395,9 @@
           "lines": 2,
           "sharePct": "40.00",
           "status": "ok",
-          "orderFeesE4": 51710,
+          "orderFeesE4": 53210,
           "definiteE4": 0,
-          "estimatedE4": 51710,
+          "estimatedE4": 53210,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -409,7 +409,7 @@
               "replacedBy": "pack_box"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.4200 = 6710 E4 (exact, no rounding needed); total = 25000 + 10000 + 8500 + 1500 + 6710 = 51710 E4 = $5.1710",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 13.4200 = 6710 E4 (exact, no rounding needed); total = 25000 + 10000 + 8500 + 3000 + 6710 = 53210 E4 = $5.3210",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -438,9 +438,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -454,12 +454,12 @@
           ]
         }
       ],
-      "expectedOrderFeesE4": 45710,
+      "expectedOrderFeesE4": 47210,
       "weighted": {
         "shippingE4": 37576000,
-        "processingE4": 12798800
+        "processingE4": 13218800
       },
-      "_working": "weight = 1000 x 40.00/100 (parcel1) x 70.00/100 (zone0) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 280.0000. expectedOrderFeesE4 = 0.60 x 41710 + 0.40 x 51710 = 25026 + 20684 = 45710. weighted shipping = 280.0000 x 134200 = 37576000; weighted processing = 280.0000 x 45710 = 12798800."
+      "_working": "weight = 1000 x 40.00/100 (parcel1) x 70.00/100 (zone0) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 280.0000. expectedOrderFeesE4 = 0.60 x 43210 + 0.40 x 53210 = 25926 + 21284 = 47210. weighted shipping = 280.0000 x 134200 = 37576000; weighted processing = 280.0000 x 47210 = 13218800."
     },
     "parcel1|zone1|service|res0|pkg1": {
       "parcelIndex": 1,
@@ -490,9 +490,9 @@
           "lines": 1,
           "sharePct": "60.00",
           "status": "ok",
-          "orderFeesE4": 46100,
+          "orderFeesE4": 47600,
           "definiteE4": 0,
-          "estimatedE4": 46100,
+          "estimatedE4": 47600,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -504,7 +504,7 @@
               "replacedBy": "pack_box"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 22.2000 = 11100 E4 (exact, no rounding needed); total = 25000 + 8500 + 1500 + 11100 = 46100 E4 = $4.6100",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 22.2000 = 11100 E4 (exact, no rounding needed); total = 25000 + 8500 + 3000 + 11100 = 47600 E4 = $4.7600",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -525,9 +525,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -546,9 +546,9 @@
           "lines": 2,
           "sharePct": "40.00",
           "status": "ok",
-          "orderFeesE4": 56100,
+          "orderFeesE4": 57600,
           "definiteE4": 0,
-          "estimatedE4": 56100,
+          "estimatedE4": 57600,
           "warnings": [
             "fee_base_excludes_exposure"
           ],
@@ -560,7 +560,7 @@
               "replacedBy": "pack_box"
             }
           ],
-          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 22.2000 = 11100 E4 (exact, no rounding needed); total = 25000 + 10000 + 8500 + 1500 + 11100 = 56100 E4 = $5.6100",
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts (A7 per order, then the mix): a qualifying order (40.00% of orders) has q = 4, chargeable = max(0, 4 - 1 included) = 3 x 0.2500 = 7500; a non-qualifying order has q = 0 -> no line (A5); expected over the mix = 40.00/100 x 7500 = 3000 E4 (estimated), expected chargeable quantity 40.00/100 x 3 = 1.2; handling_pct: 5.0000% x 22.2000 = 11100 E4 (exact, no rounding needed); total = 25000 + 10000 + 8500 + 3000 + 11100 = 57600 E4 = $5.7600",
           "feeLines": [
             {
               "ruleKey": "pick_order",
@@ -589,9 +589,9 @@
             {
               "ruleKey": "inserts",
               "name": "Marketing inserts",
-              "quantity": "0.6",
+              "quantity": "1.2",
               "unitAmountE4": 2500,
-              "amountE4": 1500,
+              "amountE4": 3000,
               "chargeClass": "estimated"
             },
             {
@@ -605,12 +605,12 @@
           ]
         }
       ],
-      "expectedOrderFeesE4": 50100,
+      "expectedOrderFeesE4": 51600,
       "weighted": {
         "shippingE4": 26640000,
-        "processingE4": 6012000
+        "processingE4": 6192000
       },
-      "_working": "weight = 1000 x 40.00/100 (parcel1) x 30.00/100 (zone1) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 120.0000. expectedOrderFeesE4 = 0.60 x 46100 + 0.40 x 56100 = 27660 + 22440 = 50100. weighted shipping = 120.0000 x 222000 = 26640000; weighted processing = 120.0000 x 50100 = 6012000."
+      "_working": "weight = 1000 x 40.00/100 (parcel1) x 30.00/100 (zone1) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 120.0000. expectedOrderFeesE4 = 0.60 x 47600 + 0.40 x 57600 = 28560 + 23040 = 51600. weighted shipping = 120.0000 x 222000 = 26640000; weighted processing = 120.0000 x 51600 = 6192000."
     }
   },
   "aggregates": {
@@ -624,19 +624,19 @@
       "perOrder": "12.90"
     },
     "processing": {
-      "_working": "sum of weight x contentShare x orderFeesE4 = 420 x 38410 + 180 x 40025 + 280 x 45710 + 120 x 50100 = 16,132,200 + 7,204,500 + 12,798,800 + 6,012,000 = 42,147,500 E4 = $4,214.7500. Cross-check by rule over 1000 orders: pick_order 1000 x 25000 = 25,000,000; pick_additional 1000 x 0.40 x 10000 = 4,000,000; pack_mailer (420 + 180 = 600 orders) x 3000 = 1,800,000; pack_box (280 + 120 = 400 orders) x 8500 = 3,400,000; inserts 1000 x 1500 = 1,500,000; handling_pct 420 x 4910 + 180 x 6525 + 280 x 6710 + 120 x 11100 = 2,062,200 + 1,174,500 + 1,878,800 + 1,332,000 = 6,447,500 (= 5% x 128,950,000); total 25,000,000 + 4,000,000 + 1,800,000 + 3,400,000 + 1,500,000 + 6,447,500 = 42,147,500.",
+      "_working": "sum of weight x contentShare x orderFeesE4 = 420 x 39910 + 180 x 41525 + 280 x 47210 + 120 x 51600 = 16,762,200 + 7,474,500 + 13,218,800 + 6,192,000 = 43,647,500 E4 = $4,364.7500. Cross-check by rule over 1000 orders: pick_order 1000 x 25000 = 25,000,000; pick_additional 1000 x 0.40 x 10000 = 4,000,000; pack_mailer (420 + 180 = 600 orders) x 3000 = 1,800,000; pack_box (280 + 120 = 400 orders) x 8500 = 3,400,000; inserts 1000 x 0.40 x 7500 = 3,000,000 (400 qualifying orders x 7500, A7); handling_pct 420 x 4910 + 180 x 6525 + 280 x 6710 + 120 x 11100 = 2,062,200 + 1,174,500 + 1,878,800 + 1,332,000 = 6,447,500 (= 5% x 128,950,000); total 25,000,000 + 4,000,000 + 1,800,000 + 3,400,000 + 3,000,000 + 6,447,500 = 43,647,500.",
       "definiteE4": 0,
-      "estimatedE4": 42147500,
-      "totalE4": 42147500,
-      "monthly": "4214.75",
-      "perOrder": "4.21",
+      "estimatedE4": 43647500,
+      "totalE4": 43647500,
+      "monthly": "4364.75",
+      "perOrder": "4.36",
       "byRuleE4": {
         "pick_order": 25000000,
         "pick_additional": 4000000,
         "pack_mailer": 1800000,
         "pack_box": 3400000,
         "pack_other": 0,
-        "inserts": 1500000,
+        "inserts": 3000000,
         "handling_pct": 6447500
       }
     },
@@ -789,13 +789,13 @@
       ]
     },
     "allocation": {
-      "_working": "D over input {months '1.000000', monthlyOrders '1000', modeledOrders 1000, shippingExpectedE4 128,950,000, processingE4 42,147,500, populationOrders 1000, monthlyFixedE4 4,860,000, minimumTopUpE4 0, minimumStatus exact}. D1 coverage = 1000/1000 x 100 = '100.0'. extrapolated = false (modeled = population). D2 perOrder.shipping = 128,950,000/1000 = 128,950 E4 = $12.8950 -> HALF_UP cents 12.90 (exact half, rounds up); perOrder.processing = 42,147,500/1000 = 42,147.5 E4 = $4.21475 -> 4.21. D3 monthly.shipping = (128,950,000/1000) x 1000 = 128,950,000 E4 = 12895.00; monthly.processing = (42,147,500/1000) x 1000 = 42,147,500 E4 = 4214.75. D4 monthly.fixed = 4,860,000 E4 = 486.00; minimumTopUp = 0/1.000000 = 0.00 (status exact so it is included). D5 total exact = 128,950,000 + 42,147,500 + 4,860,000 + 0 = 175,957,500 E4 = 17595.75; annual = 17595.75 x 12 = 211149.00. D6 allocated = (486.00 + 0.00)/1000 = 0.486 -> 0.49; allIn = 17595.75/1000 = 17.59575 -> 17.60. D7 caveats: only the 'allocated' sentence (coverage >= 80, minimum exact, volume known).",
+      "_working": "D over input {months '1.000000', monthlyOrders '1000', modeledOrders 1000, shippingExpectedE4 128,950,000, processingE4 43,647,500, populationOrders 1000, monthlyFixedE4 4,860,000, minimumTopUpE4 0, minimumStatus exact}. D1 coverage = 1000/1000 x 100 = '100.0'. extrapolated = false (modeled = population). D2 perOrder.shipping = 128,950,000/1000 = 128,950 E4 = $12.8950 -> HALF_UP cents 12.90 (exact half, rounds up); perOrder.processing = 43,647,500/1000 = 43,647.5 E4 = $4.36475 -> 4.36. D3 monthly.shipping = (128,950,000/1000) x 1000 = 128,950,000 E4 = 12895.00; monthly.processing = (43,647,500/1000) x 1000 = 43,647,500 E4 = 4364.75. D4 monthly.fixed = 4,860,000 E4 = 486.00; minimumTopUp = 0/1.000000 = 0.00 (status exact so it is included). D5 total exact = 128,950,000 + 43,647,500 + 4,860,000 + 0 = 177,457,500 E4 = 17745.75; annual = 17745.75 x 12 = 212949.00. D6 allocated = (486.00 + 0.00)/1000 = 0.486 -> 0.49; allIn = 17745.75/1000 = 17.74575 -> 17.75. D7 caveats: only the 'allocated' sentence (coverage >= 80, minimum exact, volume known).",
       "input": {
         "months": "1.000000",
         "monthlyOrders": "1000",
         "modeledOrders": 1000,
         "shippingExpectedE4": 128950000,
-        "processingE4": 42147500,
+        "processingE4": 43647500,
         "populationOrders": 1000,
         "monthlyFixedE4": 4860000,
         "minimumTopUpE4": 0,
@@ -803,17 +803,17 @@
       },
       "monthly": {
         "shipping": "12895.00",
-        "processing": "4214.75",
+        "processing": "4364.75",
         "fixed": "486.00",
         "minimumTopUp": "0.00",
-        "total": "17595.75",
-        "annual": "211149.00"
+        "total": "17745.75",
+        "annual": "212949.00"
       },
       "perOrder": {
         "shipping": "12.90",
-        "processing": "4.21",
+        "processing": "4.36",
         "allocated": "0.49",
-        "allIn": "17.60"
+        "allIn": "17.75"
       },
       "coveragePct": "100.0",
       "extrapolated": false,
@@ -822,12 +822,12 @@
       ]
     },
     "allIn": {
-      "perOrder": "17.60",
-      "monthly": "17595.75",
-      "annual": "211149.00"
+      "perOrder": "17.75",
+      "monthly": "17745.75",
+      "annual": "212949.00"
     },
     "identities": {
-      "_working": "weightSum = 420 + 180 + 280 + 120 = 1000 = monthlyOrders; shipping.definiteE4 = processing.definiteE4 = 0 (every counted line estimated); allIn.perOrder 17.60 = shipping.perOrder 12.90 + processing.perOrder 4.21 + allocated.perOrder 0.49 = 17.60 (exact here; the SQL check tolerates 0.01); monthly.total 17595.75 = 12895.00 + 4214.75 + 486.00 + 0.00.",
+      "_working": "weightSum = 420 + 180 + 280 + 120 = 1000 = monthlyOrders; shipping.definiteE4 = processing.definiteE4 = 0 (every counted line estimated); allIn.perOrder 17.75 = shipping.perOrder 12.90 + processing.perOrder 4.36 + allocated.perOrder 0.49 = 17.75 (exact here; the SQL check tolerates 0.01); monthly.total 17745.75 = 12895.00 + 4364.75 + 486.00 + 0.00.",
       "weightSum": "1000",
       "weightSumEqualsMonthlyOrders": true,
       "shippingDefiniteE4": 0,
@@ -835,7 +835,7 @@
       "allInPerOrderEqualsParts": true,
       "allInPerOrderParts": [
         "12.90",
-        "4.21",
+        "4.36",
         "0.49"
       ]
     }

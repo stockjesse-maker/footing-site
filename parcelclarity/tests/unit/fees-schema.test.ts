@@ -11,6 +11,7 @@ import {
   ruleFormToRow,
   snapshotRuleToForm,
   tryOrderInputSchema,
+  tryOrderProblems,
   tryOrderToEngine,
 } from "@/lib/fees/schema";
 
@@ -121,7 +122,16 @@ describe("form → row → snapshot round-trips the fixture rules", () => {
     expect(() => rowToSnapshotRule({ ...row, driver: { key: "x" } })).toThrow(/malformed driver/);
   });
 
-  it("omits null columns like fee_schedule_snapshot does", () => {
+  it("reads JSON numbers inside tiers and minimum as decimal text, as app.fee_rule_problem accepts them", () => {
+    // app.fee_decimal_ok(v ->> 'amount', 4) sees a jsonb number's text, so a row written by SQL may carry numbers.
+    const row = ruleFormToRow(feeRuleInputSchema.parse(base({ method: "tiered", amount: null, tiers: tiers([{ upTo: "1", amount: "3" }, { upTo: null, amount: "0.4" }]) })), META);
+    const rule = rowToSnapshotRule({ ...row, tiers: { on: "order_quantity", mode: "graduated", pricing: "rate", brackets: [{ upTo: 1, amount: 3 }, { upTo: null, amount: 0.4 }] } });
+    expect(rule.tiers).toEqual({ on: "order_quantity", mode: "graduated", pricing: "rate", brackets: [{ upTo: "1", amount: "3" }, { upTo: null, amount: "0.4" }] });
+    const min = ruleFormToRow(feeRuleInputSchema.parse(base({ key: "account_min", category: "account", scope: "monthly", basis: "minimum", method: "minimum", amount: null, minimum: minimum() })), META);
+    expect(rowToSnapshotRule({ ...min, minimum: { ...minimum(), amount: 500 } }).minimum?.amount).toBe("500");
+  });
+
+  it("omits optional columns that are null; amount and percent stay as nulls because FeeRule requires them", () => {
     const rule = rowToSnapshotRule(ruleFormToRow(feeRuleInputSchema.parse(base()), META));
     expect(Object.keys(rule).sort()).toEqual(["amount", "basis", "category", "key", "method", "name", "percent", "position", "scope"]);
     expect(rule.percent).toBeNull();
@@ -376,9 +386,26 @@ describe("tryOrderInputSchema and the engine conversion", () => {
     expect(parsed.distinctSkus).toBeNull();
     expect(parsed.shipments).toBe(1);
     expect(parsed.ordinal).toBe(1);
+    // A cleared shipments or ordinal field takes the default instead of blocking the panel.
+    expect(tryOrderInputSchema.parse({ units: 1, packages: [], shipping: null, packagingDefault: null, shipments: "", ordinal: null }).shipments).toBe(1);
+    expect(tryOrderInputSchema.safeParse({ units: 1, packages: [], shipping: null, packagingDefault: null, shipments: "0" }).success).toBe(false);
     expect(tryOrderToEngine(parsed, schedules.standard!).context.pinnedRates).toEqual({});
     expect(tryOrderInputSchema.safeParse({ units: -1, packages: [], shipping: null, packagingDefault: null }).success).toBe(false);
     expect(tryOrderInputSchema.safeParse({ units: 1, packages: [], shipping: { total: "ten" }, packagingDefault: null }).success).toBe(false);
     expect(tryOrderInputSchema.safeParse({ units: 1, packages: Array.from({ length: 51 }, () => ({ packagingType: "box" })), shipping: null, packagingDefault: null }).success).toBe(false);
+  });
+
+  it("requires the base shipping rate when the schedule charges a percent of it, instead of pricing it on the total", () => {
+    const onBase: FeeScheduleSnapshot = {
+      ...schedules.standard!,
+      rules: [{ key: "handling_base", name: "Handling on base rate", category: "other", scope: "order", basis: "shipping_percent", method: "percent", amount: null, percent: "10", percentBase: "base_freight", position: 1 }],
+    };
+    const totalOnly = tryOrderInputSchema.parse({ units: 1, packages: [], shipping: { total: "20.00", baseFreight: "" }, packagingDefault: null });
+    expect(tryOrderProblems(totalOnly, onBase)).toEqual({ "shipping.baseFreight": expect.stringMatching(/base shipping rate/) });
+    // With the base rate typed, or on a schedule whose percent rules read the total, nothing is missing.
+    expect(tryOrderProblems(tryOrderInputSchema.parse({ units: 1, packages: [], shipping: { total: "20.00", baseFreight: "15.00" }, packagingDefault: null }), onBase)).toEqual({});
+    expect(tryOrderProblems(totalOnly, schedules.standard!)).toEqual({});
+    // Shipping unknown altogether is fine: the engine reports the rule as not computed.
+    expect(tryOrderProblems(tryOrderInputSchema.parse({ units: 1, packages: [], shipping: null, packagingDefault: null }), onBase)).toEqual({});
   });
 });

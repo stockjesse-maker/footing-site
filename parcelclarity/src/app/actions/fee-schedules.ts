@@ -8,7 +8,7 @@ import type { FeeScheduleSnapshot, OrderFeeResult } from "@/engine/fees/types";
 import type { ActionState } from "@/lib/actions";
 import { requireTenantContext } from "@/lib/auth/session";
 import { fieldErrors, nameSchema, uuidSchema, type FieldErrors } from "@/lib/auth/validation";
-import { feeRuleInputSchema, ruleFieldErrors, ruleFormToRow, tryOrderInputSchema, tryOrderToEngine } from "@/lib/fees/schema";
+import { feeRuleInputSchema, ruleFieldErrors, ruleFormToRow, tryOrderInputSchema, tryOrderProblems, tryOrderToEngine } from "@/lib/fees/schema";
 import { RATE_LIMITED_MESSAGE, withinRateLimit } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
 
@@ -209,27 +209,33 @@ export async function saveVersionNotes(versionId: string, text: string | null): 
 // ---------------------------------------------------------------------------
 // Rules of a draft
 // ---------------------------------------------------------------------------
-/** Maps the database's rule problem (SQLSTATE 22023, from app.fee_rule_problem) to the form field it concerns. */
+/**
+ * Maps the database's rule problem (SQLSTATE 22023, from app.fee_rule_problem) to the form field it
+ * concerns, on the same field feeRuleInputSchema reports it. Order matters: every "minimum.…" message
+ * starts with "minimum" (the per-occurrence "a minimum charge …" does not), "choose what the percent
+ * is taken of" is about the base, and "a tiered rule has no free allowance (use a first bracket …)"
+ * is about the allowance, not the brackets.
+ */
 function ruleProblemField(message: string): string | null {
   const m = message.toLowerCase();
   const table: [RegExp, string][] = [
+    [/^minimum/, "minimum"],
     [/^key /, "key"],
     [/^name /, "name"],
-    [/category/, "category"],
+    [/^unknown category/, "category"],
     [/^unknown scope/, "scope"],
     [/basis does not match|cannot be tiered/, "basis"],
     [/^unknown method|the percent method|the minimum method/, "method"],
     [/^amount/, "amount"],
-    [/^percent base|percent base applies/, "percentBase"],
-    [/^percent|choose what the percent/, "percent"],
-    [/^tiers|bracket|graduated tiers|monthly rules tier|monthly-volume tiers/, "tiers"],
+    [/^percent base|percent base applies|choose what the percent/, "percentBase"],
+    [/^percent/, "percent"],
     [/free allowance|includedper/, "includedQuantity"],
     [/minimum charge/, "minimumCharge"],
+    [/^tiers|bracket|graduated tiers|monthly rules tier|monthly-volume tiers/, "tiers"],
     [/^conditions|packaging|must be a whole number|exceeds max/, "conditions"],
+    [/needs a priority|^priority/, "priority"],
     [/exclusive group/, "exclusiveGroup"],
-    [/priority/, "priority"],
     [/^driver|longterm|billingperiod|per-order driver|monthly driver/, "driver"],
-    [/^minimum/, "minimum"],
   ];
   for (const [re, field] of table) if (re.test(m)) return field;
   return null;
@@ -352,7 +358,8 @@ export async function unassignFeeSchedule(assignmentId: string): Promise<FeeActi
   const ctx = await requireTenantContext("ratecard.manage");
   if (!uuidSchema.safeParse(assignmentId).success) return { ok: false, message: GENERIC_FAILURE };
   const supabase = await createClient();
-  const { data: assignment } = await supabase.from("brand_fee_schedule_assignments").select("brand_id, tenant_id").eq("id", assignmentId).maybeSingle();
+  const { data: assignment, error: loadError } = await supabase.from("brand_fee_schedule_assignments").select("brand_id, tenant_id").eq("id", assignmentId).maybeSingle();
+  if (loadError) return { ok: false, message: GENERIC_FAILURE };
   if (!assignment || assignment.tenant_id !== ctx.active.tenantId) return { ok: false, message: "Assignment not found." };
   const { error } = await supabase.rpc("unassign_fee_schedule", { p_assignment: assignmentId });
   if (error) return { ok: false, message: "Assignment not found." };
@@ -376,6 +383,8 @@ export async function tryFeeOrder(versionId: string, input: unknown): Promise<Tr
   if (error) return { ok: false, message: error.code === "P0002" ? "Version not found." : GENERIC_FAILURE };
   const snapshot = data as FeeScheduleSnapshot | null;
   if (!snapshot || snapshot.versionId !== versionId || !Array.isArray(snapshot.rules)) return { ok: false, message: GENERIC_FAILURE };
+  const problems = tryOrderProblems(parsed.data, snapshot);
+  if (Object.keys(problems).length) return { ok: false, errors: problems };
   // A draft has no effective date yet; the order engine never reads it.
   const { input: order, context } = tryOrderToEngine(parsed.data, snapshot);
   return { ok: true, result: calculateOrderFees(order, snapshot, context), versionNumber: snapshot.versionNumber };

@@ -39,8 +39,13 @@ const withinRange = (check: (value: InstanceType<typeof D>) => boolean) => (v: s
 
 /** numeric(12,4) columns: 8 integer digits, 4 decimals. */
 const columnMoney = (message = "Enter an amount with up to 4 decimals (digits only; no sign or commas).") => decimalString(8, 4, message);
+/**
+ * A JSON number inside jsonb is read as its decimal text: `app.fee_decimal_ok(v ->> 'amount', 4)` sees
+ * the number's text, so a row written by SQL may carry numbers where the editor writes strings.
+ */
+const numberToText = (v: unknown): unknown => (typeof v === "number" && Number.isFinite(v) ? new D(v).toFixed() : v);
 /** Amounts inside jsonb (tiers, minimum): `app.fee_decimal_ok(p, 4)`. */
-const jsonMoney = (message: string) => decimalString(12, 4, message);
+const jsonMoney = (message: string) => z.preprocess(numberToText, decimalString(12, 4, message));
 
 /** "" and undefined become null (an empty form field is "not set"). */
 const emptyToNull = (v: unknown): unknown => (v === undefined || v === "" || (typeof v === "string" && v.trim() === "") ? null : v);
@@ -549,6 +554,8 @@ export function fulfillmentAnswerProblems(answers: FulfillmentAnswersInput, snap
 // ---------------------------------------------------------------------------
 const orderCount = wholeNumber(0, 999_999, "Enter a whole number up to 999,999.");
 const dollars = decimalString(8, 4, "Enter an amount in dollars (up to 4 decimals).");
+/** A cleared form field ("" or null) takes the schema's default rather than failing. */
+const blankToUndefined = (v: unknown): unknown => (v === "" || v === null ? undefined : v);
 
 export const tryOrderInputSchema = z.object({
   /** null = unknown (the rule that reads it is reported as not computed, never $0). */
@@ -556,7 +563,7 @@ export const tryOrderInputSchema = z.object({
   lines: nullable(orderCount),
   distinctSkus: nullable(orderCount),
   packages: z.array(z.object({ packagingType: nullable(z.string().trim().min(1).max(60, "Packaging types are up to 60 characters.")) })).max(50, "Up to 50 packages.").default([]),
-  shipments: wholeNumber(1, 50, "Enter 1–50 shipments.").default(1),
+  shipments: z.preprocess(blankToUndefined, wholeNumber(1, 50, "Enter 1–50 shipments.").default(1)),
   /** The order's shipping in dollars; null = shipping unknown. */
   shipping: nullable(
     z.object({
@@ -577,12 +584,30 @@ export const tryOrderInputSchema = z.object({
     })
     .default({}),
   packagingDefault: nullable(z.string().trim().min(1).max(60, "Packaging types are up to 60 characters.")),
-  ordinal: wholeNumber(1, 1_000_000_000, "The order ordinal is a whole number from 1.").default(1),
+  ordinal: z.preprocess(blankToUndefined, wholeNumber(1, 1_000_000_000, "The order ordinal is a whole number from 1.").default(1)),
 });
 
 export type TryOrderInput = z.output<typeof tryOrderInputSchema>;
 
-/** The engine input and context for a tried order; pinned monthly rates are resolved from the stated volumes. */
+/**
+ * Problems only the schedule can reveal, checked before the engine runs: a fee taken as a percent of
+ * the base shipping rate needs that rate typed. The shipping total is not a stand-in for it (the base
+ * rate is the total less surcharges), so pricing on the total would overstate the fee.
+ */
+export function tryOrderProblems(parsed: TryOrderInput, snapshot: FeeScheduleSnapshot): FieldErrors {
+  const out: FieldErrors = {};
+  const onBaseFreight = snapshot.rules.some((r) => r.scope === "order" && r.basis === "shipping_percent" && r.percentBase === "base_freight");
+  if (onBaseFreight && parsed.shipping && parsed.shipping.baseFreight === null) {
+    out["shipping.baseFreight"] = "This fee schedule charges a percentage of the base shipping rate; enter the base rate as well as the total.";
+  }
+  return out;
+}
+
+/**
+ * The engine input and context for a tried order; pinned monthly rates are resolved from the stated
+ * volumes. Call `tryOrderProblems` first: `baseFreightE4` is only read by base-rate percent rules,
+ * for which it refuses an untyped base rate, so the fallback to the total below is never priced.
+ */
 export function tryOrderToEngine(parsed: TryOrderInput, snapshot: FeeScheduleSnapshot): { input: OrderFeeInput; context: OrderFeeContext } {
   const pinnedRates: OrderFeeContext["pinnedRates"] = {};
   for (const rule of snapshot.rules) {
