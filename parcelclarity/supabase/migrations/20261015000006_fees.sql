@@ -248,7 +248,7 @@ begin
     if r.scope = 'order' and r.tiers ->> 'on' = 'monthly_quantity' and (r.basis not in ('order', 'unit', 'package', 'shipment') or r.tiers ->> 'pricing' <> 'rate') then
       return 'monthly-volume tiers apply to per-order, per-item, per-package or per-shipment rules priced per unit';
     end if;
-    if jsonb_typeof(r.tiers -> 'brackets') <> 'array' or jsonb_array_length(r.tiers -> 'brackets') not between 1 and 50 then return 'tiers need 1–50 brackets'; end if;
+    if jsonb_typeof(r.tiers -> 'brackets') is distinct from 'array' or jsonb_array_length(r.tiers -> 'brackets') not between 1 and 50 then return 'tiers need 1–50 brackets'; end if;
     v_n := jsonb_array_length(r.tiers -> 'brackets'); v_prev := 0;
     for v_i in 0 .. v_n - 1 loop
       v_b := r.tiers -> 'brackets' -> v_i;
@@ -320,7 +320,7 @@ begin
       if exists (select 1 from jsonb_object_keys(v_lt) k where k not in ('mode', 'replacesRuleKey', 'thresholdDays')) then return 'longTerm has an unknown field'; end if;
       if coalesce(v_lt ->> 'mode', '') not in ('replace', 'surcharge') then return 'longTerm.mode must be replace or surcharge'; end if;
       if coalesce(v_lt ->> 'replacesRuleKey', '') !~ '^[a-z][a-z0-9_]{0,60}$' or v_lt ->> 'replacesRuleKey' = r.key then return 'longTerm.replacesRuleKey must name another rule'; end if;
-      if jsonb_typeof(v_lt -> 'thresholdDays') <> 'number' or (v_lt ->> 'thresholdDays') !~ '^[0-9]{1,4}$' or (v_lt ->> 'thresholdDays')::integer not between 1 and 3650 then return 'longTerm.thresholdDays must be 1–3650'; end if;
+      if jsonb_typeof(v_lt -> 'thresholdDays') is distinct from 'number' or (v_lt ->> 'thresholdDays') !~ '^[0-9]{1,4}$' or (v_lt ->> 'thresholdDays')::integer not between 1 and 3650 then return 'longTerm.thresholdDays must be 1–3650'; end if;
     end if;
   end if;
 
@@ -330,10 +330,10 @@ begin
     if jsonb_typeof(v_m) <> 'object' then return 'minimum must be an object'; end if;
     if exists (select 1 from jsonb_object_keys(v_m) k where k not in ('amount', 'appliesTo', 'includesShipping')) then return 'minimum has an unknown field'; end if;
     if not app.fee_decimal_ok(v_m ->> 'amount', 4) then return 'minimum.amount must be a number with up to 4 decimals'; end if;
-    if jsonb_typeof(v_m -> 'includesShipping') <> 'boolean' then return 'minimum.includesShipping must be true or false'; end if;
-    if jsonb_typeof(v_m -> 'appliesTo') <> 'object' or exists (select 1 from jsonb_object_keys(v_m -> 'appliesTo') k where k not in ('categories', 'includeRuleKeys', 'excludeRuleKeys')) then return 'minimum.appliesTo must list categories, includeRuleKeys and excludeRuleKeys'; end if;
+    if jsonb_typeof(v_m -> 'includesShipping') is distinct from 'boolean' then return 'minimum.includesShipping must be true or false'; end if;
+    if jsonb_typeof(v_m -> 'appliesTo') is distinct from 'object' or exists (select 1 from jsonb_object_keys(v_m -> 'appliesTo') k where k not in ('categories', 'includeRuleKeys', 'excludeRuleKeys')) then return 'minimum.appliesTo must list categories, includeRuleKeys and excludeRuleKeys'; end if;
     foreach v_t in array array['categories', 'includeRuleKeys', 'excludeRuleKeys'] loop
-      if jsonb_typeof(v_m -> 'appliesTo' -> v_t) <> 'array' then return 'minimum.appliesTo.' || v_t || ' must be a list'; end if;
+      if jsonb_typeof(v_m -> 'appliesTo' -> v_t) is distinct from 'array' then return 'minimum.appliesTo.' || v_t || ' must be a list'; end if;
     end loop;
     if exists (select 1 from jsonb_array_elements_text(v_m -> 'appliesTo' -> 'categories') c where not (c = any (v_cats))) then return 'minimum.appliesTo.categories has an unknown category'; end if;
     if exists (select 1 from jsonb_array_elements_text(v_m -> 'appliesTo' -> 'includeRuleKeys') k where k !~ '^[a-z][a-z0-9_]{0,60}$')
@@ -418,7 +418,7 @@ create trigger fee_schedules_guard before update on public.fee_schedules for eac
 create function app.fee_version_problem(p_version uuid, p_resolve boolean) returns text
 language plpgsql security definer set search_path = '' as $$
 declare
-  v_count integer; v_min integer; r record; v_keys text[]; v_set text[]; v_sets text[][] := '{}'; v_i integer; v_other text[]; v_k text; v_rep record; v_prob text;
+  v_count integer; v_min integer; r record; v_keys text[]; v_set text[]; v_seen text[] := '{}'; v_rep record; v_prob text; v_fr public.fee_rules%rowtype;
 begin
   select count(*) into v_count from public.fee_rules where version_id = p_version;
   if v_count = 0 then return 'a version needs at least one rule'; end if;
@@ -443,11 +443,8 @@ begin
       return 'minimum "' || r.name || '" cannot count a flat monthly charge or another minimum';
     end if;
     if coalesce(array_length(v_set, 1), 0) = 0 then return 'minimum "' || r.name || '" counts no rule'; end if;
-    for v_i in 1 .. coalesce(array_length(v_sets, 1), 0) loop
-      v_other := v_sets[v_i:v_i];
-      if exists (select 1 from unnest(v_set) k where k = any (v_other)) then return 'two account minimums count the same rule (' || r.name || ')'; end if;
-    end loop;
-    v_sets := v_sets || v_set;
+    if exists (select 1 from unnest(v_set) k where k = any (v_seen)) then return 'two account minimums count the same rule (' || r.name || ')'; end if;
+    v_seen := v_seen || v_set;
     if p_resolve then update public.fee_rules set resolved_rule_keys = v_set where id = r.id; end if;
   end loop;
 
@@ -485,9 +482,9 @@ begin
     return 'rules that share a driver key must ask the same question (kind, unit, billing period)';
   end if;
   -- Every rule is individually valid (belt and braces: the row trigger already checked).
-  for r in select * from public.fee_rules where version_id = p_version loop
-    v_prob := app.fee_rule_problem(r);
-    if v_prob is not null then return '"' || r.name || '": ' || v_prob; end if;
+  for v_fr in select * from public.fee_rules where version_id = p_version loop
+    v_prob := app.fee_rule_problem(v_fr);
+    if v_prob is not null then return '"' || v_fr.name || '": ' || v_prob; end if;
   end loop;
   return null;
 end $$;
@@ -843,7 +840,7 @@ end $$;
 create function app.fee_monthly_lines(p_version uuid, p_answers jsonb, p_monthly_orders numeric)
 returns table (rule_id uuid, rule_key text, driver_key text, quantity numeric, amount numeric, status text, reason text)
 language plpgsql stable security definer set search_path = '' as $$
-declare r record; v_answer text; v_q numeric; v_sub numeric; v_rep record;
+declare r public.fee_rules%rowtype; v_answer text; v_q numeric; v_sub numeric; v_rep record;
 begin
   for r in select * from public.fee_rules x where x.version_id = p_version and x.scope = 'monthly' and x.basis <> 'minimum' order by x.position, x.key loop
     if r.basis = 'month' then
@@ -1137,7 +1134,7 @@ begin
       if jsonb_typeof(v_v) = 'null' then continue; end if;
       if jsonb_typeof(v_v) <> 'object' or exists (select 1 from jsonb_object_keys(v_v) k where k not in ('sharePct', 'countPerOrder'))
          or not app.fee_decimal_ok(v_v ->> 'sharePct', 2) or (v_v ->> 'sharePct')::numeric > 100
-         or jsonb_typeof(v_v -> 'countPerOrder') <> 'number' or (v_v ->> 'countPerOrder') !~ '^[0-9]{1,4}$' or (v_v ->> 'countPerOrder')::integer not between 1 and 1000 then
+         or jsonb_typeof(v_v -> 'countPerOrder') is distinct from 'number' or (v_v ->> 'countPerOrder') !~ '^[0-9]{1,4}$' or (v_v ->> 'countPerOrder')::integer not between 1 and 1000 then
         raise exception 'answer for % needs a share of orders (0–100) and a whole count per order (1–1000)', v_k using errcode = 'PC001';
       end if;
     end loop;
@@ -1150,8 +1147,8 @@ begin
     end if;
     for v_row in select * from jsonb_array_elements(v_rows) loop
       if jsonb_typeof(v_row) <> 'object' or exists (select 1 from jsonb_object_keys(v_row) k where k not in ('units', 'lines', 'sharePct'))
-         or jsonb_typeof(v_row -> 'units') <> 'number' or (v_row ->> 'units') !~ '^[0-9]{1,5}$'
-         or jsonb_typeof(v_row -> 'lines') <> 'number' or (v_row ->> 'lines') !~ '^[0-9]{1,5}$'
+         or jsonb_typeof(v_row -> 'units') is distinct from 'number' or (v_row ->> 'units') !~ '^[0-9]{1,5}$'
+         or jsonb_typeof(v_row -> 'lines') is distinct from 'number' or (v_row ->> 'lines') !~ '^[0-9]{1,5}$'
          or (v_row ->> 'lines')::integer > (v_row ->> 'units')::integer or ((v_row ->> 'units')::integer > 0 and (v_row ->> 'lines')::integer = 0)
          or not app.fee_decimal_ok(v_row ->> 'sharePct', 2) then
         raise exception 'each order content row needs whole units, lines (1 to units) and a share of orders' using errcode = 'PC001';
