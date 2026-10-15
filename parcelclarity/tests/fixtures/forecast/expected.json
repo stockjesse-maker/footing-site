@@ -1,0 +1,843 @@
+{
+  "_comment": "FICTIONAL golden expectations for the forecast-from-assumptions engine, derived BY HAND from tests/fixtures/fees/RULES.md (sections A-D), schedules.json -> standard, the pricing fixtures (rate card, service terms, rules, pricing/expected.json totals) and m4-design-v2.md section 7, independent of src/engine/forecast. Every _working string shows the arithmetic. Money 'E4' = integer ten-thousandths of a dollar; cents/'monthly'/'perOrder' strings are HALF_UP 2 dp rounded once from the exact E4 figure. Weights are exact decimals (compare numerically; canonical form has no trailing zeros). Cell key = parcel<i>|zone<j>|service|res0|pkg1 with i, j the 0-based indexes into assumptions.parcels / assumptions.zones; 'service' is literal (one service); res0 = residentialPct 0; pkg1 = one package per order.",
+  "_ambiguities": [
+    "A1/A7 inserts in a forecast: q = sharePct/100 x countPerOrder = 0.4 x 4 = 1.6 per order (expected value), THEN the free allowance of A1 is applied to that expected quantity: chargeable = max(0, 1.6 - 1) = 0.6 -> 0.6 x 0.25 = $0.15 (1500 E4) per order. The alternative 'expected charge' reading E[max(0, n - 1)] x rate = 0.4 x (4 - 1) x 0.25 = $0.30 (3000 E4) is NOT used; the two differ by Jensen's inequality and only coincide at sharePct = 100.",
+    "Forecast reclass: A8 alone would class pick_order and the packaging lines definite (no assumed quantity read); design section 7 [M5] re-classes every counted line of a forecast estimated, so shipping and processing definite = 0 and every order line below is 'estimated'. The month-basis admin line stays definite (design section 10 carve-out, RULES.md B1).",
+    "Handling warning: every cell's shipping carries the conditional address-correction exposure (21.00) and undecided DAS lines, so OrderShippingInput.hasExposure = true and each order-fee result carries warning fee_base_excludes_exposure (A6). Tests may choose not to assert warnings.",
+    "'replaced' entries (pack_other) are listed in OrderFeeResult.unresolved with reason replaced but do not make status partial (A10) and do not enter the minimum bucket's unresolvedRuleKeys, so the minimum stays 'exact'.",
+    "Cell weights are exact integers here (420/180/280/120); canonical string form is Decimal.toString() with no trailing zeros."
+  ],
+  "cells": {
+    "parcel0|zone0|service|res0|pkg1": {
+      "parcelIndex": 0,
+      "zoneIndex": 0,
+      "zone": "2",
+      "parcel": "1 lb 6x4x2 poly mailer",
+      "weight": "420",
+      "shippingE4": 98200,
+      "shipping": {
+        "source": "scenario ground_minimum_charge (zone entered directly)",
+        "billableLb": "1.0",
+        "basis": "actual",
+        "baseRateE4": 79000,
+        "minimumAdjustmentE4": 6000,
+        "baseFreightE4": 85000,
+        "fuelE4": 13200,
+        "totalE4": 98200,
+        "definiteE4": 0,
+        "estimatedE4": 98200,
+        "conditionalExposureE4": 210000,
+        "hasExposure": true,
+        "_working": "1 lb 6x4x2 (cubic 48; DIM 48/139 = 0.3453 < 1 lb actual) -> billable 1 lb (actual). Zone 2 bracket 0-1 lb = 7.90; service minimum 8.50 > 7.90 -> minimum-charge adjustment 0.60 (base freight 7.90 + 0.60 = 8.50). DAS (4.00) and extended DAS (6.00) cannot be decided without a ZIP -> estimated, uncounted. Address correction 21.00 conditional, uncounted. Fuel v2 (asOf 2026-10-15 >= 2026-10-01) 15.50% x 8.50 = 1.3175 -> 1.32. Counted total 7.90 + 0.60 + 1.32 = 9.82 = 98,200 E4 (pricing scenario ground_minimum_charge: 9.82)."
+      },
+      "orderFees": [
+        {
+          "contentIndex": 0,
+          "units": 1,
+          "lines": 1,
+          "sharePct": "60.00",
+          "status": "ok",
+          "orderFeesE4": 34410,
+          "definiteE4": 0,
+          "estimatedE4": 34410,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_mailer"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 9.8200 = 4910 E4 (exact, no rounding needed); total = 25000 + 3000 + 1500 + 4910 = 34410 E4 = $3.4410",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_mailer",
+              "name": "Poly mailer",
+              "quantity": "1",
+              "unitAmountE4": 3000,
+              "amountE4": 3000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "9.8200",
+              "unitAmountE4": null,
+              "amountE4": 4910,
+              "chargeClass": "estimated"
+            }
+          ]
+        },
+        {
+          "contentIndex": 1,
+          "units": 3,
+          "lines": 2,
+          "sharePct": "40.00",
+          "status": "ok",
+          "orderFeesE4": 44410,
+          "definiteE4": 0,
+          "estimatedE4": 44410,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_mailer"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 9.8200 = 4910 E4 (exact, no rounding needed); total = 25000 + 10000 + 3000 + 1500 + 4910 = 44410 E4 = $4.4410",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pick_additional",
+              "name": "Each additional item",
+              "quantity": "2",
+              "unitAmountE4": 5000,
+              "amountE4": 10000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_mailer",
+              "name": "Poly mailer",
+              "quantity": "1",
+              "unitAmountE4": 3000,
+              "amountE4": 3000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "9.8200",
+              "unitAmountE4": null,
+              "amountE4": 4910,
+              "chargeClass": "estimated"
+            }
+          ]
+        }
+      ],
+      "expectedOrderFeesE4": 38410,
+      "weighted": {
+        "shippingE4": 41244000,
+        "processingE4": 16132200
+      },
+      "_working": "weight = 1000 x 60.00/100 (parcel0) x 70.00/100 (zone0) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 420.0000. expectedOrderFeesE4 = 0.60 x 34410 + 0.40 x 44410 = 20646 + 17764 = 38410. weighted shipping = 420.0000 x 98200 = 41244000; weighted processing = 420.0000 x 38410 = 16132200."
+    },
+    "parcel0|zone1|service|res0|pkg1": {
+      "parcelIndex": 0,
+      "zoneIndex": 1,
+      "zone": "7",
+      "parcel": "1 lb 6x4x2 poly mailer",
+      "weight": "180",
+      "shippingE4": 130500,
+      "shipping": {
+        "source": "hand computed from rate-card rows (no scenario)",
+        "billableLb": "1.0",
+        "basis": "actual",
+        "baseRateE4": 113000,
+        "minimumAdjustmentE4": 0,
+        "baseFreightE4": 113000,
+        "fuelE4": 17500,
+        "totalE4": 130500,
+        "definiteE4": 0,
+        "estimatedE4": 130500,
+        "conditionalExposureE4": 210000,
+        "hasExposure": true,
+        "_working": "1 lb 6x4x2 -> billable 1 lb (actual, DIM 0.3453). Zone 7 bracket 0-1 lb = 11.30 >= service minimum 8.50 -> no adjustment (base freight 11.30). DAS/extended DAS undecidable (no ZIP) -> uncounted; address correction 21.00 conditional, uncounted. Fuel v2 15.50% x 11.30 = 1.7515 -> 1.75 (HALF_UP). Counted total 11.30 + 1.75 = 13.05 = 130,500 E4."
+      },
+      "orderFees": [
+        {
+          "contentIndex": 0,
+          "units": 1,
+          "lines": 1,
+          "sharePct": "60.00",
+          "status": "ok",
+          "orderFeesE4": 36025,
+          "definiteE4": 0,
+          "estimatedE4": 36025,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_mailer"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.0500 = 6525 E4 (exact, no rounding needed); total = 25000 + 3000 + 1500 + 6525 = 36025 E4 = $3.6025",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_mailer",
+              "name": "Poly mailer",
+              "quantity": "1",
+              "unitAmountE4": 3000,
+              "amountE4": 3000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "13.0500",
+              "unitAmountE4": null,
+              "amountE4": 6525,
+              "chargeClass": "estimated"
+            }
+          ]
+        },
+        {
+          "contentIndex": 1,
+          "units": 3,
+          "lines": 2,
+          "sharePct": "40.00",
+          "status": "ok",
+          "orderFeesE4": 46025,
+          "definiteE4": 0,
+          "estimatedE4": 46025,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_mailer"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_mailer (priority 1) and pack_other ('*', priority 9) match package type 'poly mailer'; lowest priority wins -> pack_mailer 1 x 0.3000 = 3000, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.0500 = 6525 E4 (exact, no rounding needed); total = 25000 + 10000 + 3000 + 1500 + 6525 = 46025 E4 = $4.6025",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pick_additional",
+              "name": "Each additional item",
+              "quantity": "2",
+              "unitAmountE4": 5000,
+              "amountE4": 10000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_mailer",
+              "name": "Poly mailer",
+              "quantity": "1",
+              "unitAmountE4": 3000,
+              "amountE4": 3000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "13.0500",
+              "unitAmountE4": null,
+              "amountE4": 6525,
+              "chargeClass": "estimated"
+            }
+          ]
+        }
+      ],
+      "expectedOrderFeesE4": 40025,
+      "weighted": {
+        "shippingE4": 23490000,
+        "processingE4": 7204500
+      },
+      "_working": "weight = 1000 x 60.00/100 (parcel0) x 30.00/100 (zone1) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 180.0000. expectedOrderFeesE4 = 0.60 x 36025 + 0.40 x 46025 = 21615 + 18410 = 40025. weighted shipping = 180.0000 x 130500 = 23490000; weighted processing = 180.0000 x 40025 = 7204500."
+    },
+    "parcel1|zone0|service|res0|pkg1": {
+      "parcelIndex": 1,
+      "zoneIndex": 0,
+      "zone": "2",
+      "parcel": "10 lb 12x12x12 box",
+      "weight": "280",
+      "shippingE4": 134200,
+      "shipping": {
+        "source": "hand computed from rate-card rows (no scenario)",
+        "billableLb": "13.0",
+        "basis": "dim",
+        "baseRateE4": 116200,
+        "minimumAdjustmentE4": 0,
+        "baseFreightE4": 116200,
+        "fuelE4": 18000,
+        "totalE4": 134200,
+        "definiteE4": 0,
+        "estimatedE4": 134200,
+        "conditionalExposureE4": 210000,
+        "hasExposure": true,
+        "_working": "10 lb 12x12x12: cubic 1728, DIM 1728/139 = 12.4317 > 10 lb actual -> up to whole lb = 13 lb (dim). Zone 2 bracket 12-13 lb = 11.62 >= 8.50 -> no adjustment. DAS/extended DAS undecidable -> uncounted; address correction 21.00 conditional, uncounted. Fuel v2 15.50% x 11.62 = 1.8011 -> 1.80. Counted total 11.62 + 1.80 = 13.42 = 134,200 E4."
+      },
+      "orderFees": [
+        {
+          "contentIndex": 0,
+          "units": 1,
+          "lines": 1,
+          "sharePct": "60.00",
+          "status": "ok",
+          "orderFeesE4": 41710,
+          "definiteE4": 0,
+          "estimatedE4": 41710,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_box"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.4200 = 6710 E4 (exact, no rounding needed); total = 25000 + 8500 + 1500 + 6710 = 41710 E4 = $4.1710",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_box",
+              "name": "Box",
+              "quantity": "1",
+              "unitAmountE4": 8500,
+              "amountE4": 8500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "13.4200",
+              "unitAmountE4": null,
+              "amountE4": 6710,
+              "chargeClass": "estimated"
+            }
+          ]
+        },
+        {
+          "contentIndex": 1,
+          "units": 3,
+          "lines": 2,
+          "sharePct": "40.00",
+          "status": "ok",
+          "orderFeesE4": 51710,
+          "definiteE4": 0,
+          "estimatedE4": 51710,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_box"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 13.4200 = 6710 E4 (exact, no rounding needed); total = 25000 + 10000 + 8500 + 1500 + 6710 = 51710 E4 = $5.1710",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pick_additional",
+              "name": "Each additional item",
+              "quantity": "2",
+              "unitAmountE4": 5000,
+              "amountE4": 10000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_box",
+              "name": "Box",
+              "quantity": "1",
+              "unitAmountE4": 8500,
+              "amountE4": 8500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "13.4200",
+              "unitAmountE4": null,
+              "amountE4": 6710,
+              "chargeClass": "estimated"
+            }
+          ]
+        }
+      ],
+      "expectedOrderFeesE4": 45710,
+      "weighted": {
+        "shippingE4": 37576000,
+        "processingE4": 12798800
+      },
+      "_working": "weight = 1000 x 40.00/100 (parcel1) x 70.00/100 (zone0) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 280.0000. expectedOrderFeesE4 = 0.60 x 41710 + 0.40 x 51710 = 25026 + 20684 = 45710. weighted shipping = 280.0000 x 134200 = 37576000; weighted processing = 280.0000 x 45710 = 12798800."
+    },
+    "parcel1|zone1|service|res0|pkg1": {
+      "parcelIndex": 1,
+      "zoneIndex": 1,
+      "zone": "7",
+      "parcel": "10 lb 12x12x12 box",
+      "weight": "120",
+      "shippingE4": 222000,
+      "shipping": {
+        "source": "scenario zone_entered_directly (exact match)",
+        "billableLb": "13.0",
+        "basis": "dim",
+        "baseRateE4": 192200,
+        "minimumAdjustmentE4": 0,
+        "baseFreightE4": 192200,
+        "fuelE4": 29800,
+        "totalE4": 222000,
+        "definiteE4": 0,
+        "estimatedE4": 222000,
+        "conditionalExposureE4": 210000,
+        "hasExposure": true,
+        "_working": "10 lb 12x12x12: cubic 1728, DIM 1728/139 = 12.4317 > 10 -> 13 lb (dim). Zone 7 bracket 12-13 lb = 19.22. DAS/extended DAS undecidable (zone entered directly) -> estimated, uncounted; address correction 21.00 conditional, uncounted. Fuel v2 15.50% x 19.22 = 2.9791 -> 2.98. Counted total 19.22 + 2.98 = 22.20 = 222,000 E4 (pricing scenario zone_entered_directly: 22.20)."
+      },
+      "orderFees": [
+        {
+          "contentIndex": 0,
+          "units": 1,
+          "lines": 1,
+          "sharePct": "60.00",
+          "status": "ok",
+          "orderFeesE4": 46100,
+          "definiteE4": 0,
+          "estimatedE4": 46100,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_box"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 1 unit - 1 included) = 0 -> no line (A5); packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 22.2000 = 11100 E4 (exact, no rounding needed); total = 25000 + 8500 + 1500 + 11100 = 46100 E4 = $4.6100",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_box",
+              "name": "Box",
+              "quantity": "1",
+              "unitAmountE4": 8500,
+              "amountE4": 8500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "22.2000",
+              "unitAmountE4": null,
+              "amountE4": 11100,
+              "chargeClass": "estimated"
+            }
+          ]
+        },
+        {
+          "contentIndex": 1,
+          "units": 3,
+          "lines": 2,
+          "sharePct": "40.00",
+          "status": "ok",
+          "orderFeesE4": 56100,
+          "definiteE4": 0,
+          "estimatedE4": 56100,
+          "warnings": [
+            "fee_base_excludes_exposure"
+          ],
+          "unresolved": [
+            {
+              "ruleKey": "pack_other",
+              "name": "Other packaging",
+              "reason": "replaced",
+              "replacedBy": "pack_box"
+            }
+          ],
+          "_working": "pick_order 1 x 2.5000 = 25000; pick_additional: chargeable = max(0, 3 units - 1 included) = 2 x 0.5000 = 10000; packaging group: both pack_box (priority 2) and pack_other ('*', priority 9) match package type 'box'; lowest priority wins -> pack_box 1 x 0.8500 = 8500, pack_other listed once as replaced; inserts: expected quantity = 40.00/100 x 4 = 1.6 per order, minus included 1 per order = 0.6 chargeable x 0.2500 = 1500 (estimated); handling_pct: 5.0000% x 22.2000 = 11100 E4 (exact, no rounding needed); total = 25000 + 10000 + 8500 + 1500 + 11100 = 56100 E4 = $5.6100",
+          "feeLines": [
+            {
+              "ruleKey": "pick_order",
+              "name": "Pick & pack, per order",
+              "quantity": "1",
+              "unitAmountE4": 25000,
+              "amountE4": 25000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pick_additional",
+              "name": "Each additional item",
+              "quantity": "2",
+              "unitAmountE4": 5000,
+              "amountE4": 10000,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "pack_box",
+              "name": "Box",
+              "quantity": "1",
+              "unitAmountE4": 8500,
+              "amountE4": 8500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "inserts",
+              "name": "Marketing inserts",
+              "quantity": "0.6",
+              "unitAmountE4": 2500,
+              "amountE4": 1500,
+              "chargeClass": "estimated"
+            },
+            {
+              "ruleKey": "handling_pct",
+              "name": "Shipping handling",
+              "quantity": "22.2000",
+              "unitAmountE4": null,
+              "amountE4": 11100,
+              "chargeClass": "estimated"
+            }
+          ]
+        }
+      ],
+      "expectedOrderFeesE4": 50100,
+      "weighted": {
+        "shippingE4": 26640000,
+        "processingE4": 6012000
+      },
+      "_working": "weight = 1000 x 40.00/100 (parcel1) x 30.00/100 (zone1) x 100/100 (service) x 100/100 (commercial, residentialPct 0) x 100/100 (single package) = 120.0000. expectedOrderFeesE4 = 0.60 x 46100 + 0.40 x 56100 = 27660 + 22440 = 50100. weighted shipping = 120.0000 x 222000 = 26640000; weighted processing = 120.0000 x 50100 = 6012000."
+    }
+  },
+  "aggregates": {
+    "weightSum": "1000",
+    "shipping": {
+      "_working": "sum of weight x shippingE4 = 420 x 98200 + 180 x 130500 + 280 x 134200 + 120 x 222000 = 41,244,000 + 23,490,000 + 37,576,000 + 26,640,000 = 128,950,000 E4 = $12,895.0000. definite = 0 (all lines estimated in a forecast), estimated = 128,950,000.",
+      "definiteE4": 0,
+      "estimatedE4": 128950000,
+      "totalE4": 128950000,
+      "monthly": "12895.00",
+      "perOrder": "12.90"
+    },
+    "processing": {
+      "_working": "sum of weight x contentShare x orderFeesE4 = 420 x 38410 + 180 x 40025 + 280 x 45710 + 120 x 50100 = 16,132,200 + 7,204,500 + 12,798,800 + 6,012,000 = 42,147,500 E4 = $4,214.7500. Cross-check by rule over 1000 orders: pick_order 1000 x 25000 = 25,000,000; pick_additional 1000 x 0.40 x 10000 = 4,000,000; pack_mailer (420 + 180 = 600 orders) x 3000 = 1,800,000; pack_box (280 + 120 = 400 orders) x 8500 = 3,400,000; inserts 1000 x 1500 = 1,500,000; handling_pct 420 x 4910 + 180 x 6525 + 280 x 6710 + 120 x 11100 = 2,062,200 + 1,174,500 + 1,878,800 + 1,332,000 = 6,447,500 (= 5% x 128,950,000); total 25,000,000 + 4,000,000 + 1,800,000 + 3,400,000 + 1,500,000 + 6,447,500 = 42,147,500.",
+      "definiteE4": 0,
+      "estimatedE4": 42147500,
+      "totalE4": 42147500,
+      "monthly": "4214.75",
+      "perOrder": "4.21",
+      "byRuleE4": {
+        "pick_order": 25000000,
+        "pick_additional": 4000000,
+        "pack_mailer": 1800000,
+        "pack_box": 3400000,
+        "pack_other": 0,
+        "inserts": 1500000,
+        "handling_pct": 6447500
+      }
+    },
+    "monthlyFixed": {
+      "_working": "calculateMonthlyFees (RULES.md B) at 1000 orders: storage_pallet 1200000; storage_long_term 440000; receiving_pallet 480000; receiving_case 700000; returns 1050000; admin 990000 -> 1,200,000 + 440,000 + 480,000 + 700,000 + 1,050,000 + 990,000 = 4,860,000 E4 = $486.00. definite = admin 990,000, estimated = 3,870,000. minimum rule produces no monthly line (B4).",
+      "lines": [
+        {
+          "ruleKey": "storage_pallet",
+          "name": "Pallet storage",
+          "category": "storage",
+          "driverKey": "pallets_stored",
+          "quantity": "8",
+          "unitAmountE4": 150000,
+          "amountE4": 1200000,
+          "chargeClass": "estimated",
+          "scalesWithVolume": false,
+          "_working": "answer 10 pallets; long-term replace (rule storage_long_term, answer 2) reduces this rule's quantity 10 - 2 = 8; 8 x 15.0000 = 120.0000"
+        },
+        {
+          "ruleKey": "storage_long_term",
+          "name": "Long-term pallet storage (over 180 days)",
+          "category": "storage",
+          "driverKey": "long_term_pallets",
+          "quantity": "2",
+          "unitAmountE4": 220000,
+          "amountE4": 440000,
+          "chargeClass": "estimated",
+          "scalesWithVolume": false,
+          "_working": "answer 2 pallets x 22.0000 = 44.0000 (replace mode: billed at this rate instead of the standard rate)"
+        },
+        {
+          "ruleKey": "receiving_pallet",
+          "name": "Pallet receiving",
+          "category": "receiving",
+          "driverKey": "pallets_received",
+          "quantity": "4",
+          "unitAmountE4": 120000,
+          "amountE4": 480000,
+          "chargeClass": "estimated",
+          "scalesWithVolume": false,
+          "_working": "answer 4 pallets x 12.0000 = 48.0000"
+        },
+        {
+          "ruleKey": "receiving_case",
+          "name": "Loose carton receiving",
+          "category": "receiving",
+          "driverKey": "cases_received",
+          "quantity": "200",
+          "unitAmountE4": 3500,
+          "amountE4": 700000,
+          "chargeClass": "estimated",
+          "scalesWithVolume": false,
+          "_working": "answer 200 cartons x 0.3500 = 70.0000"
+        },
+        {
+          "ruleKey": "returns",
+          "name": "Returns processing",
+          "category": "returns",
+          "driverKey": "returns_rate",
+          "quantity": "35",
+          "unitAmountE4": 30000,
+          "amountE4": 1050000,
+          "chargeClass": "estimated",
+          "scalesWithVolume": true,
+          "_working": "B3: quantity = monthlyOrders x answer / 100 = 1000 x 3.50 / 100 = 35 returns (not rounded); 35 x 3.0000 = 105.0000; scalesWithVolume true"
+        },
+        {
+          "ruleKey": "admin",
+          "name": "Account administration",
+          "category": "account",
+          "driverKey": null,
+          "quantity": "1",
+          "unitAmountE4": 990000,
+          "amountE4": 990000,
+          "chargeClass": "definite",
+          "scalesWithVolume": false,
+          "_working": "B1: month basis, quantity 1 x 99.0000 = 99.0000, class definite (the only definite line: a flat month rule stays definite in a forecast)"
+        }
+      ],
+      "notModeled": [],
+      "unusedAnswers": [],
+      "definiteE4": 990000,
+      "estimatedE4": 3870000,
+      "totalE4": 4860000,
+      "monthly": "486.00"
+    },
+    "minimum": {
+      "_working": "C over ONE average month: bucket {month 'average', fraction 1, modeledOrders 1000, shippedOrders 1000 (no coverage scaling), shippingExpectedE4 128,950,000 (not counted: includesShipping false), unresolvedRuleKeys []}. counted = sum over resolvedRuleKeys of each rule's month total rounded to cents: order-scope pick_order 25,000,000 E4 = 2500.00; pick_additional 4,000,000 = 400.00; pack_mailer 1,800,000 = 180.00; pack_box 3,400,000 = 340.00; pack_other 0 = 0.00; monthly-scope x fraction 1: storage_pallet 120.00; storage_long_term 44.00; receiving_pallet 48.00; receiving_case 70.00; counted = 2500 + 400 + 180 + 340 + 120 + 44 + 48 + 70 = 3702.00 = 37,020,000 E4. minimum = 500 x 1 = 500.00; topUp = max(0, 500.00 - 3702.00) = 0. Status exact (nothing not modeled, no bucket-unresolved keys, modeled = shipped). The minimum does not bind at 1000 orders, so topUp is a legitimate zero here. Excluded from R (not counted): inserts and handling_pct (category other), returns (category returns), admin (category account).",
+      "ruleKey": "minimum",
+      "name": "Monthly account minimum",
+      "minimumE4": 5000000,
+      "countedE4": 37020000,
+      "topUpE4": 0,
+      "status": "exact",
+      "reasons": [],
+      "members": [
+        {
+          "ruleKey": "pick_order",
+          "name": "Pick & pack, per order",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "pick_additional",
+          "name": "Each additional item",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "pack_mailer",
+          "name": "Poly mailer",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "pack_box",
+          "name": "Box",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "pack_other",
+          "name": "Other packaging",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "storage_pallet",
+          "name": "Pallet storage",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "storage_long_term",
+          "name": "Long-term pallet storage (over 180 days)",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "receiving_pallet",
+          "name": "Pallet receiving",
+          "state": "priced"
+        },
+        {
+          "ruleKey": "receiving_case",
+          "name": "Loose carton receiving",
+          "state": "priced"
+        }
+      ],
+      "buckets": [
+        {
+          "month": "average",
+          "minimumE4": 5000000,
+          "countedE4": 37020000,
+          "topUpE4": 0
+        }
+      ]
+    },
+    "allocation": {
+      "_working": "D over input {months '1.000000', monthlyOrders '1000', modeledOrders 1000, shippingExpectedE4 128,950,000, processingE4 42,147,500, populationOrders 1000, monthlyFixedE4 4,860,000, minimumTopUpE4 0, minimumStatus exact}. D1 coverage = 1000/1000 x 100 = '100.0'. extrapolated = false (modeled = population). D2 perOrder.shipping = 128,950,000/1000 = 128,950 E4 = $12.8950 -> HALF_UP cents 12.90 (exact half, rounds up); perOrder.processing = 42,147,500/1000 = 42,147.5 E4 = $4.21475 -> 4.21. D3 monthly.shipping = (128,950,000/1000) x 1000 = 128,950,000 E4 = 12895.00; monthly.processing = (42,147,500/1000) x 1000 = 42,147,500 E4 = 4214.75. D4 monthly.fixed = 4,860,000 E4 = 486.00; minimumTopUp = 0/1.000000 = 0.00 (status exact so it is included). D5 total exact = 128,950,000 + 42,147,500 + 4,860,000 + 0 = 175,957,500 E4 = 17595.75; annual = 17595.75 x 12 = 211149.00. D6 allocated = (486.00 + 0.00)/1000 = 0.486 -> 0.49; allIn = 17595.75/1000 = 17.59575 -> 17.60. D7 caveats: only the 'allocated' sentence (coverage >= 80, minimum exact, volume known).",
+      "input": {
+        "months": "1.000000",
+        "monthlyOrders": "1000",
+        "modeledOrders": 1000,
+        "shippingExpectedE4": 128950000,
+        "processingE4": 42147500,
+        "populationOrders": 1000,
+        "monthlyFixedE4": 4860000,
+        "minimumTopUpE4": 0,
+        "minimumStatus": "exact"
+      },
+      "monthly": {
+        "shipping": "12895.00",
+        "processing": "4214.75",
+        "fixed": "486.00",
+        "minimumTopUp": "0.00",
+        "total": "17595.75",
+        "annual": "211149.00"
+      },
+      "perOrder": {
+        "shipping": "12.90",
+        "processing": "4.21",
+        "allocated": "0.49",
+        "allIn": "17.60"
+      },
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "caveatKinds": [
+        "allocated"
+      ]
+    },
+    "allIn": {
+      "perOrder": "17.60",
+      "monthly": "17595.75",
+      "annual": "211149.00"
+    },
+    "identities": {
+      "_working": "weightSum = 420 + 180 + 280 + 120 = 1000 = monthlyOrders; shipping.definiteE4 = processing.definiteE4 = 0 (every counted line estimated); allIn.perOrder 17.60 = shipping.perOrder 12.90 + processing.perOrder 4.21 + allocated.perOrder 0.49 = 17.60 (exact here; the SQL check tolerates 0.01); monthly.total 17595.75 = 12895.00 + 4214.75 + 486.00 + 0.00.",
+      "weightSum": "1000",
+      "weightSumEqualsMonthlyOrders": true,
+      "shippingDefiniteE4": 0,
+      "processingDefiniteE4": 0,
+      "allInPerOrderEqualsParts": true,
+      "allInPerOrderParts": [
+        "12.90",
+        "4.21",
+        "0.49"
+      ]
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { calculateShipment } from "@/engine";
+import type { FeeBasis, FeeCategory, FeeScope } from "@/engine/fees/types";
 import {
   centsToMoney,
   createDictionary,
@@ -12,21 +13,27 @@ import {
   weightBracket,
   WEIGHT_BRACKET_EDGES,
   WEIGHT_BRACKET_LABELS,
+  type CompactFeeLine,
   type CompactLine,
   type CompactLineClass,
   type CompactLineStatus,
   type CompactResult,
+  type FeeDictionaryEntry,
+  type FeeStatus,
+  type FinalizeFeeInput,
   type FoldOrder,
+  type FoldOrderFees,
   type FoldShipment,
   type LineDictionaryEntry,
   type PartialSummary,
+  type RunPeriod,
 } from "@/engine/modeling";
 import type { SurchargeCategory } from "@/engine/types";
 import { fixtureContext } from "../fixtures/pricing/load";
 
 // ---------------------------------------------------------------------------
 // Hand-built inputs. The dictionary is the run's live array: rule entries are appended once and
-// every compact line refers to them by index.
+// every compact line refers to them by index. The fee dictionary works the same way, keyed by rule id.
 // ---------------------------------------------------------------------------
 
 const dictionary = createDictionary();
@@ -42,8 +49,39 @@ const DAS = addRule("ups.das", 1, "Delivery area surcharge", "das", "carrier");
 const ADDR = addRule("ups.address_correction", 1, "Address correction (if needed)", "address_correction", "carrier");
 const HANDLING = addRule("acme.handling", 1, "Special handling", "additional_handling", "3pl");
 
+const feeDictionary: FeeDictionaryEntry[] = [];
+function addFee(ruleId: string, key: string, name: string, category: FeeCategory, basis: FeeBasis, scope: FeeScope = "order"): number {
+  feeDictionary.push({ ruleId, key, name, category, basis, scope });
+  return feeDictionary.length - 1;
+}
+const PICK = addFee("r-pick", "pick_order", "Order pick", "pick_pack", "order");
+const PICK_V2 = addFee("r-pick-v2", "pick_order", "Order pick", "pick_pack", "order");
+const ADDL = addFee("r-addl", "pick_additional", "Additional item pick", "pick_pack", "unit");
+const BOX = addFee("r-box", "pack_box", "Box", "packaging", "package");
+addFee("r-mailer", "pack_mailer", "Mailer", "packaging", "package");
+const INSERTS = addFee("r-ins", "inserts", "Inserts", "other", "order_driver");
+addFee("r-pct", "handling_pct", "Handling", "other", "shipping_percent");
+
 function line(index: number, cents: number, status: CompactLineStatus = "c", cls: CompactLineClass = "d", packageIndex: number | null = 0): CompactLine {
   return [index, cents, status, cls, packageIndex];
+}
+
+function feeLine(index: number, amountE4: number, cls: "d" | "e" = "d"): CompactFeeLine {
+  return [index, amountE4, cls];
+}
+
+/** A fee result whose totals are derived from its lines the way the engine derives them. */
+function fees(status: FeeStatus, opts: Partial<Omit<FoldOrderFees, "status" | "definiteE4" | "estimatedE4">> = {}): FoldOrderFees {
+  const lines = opts.lines ?? [];
+  return {
+    status,
+    lines,
+    unresolved: opts.unresolved ?? [],
+    warnings: opts.warnings ?? [],
+    definiteE4: lines.filter((l) => l[2] === "d").reduce((s, l) => s + l[1], 0),
+    estimatedE4: lines.filter((l) => l[2] === "e").reduce((s, l) => s + l[1], 0),
+    assumed: opts.assumed ?? {},
+  };
 }
 
 /** An ok result whose totals are derived from its lines the way the engine derives them. */
@@ -103,16 +141,29 @@ function ship(rowNo: number, result: CompactResult | null, overrides: Partial<Fo
   };
 }
 
-function order(orderKey: string, shipments: FoldShipment[], opts: { orderDate?: string | null; cancelled?: boolean } = {}): FoldOrder {
-  return { orderKey, orderDate: opts.orderDate === undefined ? "2026-03-14" : opts.orderDate, cancelled: opts.cancelled ?? false, shipments };
+function order(orderKey: string, shipments: FoldShipment[], opts: { orderDate?: string | null; orderMonth?: string | null; cancelled?: boolean; fees?: FoldOrderFees } = {}): FoldOrder {
+  const orderDate = opts.orderDate === undefined ? "2026-03-14" : opts.orderDate;
+  return {
+    orderKey,
+    orderDate,
+    orderMonth: opts.orderMonth === undefined ? (orderDate?.slice(0, 7) ?? null) : opts.orderMonth,
+    cancelled: opts.cancelled ?? false,
+    shipments,
+    fees: opts.fees ?? fees("ok", { lines: [feeLine(PICK, 15000)] }),
+  };
 }
 
-// A: modeled, two shipments in different zones; the second priced on an assumed weight (estimated).
-const A = order("A", [
-  ship(1, okResult({ zone: "5", billableLb: ["1"], lines: [line(BASE, 1000), line(RES, 500), line(FUEL, 150)] })),
-  ship(2, okResult({ zone: "10", billableLb: ["4.5"], lines: [line(BASE, 1200, "c", "e"), line(FUEL, 180, "c", "e")], warningCodes: ["assumed_inputs"] }), { assumed: { residential: false, originZip: false, weight: true, dimensions: false } }),
-]);
+// A: modeled, two shipments in different zones; the second priced on an assumed weight (estimated). Fees ok, with an inserts line from an order-share answer.
+const A = order(
+  "A",
+  [
+    ship(1, okResult({ zone: "5", billableLb: ["1"], lines: [line(BASE, 1000), line(RES, 500), line(FUEL, 150)] })),
+    ship(2, okResult({ zone: "10", billableLb: ["4.5"], lines: [line(BASE, 1200, "c", "e"), line(FUEL, 180, "c", "e")], warningCodes: ["assumed_inputs"] }), { assumed: { residential: false, originZip: false, weight: true, dimensions: false } }),
+  ],
+  { fees: fees("ok", { lines: [feeLine(PICK, 15000), feeLine(ADDL, 5000), feeLine(INSERTS, 2500, "e")] }) },
+);
 // B: modeled, one three-package shipment across brackets, a shipment-level fuel line, a 3PL handling rule, an unknown DAS and a conditional address correction.
+// Fees partial: the box was priced on a packaging default (estimated), the mailer rule lost to it, inserts were not answered.
 const B = order(
   "B",
   [
@@ -128,15 +179,26 @@ const B = order(
       { serviceId: "svc-ups-2da", serviceName: "UPS 2nd Day Air" },
     ),
   ],
-  { orderDate: "2026-04-02" },
+  {
+    orderDate: "2026-04-02",
+    fees: fees("partial", {
+      lines: [feeLine(PICK, 15000), feeLine(BOX, 5000, "e")],
+      unresolved: [
+        { ruleKey: "inserts", reason: "assumption_missing" },
+        { ruleKey: "pack_mailer", reason: "replaced", replacedBy: "pack_box" },
+      ],
+      warnings: ["packaging_defaulted", "fee_base_excludes_exposure"],
+      assumed: { units: true, lines: true, skus: true, packaging: true },
+    }),
+  },
 );
-// C: not modeled, one shipment priced ok and one unavailable.
+// C: not modeled, one shipment priced ok and one unavailable. Its fee result must count nowhere.
 const C = order("C", [ship(4, okResult({ zone: "8", billableLb: ["3"], lines: [line(BASE, 2000)] })), ship(5, unavailableResult("no_rate_for_weight"))]);
 // D: cancelled; its shipment was never sent to the engine.
-const D = order("D", [ship(6, null, { excludedReason: "order_cancelled" })], { cancelled: true });
+const D = order("D", [ship(6, null, { excludedReason: "order_cancelled" })], { cancelled: true, fees: fees("skipped") });
 // E: not modeled, excluded before pricing.
-const E = order("E", [ship(7, null, { excludedReason: "weight_missing", packageCount: 2 })]);
-// F: modeled on assumed residential status and origin, one package without dimensions, no order date.
+const E = order("E", [ship(7, null, { excludedReason: "weight_missing", packageCount: 2 })], { fees: fees("date_missing") });
+// F: modeled on assumed residential status and origin, one package without dimensions, no order date (and so no fee month).
 const F = order(
   "F",
   [
@@ -147,10 +209,20 @@ const F = order(
   ],
   { orderDate: null },
 );
+// G: modeled, but no fee could be computed (the file has no item counts). H: modeled, the brand had no fee schedule.
+const G = order("G", [ship(9, okResult({ billableLb: ["1"], lines: [line(BASE, 900)] }))], { fees: fees("no_content", { unresolved: [{ ruleKey: "handling_pct", reason: "shipping_unknown" }] }) });
+const H = order("H", [ship(10, okResult({ billableLb: ["1"], lines: [line(BASE, 800)] }))], { fees: fees("no_schedule") });
 const ALL = [A, B, C, D, E, F];
 
 function start(): PartialSummary {
-  return { ...emptyPartial(), dictionary };
+  return { ...emptyPartial(), dictionary, feeDictionary };
+}
+
+const emptyPeriod: RunPeriod = { from: null, to: null, days: null, months: null, population: 0, inPeriod: 0, trimmed: 0, undated: 0, volumeBasis: "none", monthlyOrders: null, monthlyUnits: null, monthProfile: [] };
+
+/** Fees were not modeled: the shipping-only summary of a brand without a fee schedule. */
+function noFees(): FinalizeFeeInput {
+  return { mode: "no_schedule", feeEngineVersion: "1.0.0", monthlySchedule: null, answers: { drivers: {}, orderShares: {} }, period: emptyPeriod, provenance: null };
 }
 
 describe("foldBatch: the modeled-order rule", () => {
@@ -195,6 +267,10 @@ describe("foldBatch: the modeled-order rule", () => {
     expect(() => foldBatch(start(), [order("bad", [ship(1, okResult({ billableLb: ["1"], lines: [line(BASE, 100, "c", "d", 3)] }))])])).toThrow(/package 4/);
     expect(() => foldBatch(start(), [order("bad", [ship(1, okResult({ billableLb: ["1"], lines: [line(99, 100)] }))])])).toThrow(/dictionary entry 99/);
     expect(() => foldBatch(start(), [order("empty", [])])).toThrow(/no shipments/);
+  });
+
+  it("refuses a partial summary of an older shape", () => {
+    expect(() => foldBatch({ ...start(), version: 1 } as unknown as PartialSummary, [])).toThrow(/not supported/);
   });
 });
 
@@ -279,6 +355,8 @@ describe("foldBatch: breakdowns over modeled orders", () => {
     expect(sum([...Object.values(p.byWeightBracket).map((b) => b.expected), p.shipmentLevel.expected])).toBe(totalCents);
     expect(sum(Object.values(p.unresolvedBy).map((u) => u.amount))).toBe(moneyToCents(p.totals.unresolved));
     expect(p.shipments.ok).toBe(p.shipments.modeled + p.pricedButExcluded.shipments);
+    // The fee month buckets cover the same processing orders, and their expected shipping is the modeled shipping total.
+    expect(Object.values(p.fees.byMonth).reduce((n, m) => n + m.shippingExpectedE4, 0)).toBe(totalCents * 100);
   });
 
   it("is a pure fold: two batches equal one batch over the same orders and the input is untouched", () => {
@@ -289,6 +367,78 @@ describe("foldBatch: breakdowns over modeled orders", () => {
     expect(foldBatch(foldBatch(foldBatch(start(), [A]), [B, C, D]), [E, F])).toEqual(oneBatch);
     expect(base).toEqual(start());
     expect(twoBatches.dictionary).toBe(dictionary);
+    expect(twoBatches.feeDictionary).toBe(feeDictionary);
+  });
+});
+
+describe("foldBatch: fees of processing orders", () => {
+  it("starts with an empty fee section", () => {
+    expect(emptyPartial().version).toBe(2);
+    expect(emptyPartial().feeDictionary).toEqual([]);
+    expect(emptyPartial().fees).toEqual({ statusCounts: {}, processing: { orders: 0, definiteE4: 0, estimatedE4: 0 }, byRule: {}, byMonth: {}, warnings: {}, assumed: { units: 0, lines: 0, skus: 0, packaging: 0 } });
+  });
+
+  it("counts fee statuses over shipping-modeled orders only and folds the figures of ok and partial orders", () => {
+    const p = foldBatch(start(), [A, B, C, D, E, F, G, H]);
+    // C (unavailable shipment), D (cancelled) and E (excluded) are not shipping-modeled: their fee results count nowhere.
+    expect(p.fees.statusCounts).toEqual({ ok: 2, partial: 1, no_content: 1, no_schedule: 1 });
+    expect(p.fees.processing).toEqual({ orders: 3, definiteE4: 50000, estimatedE4: 7500 });
+    expect(p.fees.byRule.pick_order).toEqual({ ruleIds: ["r-pick"], name: "Order pick", category: "pick_pack", basis: "order", scope: "order", definiteE4: 45000, estimatedE4: 0, orders: 3, lines: 3, unresolvedOrders: 0, unresolvedBy: {}, replacedOrders: 0 });
+    expect(p.fees.byRule.pick_additional).toMatchObject({ ruleIds: ["r-addl"], definiteE4: 5000, estimatedE4: 0, orders: 1, lines: 1 });
+    expect(p.fees.byRule.inserts).toEqual({ ruleIds: ["r-ins"], name: "Inserts", category: "other", basis: "order_driver", scope: "order", definiteE4: 0, estimatedE4: 2500, orders: 1, lines: 1, unresolvedOrders: 1, unresolvedBy: { assumption_missing: 1 }, replacedOrders: 0 });
+    expect(p.fees.byRule.pack_box).toMatchObject({ definiteE4: 0, estimatedE4: 5000, orders: 1, lines: 1, unresolvedOrders: 0 });
+    expect(p.fees.byRule.pack_mailer).toEqual({ ruleIds: ["r-mailer"], name: "Mailer", category: "packaging", basis: "package", scope: "order", definiteE4: 0, estimatedE4: 0, orders: 0, lines: 0, unresolvedOrders: 0, unresolvedBy: {}, replacedOrders: 1 });
+    // G could not be priced at all: it is counted by status, and its unresolved rules are not "processing orders where the rule could not be computed".
+    expect(p.fees.byRule.handling_pct).toBeUndefined();
+    expect(p.fees.byMonth).toEqual({
+      "2026-03": { orders: 1, byRuleE4: { pick_order: 15000, pick_additional: 5000, inserts: 2500 }, shippingExpectedE4: 303000, unresolvedRuleKeys: [] },
+      "2026-04": { orders: 1, byRuleE4: { pick_order: 15000, pack_box: 5000 }, shippingExpectedE4: 950000, unresolvedRuleKeys: ["inserts"] },
+      unknown: { orders: 1, byRuleE4: { pick_order: 15000 }, shippingExpectedE4: 150000, unresolvedRuleKeys: [] },
+    });
+    expect(p.fees.warnings).toEqual({ packaging_defaulted: 1, fee_base_excludes_exposure: 1 });
+    expect(p.fees.assumed).toEqual({ units: 1, lines: 1, skus: 1, packaging: 1 });
+    // Processing totals reconcile with the per-rule and per-month figures.
+    const byRule = Object.values(p.fees.byRule).reduce((n, r) => n + r.definiteE4 + r.estimatedE4, 0);
+    const byMonth = Object.values(p.fees.byMonth).reduce((n, m) => n + Object.values(m.byRuleE4).reduce((a, b) => a + b, 0), 0);
+    expect(byRule).toBe(57500);
+    expect(byMonth).toBe(57500);
+  });
+
+  it("counts a rule once per order however many lines it produced, and keeps every rule id seen under the key", () => {
+    const twoVersions = order("V", [ship(1, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], { fees: fees("ok", { lines: [feeLine(PICK, 15000), feeLine(PICK_V2, 15000)] }) });
+    const p = foldBatch(start(), [twoVersions]);
+    expect(p.fees.byRule.pick_order).toMatchObject({ ruleIds: ["r-pick", "r-pick-v2"], definiteE4: 30000, orders: 1, lines: 2 });
+    expect(p.fees.byMonth["2026-03"]!.byRuleE4).toEqual({ pick_order: 30000 });
+  });
+
+  it("names an unresolved rule from the fee dictionary when it produced no line, and an unmatched packaging type from its key", () => {
+    const o = order("U", [ship(1, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], {
+      fees: fees("partial", {
+        lines: [feeLine(PICK, 15000)],
+        unresolved: [
+          { ruleKey: "pack_mailer", reason: "packaging_unknown" },
+          { ruleKey: "packaging:tube", reason: "packaging_unmatched" },
+          { ruleKey: "pack_mailer", reason: "packaging_unknown" },
+        ],
+      }),
+    });
+    const p = foldBatch(start(), [o]);
+    expect(p.fees.byRule.pack_mailer).toEqual({ ruleIds: ["r-mailer"], name: "Mailer", category: "packaging", basis: "package", scope: "order", definiteE4: 0, estimatedE4: 0, orders: 0, lines: 0, unresolvedOrders: 1, unresolvedBy: { packaging_unknown: 1 }, replacedOrders: 0 });
+    expect(p.fees.byRule["packaging:tube"]).toEqual({ ruleIds: [], name: "Packaging (tube)", category: "packaging", basis: "package", scope: "order", definiteE4: 0, estimatedE4: 0, orders: 0, lines: 0, unresolvedOrders: 1, unresolvedBy: { packaging_unmatched: 1 }, replacedOrders: 0 });
+    expect(p.fees.byMonth["2026-03"]!.unresolvedRuleKeys).toEqual(["pack_mailer", "packaging:tube"]);
+    const unknownRule = order("U2", [ship(1, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], { fees: fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: "mystery", reason: "units_unknown" }] }) });
+    expect(() => foldBatch(start(), [unknownRule])).toThrow(/not in the fee dictionary/);
+  });
+
+  it("counts a warning once per order and refuses fee results that do not add up", () => {
+    const o = order("W", [ship(1, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], { fees: fees("ok", { lines: [feeLine(PICK, 15000)], warnings: ["packaging_defaulted", "packaging_defaulted"] }) });
+    expect(foldBatch(start(), [o]).fees.warnings).toEqual({ packaging_defaulted: 1 });
+
+    const shipments = [ship(1, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))];
+    expect(() => foldBatch(start(), [order("bad", shipments, { fees: { ...fees("ok", { lines: [feeLine(PICK, 15000)] }), definiteE4: 14000 } })])).toThrow(/add up to/);
+    expect(() => foldBatch(start(), [order("bad", shipments, { fees: { ...fees("skipped"), lines: [feeLine(PICK, 15000)] } })])).toThrow(/carries fee lines/);
+    expect(() => foldBatch(start(), [order("bad", shipments, { fees: fees("ok", { lines: [feeLine(99, 15000)] }) })])).toThrow(/fee dictionary entry 99/);
+    expect(() => foldBatch(start(), [order("bad", shipments, { fees: fees("ok", { lines: [feeLine(PICK, 1.5)] }) })])).toThrow(/ten-thousandths/);
   });
 });
 
@@ -306,8 +456,10 @@ describe("weight brackets", () => {
 
 describe("finalizeSummary", () => {
   it("reports an empty run with null averages and 0% coverage, never a fabricated zero", () => {
-    const s = finalizeSummary(emptyPartial(), { rows: 0, orders: 0, shipments: 0, packages: 0 }, [], "2.2.0");
+    const s = finalizeSummary(emptyPartial(), { rows: 0, orders: 0, shipments: 0, packages: 0 }, [], "2.2.0", noFees());
+    expect(s.version).toBe(2);
     expect(s.engineVersion).toBe("2.2.0");
+    expect(s.feeEngineVersion).toBe("1.0.0");
     expect(s.modeled).toEqual({ orders: 0, shipments: 0, packages: 0 });
     expect(s.coverage).toEqual({ ordersPct: "0.0", shipmentsPct: "0.0" });
     expect(s.averages).toEqual({ expectedPerOrder: null, expectedPerShipment: null, expectedPerPackage: null, definitePerOrder: null });
@@ -320,11 +472,21 @@ describe("finalizeSummary", () => {
     expect(s.bySurcharge).toEqual([]);
     expect(s.warnings).toEqual([]);
     expect(s.dictionary).toEqual(createDictionary());
+    expect(s.feeDictionary).toEqual([]);
+    expect(s.fees.mode).toBe("no_schedule");
+    expect(s.fees.processing).toEqual({ orders: 0, definiteE4: 0, estimatedE4: 0, definite: "0.0000", estimated: "0.0000", expected: "0.0000", perOrder: null });
+    expect(s.processing).toEqual(s.fees.processing);
+    expect(s.monthly).toBeNull();
+    expect(s.minimums).toEqual([]);
+    expect(s.minimumStatus).toBe("none");
+    expect(s.allocation).toBeNull();
+    expect(s.provenance).toBeNull();
+    expect(s.period).toEqual(emptyPeriod);
   });
 
   it("rounds averages HALF_UP to cents and coverage and shares to one decimal, and sorts every table deterministically", () => {
     const p = foldBatch(start(), ALL);
-    const s = finalizeSummary(p, { rows: 12, orders: 6, shipments: 8, packages: 11 }, ["rule ups.peak@2: unreadable condition"], "2.2.0");
+    const s = finalizeSummary(p, { rows: 12, orders: 6, shipments: 8, packages: 11 }, ["rule ups.peak@2: unreadable condition"], "2.2.0", noFees());
     expect(s.imported).toEqual({ rows: 12, orders: 6, shipments: 8, packages: 11 });
     expect(s.modeled).toEqual({ orders: 3, shipments: 4, packages: 6 });
     expect(s.coverage).toEqual({ ordersPct: "50.0", shipmentsPct: "50.0" });
@@ -368,11 +530,27 @@ describe("finalizeSummary", () => {
     expect(s.assumptions).toEqual(p.assumptions);
     expect(s.dictionary).toEqual(dictionary);
     expect(s.dictionary).not.toBe(dictionary);
+    expect(s.feeDictionary).toEqual(feeDictionary);
+    expect(s.feeDictionary).not.toBe(feeDictionary);
+    // Fee tables: per rule by amount, warnings by orders, exact four-decimal dollars and a cents average.
+    expect(s.fees.byRule.map((r) => [r.key, r.definite, r.estimated])).toEqual([
+      ["pick_order", "4.5000", "0.0000"],
+      ["pack_box", "0.0000", "0.5000"],
+      ["pick_additional", "0.5000", "0.0000"],
+      ["inserts", "0.0000", "0.2500"],
+      ["pack_mailer", "0.0000", "0.0000"],
+    ]);
+    expect(s.fees.processing).toEqual({ orders: 3, definiteE4: 50000, estimatedE4: 7500, definite: "5.0000", estimated: "0.7500", expected: "5.7500", perOrder: "1.92" });
+    expect(s.fees.warnings).toEqual([
+      { code: "fee_base_excludes_exposure", orders: 1 },
+      { code: "packaging_defaulted", orders: 1 },
+    ]);
+    expect(s.fees.statusCounts).toEqual({ ok: 2, partial: 1 });
   });
 
   it("lists orders the fold never saw (nothing to ship) as excluded, so modeled plus excluded reconciles to imported", () => {
     const p = foldBatch(start(), ALL);
-    const s = finalizeSummary(p, { rows: 14, orders: 8, shipments: 8, packages: 11 }, [], "2.2.0");
+    const s = finalizeSummary(p, { rows: 14, orders: 8, shipments: 8, packages: 11 }, [], "2.2.0", noFees());
     const excluded = s.exclusions.reduce((n, e) => n + e.orders, 0);
     expect(s.modeled.orders + excluded).toBe(8);
     expect(s.exclusions.find((e) => e.reason === "nothing_to_ship")).toEqual({ reason: "nothing_to_ship", orders: 2, shipments: 0, ordersPct: "25.0" });
@@ -381,7 +559,7 @@ describe("finalizeSummary", () => {
 
   it("rounds one-decimal percentages HALF_UP", () => {
     const p = foldBatch(start(), [A, C, D]);
-    const s = finalizeSummary(p, { rows: 3, orders: 3, shipments: 4, packages: 4 }, [], "2.2.0");
+    const s = finalizeSummary(p, { rows: 3, orders: 3, shipments: 4, packages: 4 }, [], "2.2.0", noFees());
     expect(s.coverage).toEqual({ ordersPct: "33.3", shipmentsPct: "50.0" });
     expect(s.exclusions.map((e) => e.ordersPct)).toEqual(["33.3", "33.3"]);
   });

@@ -1,6 +1,7 @@
+import type { FeeBasis, FeeCategory, FeeRule, FeeScope, OrderFeeResult } from "../fees/types";
 import { dec } from "../money";
 import type { ChargeClass, ChargeLine, DecimalString, LineStatus, RuleReference, ShipmentCalculation, SurchargeCategory } from "../types";
-import type { CompactLine, CompactLineClass, CompactLineStatus, CompactResult, LineDictionaryEntry } from "./types";
+import type { CompactFeeLine, CompactLine, CompactLineClass, CompactLineStatus, CompactResult, FeeDictionaryEntry, FeeStatus, FoldOrderFees, LineDictionaryEntry } from "./types";
 
 /**
  * Dictionary encoding of engine results for bulk runs. A run stores roughly 300 bytes per shipment:
@@ -125,4 +126,68 @@ export function decodeLines(lines: CompactLine[], dictionary: LineDictionaryEntr
       packageIndex,
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Fees (Milestone 4): one dictionary per run keyed by rule id, lines as [index, amountE4, class]
+// ---------------------------------------------------------------------------
+
+/** What identifies a fee rule in the dictionary: the database id plus the customer-visible fields the fold reports by. */
+export interface FeeRuleIdentity {
+  id: string;
+  key: string;
+  name: string;
+  category: FeeCategory;
+  basis: FeeBasis;
+  scope: FeeScope;
+}
+
+/**
+ * The index of a rule in the run's fee dictionary, appending it on first sight. Entries are keyed by
+ * rule id, so the same key priced under two versions (ship-date basis) gets two entries and the fold
+ * reports both ids under one key. The dictionary is the run's live array and is mutated in place.
+ */
+export function feeDictionaryIndex(feeDictionary: FeeDictionaryEntry[], rule: FeeRuleIdentity): number {
+  const existing = feeDictionary.findIndex((e) => e.ruleId === rule.id);
+  if (existing >= 0) return existing;
+  feeDictionary.push({ ruleId: rule.id, key: rule.key, name: rule.name, category: rule.category, basis: rule.basis, scope: rule.scope });
+  return feeDictionary.length - 1;
+}
+
+/**
+ * Compacts one order's fee result. Every rule that produced a line or was left unresolved gets a
+ * dictionary entry, so the fold can name an unresolved rule even when it never produced a line.
+ * Unresolved entries that are not rules (`packaging:<type>`, a packaging type no rule prices) stay
+ * as they are; the fold names those from the key.
+ */
+export function encodeOrderFees(result: OrderFeeResult, rulesByKey: ReadonlyMap<string, FeeRule>, feeDictionary: FeeDictionaryEntry[], status: FeeStatus = result.status, assumed: FoldOrderFees["assumed"] = {}): FoldOrderFees {
+  const identity = (key: string): FeeRuleIdentity | null => {
+    const rule = rulesByKey.get(key);
+    if (!rule) return null;
+    if (!rule.id) throw new RangeError(`fee rule "${key}" has no id and cannot be encoded`);
+    return { id: rule.id, key: rule.key, name: rule.name, category: rule.category, basis: rule.basis, scope: rule.scope };
+  };
+  const lines: CompactFeeLine[] = result.lines.map((line) => {
+    const rule = identity(line.ruleKey);
+    if (!rule) throw new RangeError(`fee line "${line.ruleKey}" names a rule that is not in the schedule`);
+    return [feeDictionaryIndex(feeDictionary, rule), line.amountE4, line.chargeClass === "definite" ? "d" : "e"];
+  });
+  for (const u of result.unresolved) {
+    const rule = identity(u.ruleKey);
+    if (rule) feeDictionaryIndex(feeDictionary, rule);
+  }
+  const flags: FoldOrderFees["assumed"] = {};
+  if (assumed.units) flags.units = true;
+  if (assumed.lines) flags.lines = true;
+  if (assumed.skus) flags.skus = true;
+  if (assumed.packaging) flags.packaging = true;
+  return {
+    status,
+    lines,
+    unresolved: result.unresolved.map((u) => ({ ruleKey: u.ruleKey, reason: u.reason, ...(u.replacedBy ? { replacedBy: u.replacedBy } : {}) })),
+    warnings: [...new Set(result.warnings)].sort(),
+    definiteE4: result.definiteE4,
+    estimatedE4: result.estimatedE4,
+    assumed: flags,
+  };
 }

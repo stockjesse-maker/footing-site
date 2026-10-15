@@ -1,0 +1,346 @@
+{
+  "_comment": "FICTIONAL forecast-from-assumptions golden input: ONE grid of 2 parcels x 2 zones x 1 service x residential 0% x single package on fee schedule 'standard'. Priced against the fixture rate card in tests/fixtures/pricing (load with loadFixtureRateCard(); effective 2026-01-01, no expiration; fuel v2 15.50% in force on asOfDate). Expected results are in expected.json, derived by hand from RULES.md and the fixtures, independent of src/engine/forecast. 'schedule' is a verbatim copy of schedules.json -> standard.",
+  "_sources": {
+    "scenarioIds": [
+      "zone_entered_directly",
+      "ground_minimum_charge"
+    ],
+    "rateCard": "tests/fixtures/pricing/fixture-rate-card.csv + fixture-service-terms.json + fixture-rules.json (UPS Ground, ups/ground terms)",
+    "feeSchedule": "tests/fixtures/fees/schedules.json -> standard (copied into 'schedule'); rules in tests/fixtures/fees/RULES.md sections A-D",
+    "cells": {
+      "parcel1|zone1 (10 lb 12x12x12, zone 7)": "EXACT match of pricing scenario zone_entered_directly (zone entered directly, no ZIP, commercial, one package, UPS Ground): 22.20 (pricing/expected.json totals.expected).",
+      "parcel0|zone0 (1 lb 6x4x2, zone 2)": "Same parcel, zone, service and counted lines as pricing scenario ground_minimum_charge (9.82). That scenario reaches zone 2 through ZIP 90210; here the zone is entered directly, so DAS / extended DAS become 'undecidable, estimated, uncounted' exactly as in zone_entered_directly and the counted total is unchanged.",
+      "parcel0|zone1 (1 lb 6x4x2, zone 7)": "No scenario covers this combination: computed by hand from rate-card rows + ups/ground service terms exactly like the _working notes of pricing/expected.json (procedure validated by reproducing 9.82 and 22.20).",
+      "parcel1|zone0 (10 lb 12x12x12, zone 2)": "No scenario covers this combination: computed by hand as above."
+    }
+  },
+  "schedule": {
+    "scheduleId": "sched-standard",
+    "name": "Fictional Standard Fulfillment 2026",
+    "versionId": "sched-standard-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "invoice_line",
+    "rules": [
+      {
+        "key": "pick_order",
+        "name": "Pick & pack, per order",
+        "category": "pick_pack",
+        "scope": "order",
+        "basis": "order",
+        "method": "flat",
+        "amount": "2.5000",
+        "percent": null,
+        "position": 1
+      },
+      {
+        "key": "pick_additional",
+        "name": "Each additional item",
+        "category": "pick_pack",
+        "scope": "order",
+        "basis": "unit",
+        "method": "flat",
+        "amount": "0.5000",
+        "percent": null,
+        "includedQuantity": "1",
+        "includedPer": "order",
+        "position": 2
+      },
+      {
+        "key": "pack_mailer",
+        "name": "Poly mailer",
+        "category": "packaging",
+        "scope": "order",
+        "basis": "package",
+        "method": "flat",
+        "amount": "0.3000",
+        "percent": null,
+        "conditions": {
+          "packagingTypes": [
+            "poly mailer"
+          ]
+        },
+        "exclusiveGroup": "packaging",
+        "priority": 1,
+        "position": 3
+      },
+      {
+        "key": "pack_box",
+        "name": "Box",
+        "category": "packaging",
+        "scope": "order",
+        "basis": "package",
+        "method": "flat",
+        "amount": "0.8500",
+        "percent": null,
+        "conditions": {
+          "packagingTypes": [
+            "box",
+            "carton"
+          ]
+        },
+        "exclusiveGroup": "packaging",
+        "priority": 2,
+        "position": 4
+      },
+      {
+        "key": "pack_other",
+        "name": "Other packaging",
+        "category": "packaging",
+        "scope": "order",
+        "basis": "package",
+        "method": "flat",
+        "amount": "0.6000",
+        "percent": null,
+        "conditions": {
+          "packagingTypes": [
+            "*"
+          ]
+        },
+        "exclusiveGroup": "packaging",
+        "priority": 9,
+        "position": 5
+      },
+      {
+        "key": "inserts",
+        "name": "Marketing inserts",
+        "category": "other",
+        "scope": "order",
+        "basis": "order_driver",
+        "method": "flat",
+        "amount": "0.2500",
+        "percent": null,
+        "includedQuantity": "1",
+        "includedPer": "order",
+        "driver": {
+          "key": "inserts",
+          "label": "Orders that get marketing inserts",
+          "unit": "inserts",
+          "kind": "order_share"
+        },
+        "position": 6
+      },
+      {
+        "key": "handling_pct",
+        "name": "Shipping handling",
+        "category": "other",
+        "scope": "order",
+        "basis": "shipping_percent",
+        "method": "percent",
+        "amount": null,
+        "percent": "5.0000",
+        "percentBase": "shipping_total",
+        "position": 7
+      },
+      {
+        "key": "storage_pallet",
+        "name": "Pallet storage",
+        "category": "storage",
+        "scope": "monthly",
+        "basis": "driver",
+        "method": "flat",
+        "amount": "15.0000",
+        "percent": null,
+        "driver": {
+          "key": "pallets_stored",
+          "label": "Pallets of your products stored, on average",
+          "unit": "pallets",
+          "kind": "monthly_quantity"
+        },
+        "position": 8
+      },
+      {
+        "key": "storage_long_term",
+        "name": "Long-term pallet storage (over 180 days)",
+        "category": "storage",
+        "scope": "monthly",
+        "basis": "driver",
+        "method": "flat",
+        "amount": "22.0000",
+        "percent": null,
+        "driver": {
+          "key": "long_term_pallets",
+          "label": "Of those, pallets held longer than 180 days",
+          "unit": "pallets",
+          "kind": "monthly_quantity",
+          "longTerm": {
+            "mode": "replace",
+            "replacesRuleKey": "storage_pallet",
+            "thresholdDays": 180
+          }
+        },
+        "position": 9
+      },
+      {
+        "key": "receiving_pallet",
+        "name": "Pallet receiving",
+        "category": "receiving",
+        "scope": "monthly",
+        "basis": "driver",
+        "method": "flat",
+        "amount": "12.0000",
+        "percent": null,
+        "driver": {
+          "key": "pallets_received",
+          "label": "Pallets you send in each month",
+          "unit": "pallets",
+          "kind": "monthly_quantity"
+        },
+        "position": 10
+      },
+      {
+        "key": "receiving_case",
+        "name": "Loose carton receiving",
+        "category": "receiving",
+        "scope": "monthly",
+        "basis": "driver",
+        "method": "flat",
+        "amount": "0.3500",
+        "percent": null,
+        "driver": {
+          "key": "cases_received",
+          "label": "Loose cartons (not on pallets) you send in each month",
+          "unit": "cartons",
+          "kind": "monthly_quantity"
+        },
+        "position": 11
+      },
+      {
+        "key": "returns",
+        "name": "Returns processing",
+        "category": "returns",
+        "scope": "monthly",
+        "basis": "driver",
+        "method": "flat",
+        "amount": "3.0000",
+        "percent": null,
+        "driver": {
+          "key": "returns_rate",
+          "label": "Out of every 100 orders, how many come back?",
+          "unit": "returns",
+          "kind": "returns_rate"
+        },
+        "position": 12
+      },
+      {
+        "key": "admin",
+        "name": "Account administration",
+        "category": "account",
+        "scope": "monthly",
+        "basis": "month",
+        "method": "flat",
+        "amount": "99.0000",
+        "percent": null,
+        "position": 13
+      },
+      {
+        "key": "minimum",
+        "name": "Monthly account minimum",
+        "category": "account",
+        "scope": "monthly",
+        "basis": "minimum",
+        "method": "minimum",
+        "amount": "500.0000",
+        "percent": null,
+        "minimum": {
+          "amount": "500.0000",
+          "appliesTo": {
+            "categories": [
+              "pick_pack",
+              "packaging",
+              "storage",
+              "receiving"
+            ],
+            "includeRuleKeys": [],
+            "excludeRuleKeys": []
+          },
+          "includesShipping": false
+        },
+        "resolvedRuleKeys": [
+          "pick_order",
+          "pick_additional",
+          "pack_mailer",
+          "pack_box",
+          "pack_other",
+          "storage_pallet",
+          "storage_long_term",
+          "receiving_pallet",
+          "receiving_case"
+        ],
+        "position": 14
+      }
+    ]
+  },
+  "assumptions": {
+    "monthlyOrders": 1000,
+    "asOfDate": "2026-10-15",
+    "originZip": "90001",
+    "parcels": [
+      {
+        "weightLb": "1",
+        "lengthIn": "6",
+        "widthIn": "4",
+        "heightIn": "2",
+        "packagingType": "poly mailer",
+        "sharePct": "60.00"
+      },
+      {
+        "weightLb": "10",
+        "lengthIn": "12",
+        "widthIn": "12",
+        "heightIn": "12",
+        "packagingType": "box",
+        "sharePct": "40.00"
+      }
+    ],
+    "zones": [
+      {
+        "zone": "2",
+        "sharePct": "70.00"
+      },
+      {
+        "zone": "7",
+        "sharePct": "30.00"
+      }
+    ],
+    "services": [
+      {
+        "serviceId": "svc-ups-ground",
+        "sharePct": "100.00"
+      }
+    ],
+    "residentialPct": "0.00",
+    "multiPackage": {
+      "pct": "0.00",
+      "packagesPerOrder": 2
+    },
+    "content": [
+      {
+        "units": 1,
+        "lines": 1,
+        "sharePct": "60.00"
+      },
+      {
+        "units": 3,
+        "lines": 2,
+        "sharePct": "40.00"
+      }
+    ],
+    "fulfillment": {
+      "drivers": {
+        "pallets_stored": "10",
+        "long_term_pallets": "2",
+        "pallets_received": "4",
+        "cases_received": "200",
+        "returns_rate": "3.50"
+      },
+      "orderShares": {
+        "inserts": {
+          "sharePct": "40.00",
+          "countPerOrder": 4
+        }
+      }
+    }
+  }
+}

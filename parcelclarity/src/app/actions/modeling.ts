@@ -11,7 +11,7 @@ import { getContext, requireUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/permissions";
 import { fieldErrors, uuidSchema } from "@/lib/auth/validation";
 import { ORDER_FILE_LIMITS, ParseError, detectFileKind, parseTables, type Table } from "@/lib/import/parse-table";
-import { BatchRetryError, priceBatchCore, createBatchCaches, type ProjectRecord, type RunProgress, type RunRecord } from "@/lib/modeling/run";
+import { BatchRetryError, RpcError, priceBatchCore, createBatchCaches, type ProjectRecord, type RunProgress, type RunRecord } from "@/lib/modeling/run";
 import { decimalText, weightToLb } from "@/lib/orders/cells";
 import { detectOrderFile } from "@/lib/orders/mapping";
 import { orderMappingSchema, runSettingsSchema } from "@/lib/orders/mapping-schema";
@@ -382,7 +382,9 @@ export async function advanceRun(runId: string, brandId?: string): Promise<Advan
   if (!(await withinRateLimit(supabase, "modeling.batch", 3000, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE, retryable: true };
   const { data: run } = await supabase
     .from("simulation_runs")
-    .select("id, tenant_id, brand_id, project_id, kind, status, pricing_basis, as_of_date, service_override_id, unmapped_policy, assumptions, total_shipments, processed_shipments, next_row_no, partial_summary")
+    .select(
+      "id, tenant_id, brand_id, project_id, kind, status, pricing_basis, as_of_date, service_override_id, unmapped_policy, assumptions, total_shipments, processed_shipments, next_row_no, partial_summary, fee_schedule_id, monthly_fee_schedule_version_id, fee_rates, forecast_from, forecast_to, forecast_days, forecast_months, month_profile, population_orders, period_orders, undated_orders, volume_basis, monthly_orders, monthly_units",
+    )
     .eq("id", runId)
     .maybeSingle();
   if (!run || run.brand_id !== m.brandId || run.tenant_id !== m.tenantId) return { ok: false, message: "Run not found.", retryable: false };
@@ -396,14 +398,28 @@ export async function advanceRun(runId: string, brandId?: string): Promise<Advan
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";
     // A load that failed (an outage, a timeout) is retried. Authorization problems, data the functions
-    // refuse and deterministic engine errors cannot be retried into success and fail the run honestly.
+    // refuse (SQLSTATE class "PC": invalid input, a stale partial summary, a summary that does not
+    // reconcile) and deterministic engine errors cannot be retried into success and fail the run honestly.
     if (err instanceof BatchRetryError) return { ok: false, message: "The run paused; it will resume automatically.", retryable: true };
+    const code = err instanceof RpcError ? err.code : null;
     const cardGone = /unavailable \(rate_card_not_found\)/.test(message);
-    const permanent = cardGone || err instanceof RangeError || /does not start at the cursor|needs \d+ results|does not belong to this run|does not cover the window|does not reconcile|run not found/.test(message);
+    const stale = code === "PC002" || /older release of the modeling engine/.test(message);
+    const permanent =
+      cardGone ||
+      stale ||
+      err instanceof RangeError ||
+      (code !== null && code.startsWith("PC")) ||
+      /does not start at the cursor|needs \d+ results|does not belong to this run|does not cover the window|does not reconcile|run not found|fee schedule version not found|customer not found/.test(message);
     if (permanent) await supabase.rpc("fail_simulation_run", { p_run: runId, p_error: message.slice(0, 500) });
     return {
       ok: false,
-      message: cardGone ? "The run could not continue: the rate card is no longer available to this customer." : permanent ? "The run could not continue because of an internal error; nothing from it is shown as a result." : "The run paused; it will resume automatically.",
+      message: cardGone
+        ? "The run could not continue: the rate card is no longer available to this customer."
+        : stale
+          ? "This run was started by an older release; start it again."
+          : permanent
+            ? "The run could not continue because of an internal error; nothing from it is shown as a result."
+            : "The run paused; it will resume automatically.",
       retryable: !permanent,
     };
   }

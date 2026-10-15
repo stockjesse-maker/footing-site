@@ -1,3 +1,4 @@
+import type { FeeUnresolvedReason } from "../fees/types";
 import { dec, type Dec } from "../money";
 import type { DecimalString, SurchargeCategory } from "../types";
 import { createDictionary } from "./encode";
@@ -7,6 +8,10 @@ import {
   type CompactLineClass,
   type CompactResult,
   type CountBucket,
+  type FeeDictionaryEntry,
+  type FeeMonthPartial,
+  type FeePartial,
+  type FeeRulePartial,
   type FoldOrder,
   type FoldShipment,
   type LineDictionaryEntry,
@@ -19,8 +24,8 @@ import {
 
 /**
  * Folds priced orders into the running `PartialSummary` (spec §2, §9). Pure: the partial given is
- * never mutated; the result is a new object that shares only the dictionary with it (the batch core
- * appends to that array through `encodeResult`, and the fold only reads it).
+ * never mutated; the result is a new object that shares only the two dictionaries with it (the batch
+ * core appends to those arrays through `encodeResult` / `encodeOrderFees`, and the fold only reads them).
  *
  * Counting rules: an order is modeled when it is not cancelled and every one of its shipments priced
  * `ok`. Totals and every breakdown cover modeled orders only. An order that is not modeled is listed
@@ -29,6 +34,11 @@ import {
  * nothing that was priced disappears from the report. Inconsistent input (a shipment neither priced
  * nor excluded, a line pointing at a package or dictionary entry that does not exist) throws instead
  * of being skipped: a run must fail loudly rather than report a number that is wrong.
+ *
+ * Fees (Milestone 4): the fee status of every shipping-modeled order is counted; an order whose fees
+ * priced `ok` or `partial` is a "processing order" and its fee lines, unresolved rules, month bucket,
+ * warnings and assumptions are folded. Orders that are not shipping-modeled contribute nothing to the
+ * fee figures, so "shipping + order fees" is always over one population.
  */
 
 const ZERO: DecimalString = "0.00";
@@ -38,8 +48,10 @@ export const WEIGHT_BRACKET_LABELS: readonly WeightBracketLabel[] = ["≤1 lb", 
 
 export function emptyPartial(): PartialSummary {
   return {
-    version: 1,
+    version: 2,
     dictionary: createDictionary(),
+    feeDictionary: [],
+    fees: emptyFees(),
     orders: { seen: 0, modeled: 0, cancelled: 0 },
     shipments: { seen: 0, ok: 0, unavailable: 0, excludedBeforePricing: 0, modeled: 0 },
     packages: { seen: 0, modeled: 0 },
@@ -67,16 +79,28 @@ export function weightBracket(billableLb: DecimalString): WeightBracketLabel {
   return index >= 0 ? WEIGHT_BRACKET_LABELS[index]! : ">150 lb";
 }
 
+function emptyFees(): FeePartial {
+  return {
+    statusCounts: {},
+    processing: { orders: 0, definiteE4: 0, estimatedE4: 0 },
+    byRule: {},
+    byMonth: {},
+    warnings: {},
+    assumed: { units: 0, lines: 0, skus: 0, packaging: 0 },
+  };
+}
+
 export function foldBatch(partial: PartialSummary, orders: FoldOrder[]): PartialSummary {
+  if (partial.version !== 2) throw new RangeError(`partial summary version ${String((partial as { version: unknown }).version)} is not supported; the run must be started again`);
   const next = cloneForFold(partial);
   for (const order of orders) foldOrder(next, order);
   return next;
 }
 
-/** Copies everything the fold writes to. The dictionary is shared, not copied: it is the run's live array and the fold never changes it. */
+/** Copies everything the fold writes to. The dictionaries are shared, not copied: they are the run's live arrays and the fold never changes them. */
 function cloneForFold(partial: PartialSummary): PartialSummary {
-  const { dictionary, ...rest } = partial;
-  return { ...structuredClone(rest), dictionary };
+  const { dictionary, feeDictionary, ...rest } = partial;
+  return { ...structuredClone(rest), dictionary, feeDictionary };
 }
 
 type ShipmentState =
@@ -141,7 +165,112 @@ function foldOrder(p: PartialSummary, order: FoldOrder): void {
   p.orders.modeled += 1;
   const month = monthOf(order.orderDate);
   const buckets: OrderBuckets = { zones: new Set(), services: new Set(), months: new Set(), brackets: new Set() };
-  for (const s of states) if (s.kind === "ok") foldModeledShipment(p, s.shipment, s.result, month, buckets);
+  let shippingExpectedCents = 0;
+  for (const s of states) {
+    if (s.kind !== "ok") continue;
+    foldModeledShipment(p, s.shipment, s.result, month, buckets);
+    shippingExpectedCents += moneyCents(s.result.expected, s.shipment.rowNo);
+  }
+  foldOrderFees(p, order, shippingExpectedCents);
+}
+
+// ---------------------------------------------------------------------------
+// Fees
+// ---------------------------------------------------------------------------
+
+/** Folds the fee result of a shipping-modeled order. Only `ok` and `partial` results carry figures; the other statuses are counted and nothing else. */
+function foldOrderFees(p: PartialSummary, order: FoldOrder, shippingExpectedCents: number): void {
+  const fees = order.fees;
+  const f = p.fees;
+  f.statusCounts[fees.status] = (f.statusCounts[fees.status] ?? 0) + 1;
+  if (fees.status !== "ok" && fees.status !== "partial") {
+    if (fees.lines.length || fees.definiteE4 !== 0 || fees.estimatedE4 !== 0) throw new RangeError(`order ${order.orderKey}: fee status ${fees.status} but carries fee lines`);
+    return;
+  }
+
+  let definite = 0;
+  let estimated = 0;
+  for (const [, amountE4, cls] of fees.lines) {
+    if (!Number.isSafeInteger(amountE4) || amountE4 < 0) throw new RangeError(`order ${order.orderKey}: fee line amount ${amountE4} is not a whole non-negative number of ten-thousandths`);
+    if (cls === "d") definite += amountE4;
+    else estimated += amountE4;
+  }
+  if (definite !== fees.definiteE4 || estimated !== fees.estimatedE4) {
+    throw new RangeError(`order ${order.orderKey}: fee lines add up to ${definite} definite and ${estimated} estimated, but the order says ${fees.definiteE4} and ${fees.estimatedE4}`);
+  }
+
+  f.processing.orders += 1;
+  f.processing.definiteE4 += fees.definiteE4;
+  f.processing.estimatedE4 += fees.estimatedE4;
+
+  const month = touch(f.byMonth, order.orderMonth ?? "unknown", emptyFeeMonth);
+  month.orders += 1;
+  month.shippingExpectedE4 += shippingExpectedCents * 100;
+
+  const countedRules = new Set<string>();
+  for (const [index, amountE4, cls] of fees.lines) {
+    const entry = p.feeDictionary[index];
+    if (!entry) throw new RangeError(`order ${order.orderKey}: a fee line refers to fee dictionary entry ${index}, which does not exist`);
+    const bucket = touch(f.byRule, entry.key, () => emptyFeeRule(entry));
+    if (!bucket.ruleIds.includes(entry.ruleId)) bucket.ruleIds = [...bucket.ruleIds, entry.ruleId];
+    if (cls === "d") bucket.definiteE4 += amountE4;
+    else bucket.estimatedE4 += amountE4;
+    bucket.lines += 1;
+    if (firstTime(countedRules, entry.key)) bucket.orders += 1;
+    month.byRuleE4[entry.key] = (month.byRuleE4[entry.key] ?? 0) + amountE4;
+  }
+
+  const seenUnresolved = new Set<string>();
+  for (const u of fees.unresolved) {
+    if (!firstTime(seenUnresolved, u.ruleKey)) continue;
+    const named = feeEntryFor(p.feeDictionary, u.ruleKey, u.reason, order.orderKey);
+    const bucket = touch(f.byRule, u.ruleKey, () => emptyFeeRule(named.entry));
+    if (named.ruleId !== null && !bucket.ruleIds.includes(named.ruleId)) bucket.ruleIds = [...bucket.ruleIds, named.ruleId];
+    if (u.reason === "replaced") {
+      bucket.replacedOrders += 1;
+      continue;
+    }
+    bucket.unresolvedOrders += 1;
+    bucket.unresolvedBy[u.reason] = (bucket.unresolvedBy[u.reason] ?? 0) + 1;
+    if (!month.unresolvedRuleKeys.includes(u.ruleKey)) month.unresolvedRuleKeys = [...month.unresolvedRuleKeys, u.ruleKey];
+  }
+
+  for (const code of new Set(fees.warnings)) f.warnings[code] = (f.warnings[code] ?? 0) + 1;
+  if (fees.assumed.units) f.assumed.units += 1;
+  if (fees.assumed.lines) f.assumed.lines += 1;
+  if (fees.assumed.skus) f.assumed.skus += 1;
+  if (fees.assumed.packaging) f.assumed.packaging += 1;
+}
+
+type NamedFeeEntry = Pick<FeeDictionaryEntry, "key" | "name" | "category" | "basis" | "scope">;
+
+/**
+ * What an unresolved key stands for. Rules are named from the fee dictionary (the batch core adds every
+ * unresolved rule to it); `packaging:<type>` entries are not rules but a packaging type no rule prices,
+ * and are named from the key. Anything else is inconsistent input.
+ */
+function feeEntryFor(feeDictionary: FeeDictionaryEntry[], key: string, reason: FeeUnresolvedReason, orderKey: string): { entry: NamedFeeEntry; ruleId: string | null } {
+  const entry = feeDictionary.find((e) => e.key === key);
+  if (entry) return { entry, ruleId: entry.ruleId };
+  if (reason === "packaging_unmatched" && key.startsWith("packaging:")) {
+    return { entry: { key, name: `Packaging (${key.slice("packaging:".length)})`, category: "packaging", basis: "package", scope: "order" }, ruleId: null };
+  }
+  throw new RangeError(`order ${orderKey}: unresolved fee rule "${key}" is not in the fee dictionary`);
+}
+
+function emptyFeeRule(entry: NamedFeeEntry): FeeRulePartial {
+  return { ruleIds: [], name: entry.name, category: entry.category, basis: entry.basis, scope: entry.scope, definiteE4: 0, estimatedE4: 0, orders: 0, lines: 0, unresolvedOrders: 0, unresolvedBy: {}, replacedOrders: 0 };
+}
+
+function emptyFeeMonth(): FeeMonthPartial {
+  return { orders: 0, byRuleE4: {}, shippingExpectedE4: 0, unresolvedRuleKeys: [] };
+}
+
+/** Exact integer cents of an engine amount; a fraction of a cent here is a bug in the input, not a value to round. */
+function moneyCents(amount: DecimalString, rowNo: number): number {
+  const cents = dec(amount).times(100);
+  if (!cents.isInteger()) throw new RangeError(`row ${rowNo}: amount "${amount}" is not a whole number of cents`);
+  return cents.toNumber();
 }
 
 function foldModeledShipment(p: PartialSummary, shipment: FoldShipment, result: CompactResult, month: string, order: OrderBuckets): void {

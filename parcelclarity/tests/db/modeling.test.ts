@@ -90,6 +90,24 @@ const result = (shipment: { id: string; order_id: string; row_no: number }, stat
   warning_codes: [],
 });
 
+/** A v2 partial summary that has folded a window ending at `seen`. */
+const partial = (seen: number, extra: Record<string, unknown> = {}) => JSON.stringify({ version: 2, shipments: { seen }, ...extra });
+/** What the database derives for each sample order from the file: first row, content and counts. */
+const ORDER_FACTS: Record<string, { first_row_no: number; units: number; lines: number; distinct_skus: number; packages: number; shipments: number }> = {
+  "O-1": { first_row_no: 1, units: 2, lines: 1, distinct_skus: 1, packages: 1, shipments: 1 },
+  "O-2": { first_row_no: 2, units: 1, lines: 1, distinct_skus: 1, packages: 2, shipments: 2 },
+  "O-3": { first_row_no: 4, units: 3, lines: 2, distinct_skus: 2, packages: 2, shipments: 1 },
+};
+/** Fee results for a brand without a fee schedule (nothing priced) or for a run that skipped fulfillment costs (feeDate null). */
+const feeResults = (orders: Record<string, string>, exts: string[], feeDate: string | null) =>
+  exts.map((ext) => ({ order_id: orders[ext], ...ORDER_FACTS[ext], order_month: "2026-03", fee_date: feeDate, fee_schedule_version_id: null, assumed: {}, fee_status: feeDate ? "no_schedule" : "skipped", processing_definite: 0, processing_estimated: 0, fee_lines: [], unresolved: [], warning_codes: [] }));
+const feeContexts = (feeDate: string | null) => (feeDate ? [{ fee_date: feeDate, fee_schedule_version_id: null, unavailable_reason: "no_schedule" }] : []);
+const noFees = { processing: { orders: 0, definite: "0.0000", estimated: "0.0000" } };
+async function orderIds(userId: string, datasetId: string): Promise<Record<string, string>> {
+  const rows = await asUser<{ id: string; ext: string }>(userId, "select id, external_order_id as ext from public.orders where dataset_id = $1", [datasetId]);
+  return Object.fromEntries(rows.map((r) => [r.ext, r.id]));
+}
+
 beforeAll(async () => {
   w = await buildWorld();
   [{ id: upsGround }] = (await sql<{ id: string }>("select id from public.shipping_services where carrier_code = 'ups' and code = 'ground'")) as [{ id: string }];
@@ -207,11 +225,13 @@ describe("scenarios and runs", () => {
   let projectId: string;
   let runId: string;
   let shipments: { id: string; order_id: string; row_no: number }[];
+  let orders: Record<string, string>;
 
   beforeAll(async () => {
     datasetId = await createDataset(w.brandA.admin.id, w.t1.id, w.brandA.id, fileA, "Run me");
     await materialise(w.brandA.admin.id, datasetId, sampleRows(upsGround));
     shipments = await asUser<{ id: string; order_id: string; row_no: number }>(w.brandA.admin.id, "select id, order_id, row_no from public.shipments where dataset_id = $1 order by row_no", [datasetId]);
+    orders = await orderIds(w.brandA.admin.id, datasetId);
   });
 
   it("a scenario needs an assigned rate card and a ready dataset of the same brand", async () => {
@@ -257,46 +277,62 @@ describe("scenarios and runs", () => {
   it("windows are committed in order, idempotently, and results are never written directly", async () => {
     const [s1, s2a, s2b, s3] = shipments as [typeof shipments[number], typeof shipments[number], typeof shipments[number], typeof shipments[number]];
     await expectDenied(asUser(w.brandA.admin.id, "insert into public.simulation_results (run_id, tenant_id, brand_id, shipment_id, order_id, row_no, status) values ($1, $2, $3, $4, $5, 1, 'ok')", [runId, w.t1.id, w.brandA.id, s1.id, s1.order_id]), /permission denied/);
+    // Brand A has no fee schedule: every order result says so, under one fee context for the as-of date.
+    const fees1 = JSON.stringify(feeResults(orders, ["O-1", "O-2"], "2026-03-01"));
+    const feeCtx = JSON.stringify(feeContexts("2026-03-01"));
+    const adv = (from: number, to: number, results: string, p: string, contexts: string, fees = fees1) =>
+      asUser<{ r: { applied: boolean; nextRow: number; processed: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb) as r", [runId, from, to, results, p, contexts, fees, feeCtx]);
     // A window that does not start at the cursor, or with the wrong number of results, is refused.
-    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 2, 3, $2::jsonb, '{}', '[]')", [runId, JSON.stringify([result(s2a, "ok", "9.60"), result(s2b, "ok", "9.60")])]), /does not start at the cursor/);
-    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"shipments\": {\"seen\": 3}}', '[]')", [runId, JSON.stringify([result(s1, "ok", "9.60")])]), /needs 3 results/);
+    await expectDenied(adv(2, 3, JSON.stringify([result(s2a, "ok", "9.60"), result(s2b, "ok", "9.60")]), "{}", "[]"), /does not start at the cursor/);
+    await expectDenied(adv(1, 3, JSON.stringify([result(s1, "ok", "9.60")]), partial(3), "[]"), /needs 3 results/);
+    // A partial from an older engine release is refused before anything is written.
+    await expectDenied(adv(1, 3, JSON.stringify([result(s1, "ok", "9.60")]), JSON.stringify({ shipments: { seen: 3 } }), "[]"), /older release of the modeling engine/);
     const contexts = JSON.stringify([{ ship_date: "2026-03-01", rate_card_version_id: versionId, rule_version_ids: [], zip_list_ids: [], override_ids: [], load_issues: [], unavailable_reason: null }]);
     const window1 = JSON.stringify([result(s1, "ok", "9.60"), result(s2a, "ok", "10.09"), result(s2b, "unavailable", "0.00")]);
     // A partial that has not folded exactly this window is refused (a stale copy from a concurrent caller).
-    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"shipments\": {\"seen\": 2}}', $3::jsonb)", [runId, window1, contexts]), /does not cover the window/);
+    await expectDenied(adv(1, 3, window1, partial(2), contexts), /does not cover the window/);
     // A result naming another file's shipment is refused.
     const otherDs = await createDataset(w.brandA.admin.id, w.t1.id, w.brandA.id, fileA, "Another file");
     await materialise(w.brandA.admin.id, otherDs, sampleRows(upsGround));
     const [foreign] = await asUser<{ id: string; order_id: string; row_no: number }>(w.brandA.admin.id, "select id, order_id, row_no from public.shipments where dataset_id = $1 and row_no = 1", [otherDs]);
-    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"shipments\": {\"seen\": 3}}', $3::jsonb)", [runId, JSON.stringify([result(foreign!, "ok", "9.60"), result(s2a, "ok", "10.09"), result(s2b, "unavailable", "0.00")]), contexts]), /does not belong to this run/);
-    const [a1] = await asUser<{ r: { applied: boolean; nextRow: number; processed: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"step\": 1, \"shipments\": {\"seen\": 3}}', $3::jsonb) as r", [runId, window1, contexts]);
+    await expectDenied(adv(1, 3, JSON.stringify([result(foreign!, "ok", "9.60"), result(s2a, "ok", "10.09"), result(s2b, "unavailable", "0.00")]), partial(3), contexts), /does not belong to this run/);
+    // Every order of the window needs its fee result.
+    await expectDenied(adv(1, 3, window1, partial(3), contexts, JSON.stringify(feeResults(orders, ["O-1"], "2026-03-01"))), /covers 2 orders, got 1/);
+    const [a1] = await adv(1, 3, window1, partial(3, { step: 1 }), contexts);
     expect(a1!.r).toMatchObject({ applied: true, nextRow: 4, processed: 3 });
     // The same window again (lost response, second tab): acknowledged, not re-applied.
-    const [again] = await asUser<{ r: { applied: boolean; nextRow: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"step\": 1, \"shipments\": {\"seen\": 3}}', $3::jsonb) as r", [runId, window1, contexts]);
+    const [again] = await adv(1, 3, window1, partial(3, { step: 1 }), contexts);
     expect(again!.r).toMatchObject({ applied: false, nextRow: 4 });
     expect(await asUser(w.brandA.admin.id, "select id from public.simulation_results where run_id = $1", [runId])).toHaveLength(3);
+    expect(await asUser(w.brandA.admin.id, "select id from public.simulation_order_results where run_id = $1", [runId])).toHaveLength(2);
     // Pinned contexts are the 3PL's material: staff read them, the brand does not.
     expect(await asUser(w.t1.employee.id, "select id from public.simulation_run_contexts where run_id = $1", [runId])).toHaveLength(1);
     expect(await asUser(w.brandA.admin.id, "select id from public.simulation_run_contexts where run_id = $1", [runId])).toHaveLength(0);
     // Finishing early is refused.
-    await expectDenied(asUser(w.brandA.admin.id, "select public.finish_simulation_run($1, '{}', '{}', '2.2.0')", [runId]), /3 of 4 shipments/);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.finish_simulation_run($1, '{}', '{}', '2.2.0', '[]')", [runId]), /3 of 4 shipments/);
     // The batch input carries the partial that belongs to its cursor.
     const [b2] = await asUser<{ r: { fromRow: number; partialSummary: { step: number } } }>(w.brandA.admin.id, "select public.simulation_batch_input($1, 100) as r", [runId]);
     expect(b2!.r).toMatchObject({ fromRow: 4, partialSummary: { step: 1 } });
-    const [a2] = await asUser<{ r: { applied: boolean; nextRow: number; processed: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 4, 4, $2::jsonb, '{\"step\": 2, \"shipments\": {\"seen\": 4}}', $3::jsonb) as r", [runId, JSON.stringify([result(s3, "ok", "19.69", 2)]), contexts]);
+    const [a2] = await adv(4, 4, JSON.stringify([result(s3, "ok", "19.69", 2)]), partial(4, { step: 2 }), contexts, JSON.stringify(feeResults(orders, ["O-3"], "2026-03-01")));
     expect(a2!.r).toMatchObject({ applied: true, nextRow: 5, processed: 4 });
     const [progress] = await asUser<{ processed_shipments: number; partial_summary: { step: number } }>(w.brandA.admin.id, "select processed_shipments, partial_summary from public.simulation_runs where id = $1", [runId]);
-    expect(progress).toEqual({ processed_shipments: 4, partial_summary: { step: 2, shipments: { seen: 4 } } });
+    expect(progress).toEqual({ processed_shipments: 4, partial_summary: { version: 2, step: 2, shipments: { seen: 4 } } });
   });
 
   it("finishing recomputes the trusted figures and refuses a summary that disagrees", async () => {
     // Modeled: O-1 (9.60) and O-3 (19.69); O-2 has an unavailable shipment and is excluded whole.
-    const wrong = { modeled: { orders: 3, shipments: 4 }, totals: { expected: "39.38", definite: "39.38", estimated: "0.00" } };
-    await expectDenied(asUser(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0')", [runId, JSON.stringify(wrong)]), /does not reconcile/);
-    const right = { modeled: { orders: 2, shipments: 2 }, totals: { expected: "29.29", definite: "29.29", estimated: "0.00" }, byZone: [] };
-    await expectDenied(asUser(w.brandB.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0')", [runId, JSON.stringify(right)]), /run not found/);
-    const [fin] = await asUser<{ r: { modeledOrders: number; modeledShipments: number; modeledPackages: number; okShipments: number; unavailableShipments: number; expected: string } }>(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{\"dictionary\": []}', '2.2.0') as r", [runId, JSON.stringify(right)]);
-    expect(fin!.r).toEqual({ modeledOrders: 2, modeledShipments: 2, modeledPackages: 3, okShipments: 3, unavailableShipments: 1, expected: "29.29" });
+    const wrong = { version: 2, modeled: { orders: 3, shipments: 4 }, totals: { expected: "39.38", definite: "39.38", estimated: "0.00" }, ...noFees };
+    await expectDenied(asUser(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0', '[]')", [runId, JSON.stringify(wrong)]), /does not reconcile/);
+    const right = { version: 2, modeled: { orders: 2, shipments: 2 }, totals: { expected: "29.29", definite: "29.29", estimated: "0.00" }, byZone: [], ...noFees };
+    // A summary from an older engine release, or one that claims processing fees this run never priced, is refused.
+    await expectDenied(asUser(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0', '[]')", [runId, JSON.stringify({ ...right, version: 1 })]), /summary version/);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0', '[]')", [runId, JSON.stringify({ ...right, processing: { orders: 2, definite: "1.0000", estimated: "0.0000" } })]), /processing totals do not reconcile/);
+    await expectDenied(asUser(w.brandB.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0', '[]')", [runId, JSON.stringify(right)]), /run not found/);
+    const [fin] = await asUser<{ r: Record<string, unknown> }>(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{\"dictionary\": [], \"feeDictionary\": []}', '2.2.0', '[]') as r", [runId, JSON.stringify(right)]);
+    expect(fin!.r).toEqual({ modeledOrders: 2, modeledShipments: 2, modeledPackages: 3, okShipments: 3, unavailableShipments: 1, expected: "29.29", processingOrders: 0, processingDefinite: "0.0000", processingEstimated: "0.0000", monthlyFixed: null, minimumTopUp: null, minimumStatus: null, projectedMonthly: null });
+    // No order was fee-priced (no schedule), so none counts in the processing totals; the fee context says why.
+    expect(await asUser(w.brandA.employee.id, "select fee_status, in_totals from public.simulation_order_results where run_id = $1", [runId])).toEqual(Array.from({ length: 3 }, () => ({ fee_status: "no_schedule", in_totals: false })));
+    expect(await asUser(w.brandA.employee.id, "select fee_date::text, fee_schedule_version_id, unavailable_reason from public.simulation_run_fee_contexts where run_id = $1", [runId])).toEqual([{ fee_date: "2026-03-01", fee_schedule_version_id: null, unavailable_reason: "no_schedule" }]);
     const [run] = await asUser<{ status: string; total_expected: string; modeled_orders: number; engine_version: string }>(w.brandA.employee.id, "select status, total_expected, modeled_orders, engine_version from public.simulation_runs where id = $1", [runId]);
     expect(run).toEqual({ status: "completed", total_expected: "29.29", modeled_orders: 2, engine_version: "2.2.0" });
     // Rows of modeled orders are marked as part of the totals; O-2's priced shipment is not.
@@ -305,7 +341,7 @@ describe("scenarios and runs", () => {
     expect(audit!.metadata).toMatchObject({ processed: 4, total: 4, ok: 3, unavailable: 1, modeled_orders: 2 });
     expect(JSON.stringify(audit!.metadata).length).toBeLessThan(1000);
     // Completed runs accept no more work, and brands never see each other's results.
-    const [late] = await asUser<{ r: { applied: boolean; status: string } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 5, 5, '[]', '{}', '[]') as r", [runId]);
+    const [late] = await asUser<{ r: { applied: boolean; status: string } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 5, 5, '[]', '{}', '[]', '[]', '[]') as r", [runId]);
     expect(late!.r).toMatchObject({ applied: false, status: "completed" });
     expect(await asUser(w.brandB.admin.id, "select id from public.simulation_results where run_id = $1", [runId])).toHaveLength(0);
     expect(await asUser(w.t1.employee.id, "select id from public.simulation_results where run_id = $1", [runId])).toHaveLength(4);
@@ -316,10 +352,13 @@ describe("scenarios and runs", () => {
     await materialise(w.brandA.admin.id, ds, sampleRows(upsGround, { cancelThird: true }));
     const rows = await asUser<{ id: string; order_id: string; row_no: number }>(w.brandA.admin.id, "select id, order_id, row_no from public.shipments where dataset_id = $1 order by row_no", [ds]);
     const [p] = await asUser<{ id: string }>(w.brandA.admin.id, "insert into public.simulation_projects (tenant_id, brand_id, kind, name, dataset_id, rate_card_id) values ($1, $2, 'bulk', 'Cancelled test', $3, $4) returning id", [w.t1.id, w.brandA.id, ds, cardId]);
-    const [r] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
-    await asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 4, $2::jsonb, '{\"shipments\": {\"seen\": 4}}', '[]')", [r!.id, JSON.stringify(rows.map((s) => result(s, "ok", "9.60", s.row_no === 4 ? 2 : 1)))]);
-    const [fin] = await asUser<{ r: { modeledOrders: number; modeledShipments: number } }>(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0') as r", [r!.id, JSON.stringify({ modeled: { orders: 2, shipments: 3 }, totals: { expected: "28.80", definite: "28.80", estimated: "0.00" } })]);
+    // This run models shipping only: fee results are 'skipped', with no fee date and no fee context.
+    const [r] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{\"fulfillment\": {\"skip\": true}}') as id", [p!.id]);
+    const cancelledOrders = await orderIds(w.brandA.admin.id, ds);
+    await asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 4, $2::jsonb, $3::jsonb, '[]', $4::jsonb, '[]')", [r!.id, JSON.stringify(rows.map((s) => result(s, "ok", "9.60", s.row_no === 4 ? 2 : 1))), partial(4), JSON.stringify(feeResults(cancelledOrders, ["O-1", "O-2", "O-3"], null))]);
+    const [fin] = await asUser<{ r: { modeledOrders: number; modeledShipments: number } }>(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0', '[]') as r", [r!.id, JSON.stringify({ version: 2, modeled: { orders: 2, shipments: 3 }, totals: { expected: "28.80", definite: "28.80", estimated: "0.00" }, ...noFees })]);
     expect(fin!.r).toMatchObject({ modeledOrders: 2, modeledShipments: 3 });
+    expect(await sql("select 1 from public.simulation_run_fee_contexts where run_id = $1", [r!.id])).toHaveLength(0);
 
     const [r2] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
     expect(r2!.id).not.toBe(r!.id);
