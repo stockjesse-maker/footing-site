@@ -61,5 +61,8 @@ describe("log_audit_event()", () => {
     await expectDenied(log(w.t1.admin.id, w.t1.id, w.brandC.id, "simulation.run"), /no access to brand/);
     await expectDenied(log(w.t1.admin.id, w.t1.id, null, "membership.created"), /not permitted/);
     await expectDenied(log(w.t1.admin.id, w.t1.id, null, "tenant.status_changed"), /not permitted/);
+    // Pricing lifecycle events are trigger-only; a member cannot forge an activation or publication.
+    await expectDenied(log(w.brandA.employee.id, w.t1.id, null, "ratecard.version_active"), /not permitted/);
+    await expectDenied(log(w.t1.admin.id, w.t1.id, null, "carrier_rule.published"), /not permitted/);
   });
 });

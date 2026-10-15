@@ -1,63 +1,68 @@
 # Pricing engine
 
-> **Status: design only. Nothing in this document is implemented yet** (Milestone 2). It records the contract the implementation must satisfy so that the tests, not the prose, become the authority.
+`src/engine` is a pure, deterministic TypeScript library: no I/O, no clock, no randomness, no framework imports (enforced by an ESLint rule). It prices one shipment against a **customer-facing** rate card and the surcharge rules in force on the ship date, and returns an itemized result that always adds up and always says what it does not know.
 
-## Hard rules
+> **Status:** implemented and tested against an independently derived golden dataset of 32 fictional scenarios plus per-area unit tests. **Not validated against real carrier/customer examples yet**: no real rate card or carrier surcharge document has been run through it. It must not be called production-ready until that happens (see IMPLEMENTATION_STATUS.md).
 
-* Base shipping price comes **only** from the customer-facing rate card supplied by the 3PL. Never from buy rates or carrier account APIs.
-* No fabricated surcharge amounts or customer rates anywhere in code, seeds, tests or docs. Every rule carries a source reference, version, effective dates and verification status (`unverified | verified | approved_3pl_config`). Unverified rules cannot silently influence a "definite" total.
-* Missing rate → explicit "rate unavailable" result. No extrapolation outside rate-card ranges unless an explicit approved rule allows it.
-* AI may assist *mapping/interpretation*, never publish a rule or rate; a human approves, and uploaded-document text can never alter pricing logic (prompt-injection boundary).
+## Hard rules (and where they are enforced)
 
-## Architecture
+| Rule | Enforcement |
+|---|---|
+| Base shipping price comes only from the 3PL's customer-facing rate card | The engine has no other price input; the schema has no column for a buy rate |
+| No fabricated surcharge amounts or customer prices | No amounts in code or seeds; every rule version records `source_reference`, dates and `verification_status`; fixtures are labelled fictional |
+| Missing rate → explicit *unavailable*, never extrapolated | `lookupRate` returns `no_rate_for_weight` / `no_rate_for_zone` / `no_rate_for_origin` |
+| Definite / estimated / conditional charges are never mixed silently | Every line carries `chargeClass` and `counted`; totals are split |
+| No double counting of bundled or mutually exclusive surcharges | Exclusivity groups, `excludesRuleKeys`, included/excluded keys on service terms |
+| Reproducible history | Results reference rate-card version, terms version and every rule key@version |
 
-`src/engine/` is a pure TypeScript package: no React/Next/Supabase imports (lint-enforced). Inputs and outputs are plain serializable objects validated with Zod at the boundary. Carrier differences live in **carrier adapters** (UPS, FedEx, DHL eCommerce, USPS, later others); there is no pretense that carriers share surcharge structures.
+## API
 
-## Money
+```ts
+import { calculateShipment } from "@/engine";
+const result = calculateShipment(input, { rateCard, rules, zipLists, overrides });
+```
 
-Decimal-safe integer arithmetic (minor units) or a decimal library: never binary floats. One documented rounding mode applied at defined points (per line item, then summed); totals are the sum of rounded line items. Currency stored with every amount.
+Types are in `src/engine/types.ts`. All money and weights are decimal strings; arithmetic uses decimal.js (precision 28, HALF_UP where rounding is explicit). Line amounts are rounded to cents **once, when the line is created**; totals are sums of rounded lines.
 
-## Calculation pipeline (per package)
+## Calculation pipeline
 
-1. **Validate** inputs; reject or flag impossible values (negative, NaN, absurd dimensions).
-2. **Dimensional weight** = (L × W × H) ÷ divisor, using the carrier/service-specific divisor from configuration. Apply that service's measurement rounding, thresholds (e.g. minimum cubic size for DIM to apply), exemptions and weight rounding **in the order the carrier defines**. Never hardcode one divisor.
-3. **Billable weight** per service rules (actual vs DIM, rounding up to the next unit, minimums, maximums).
-4. **Zone** lookup from origin ZIP → destination (rate-card zone chart, or an approved zone table).
-5. **Base charge** from the rate-card row matching service, zone, weight bracket and effective date; apply row minimum charge; apply customer-specific override if configured.
-6. **Surcharges** (below), then **fuel**.
-7. **Result**: itemized lines each with amount, calculation basis, explanation and rule/version reference; plus the rate-card version and rule versions used.
+1. **Validate** (`validate.ts`, Zod): positive weights, all-or-none dimensions, 5-digit ZIPs (ZIP+4 accepted and trimmed), a real calendar date, 1–200 packages, ZIP or zone. Invalid → `status: "unavailable"`, reason `invalid_input`, with messages. The engine never throws for data problems.
+2. **Rate-card effectivity**: `effectiveDate ≤ shipDate ≤ expirationDate` (inclusive) or `rate_card_not_effective`.
+3. **Service**: `(carrierCode, serviceCode)` must be on the card → else `service_not_on_rate_card`.
+4. **Billable weight per package** (`dim.ts`): actual weight → lb; round each dimension per `dimensionRounding`; cubic inches; if a `thresholdCubicIn` is set, DIM applies only above it; DIM lb = cubic ÷ divisor (exact decimal); compare **unrounded** actual vs DIM; apply `minBillableLb`; round the winner per `weightRounding` (`up_whole_lb`, `up_whole_oz` = next 1/16 lb, `none`). Exempt services use actual weight. If dimensions are missing or the card states no divisor, the engine prices on actual weight, classes the base line **estimated**, and warns (`dimensions_missing` / `dim_divisor_missing`).
+5. **Zone** (`zones.ts`): the zone entered directly (normalized: trimmed, upper-cased, "Zone 5" → "5"), or from the card's zone chart: rows whose origin prefix equals the 5-digit origin are tried first, then 3-digit; a destination matches when its first N digits fall within `[destPrefixFrom, destPrefixTo]` (same length); 5-digit ranges beat 3-digit. None → `zone_unresolved` (+ `zone_chart_missing` warning if the card has no chart for the carrier).
+6. **Base rate per package** (`rates.ts`): rows for the service scoped by origin (5-digit > 3-digit > any-origin; origin-priced cards with no match → `no_rate_for_origin`), then zone (`no_rate_for_zone` names the zones covered), then bracket with `weightMin < w ≤ weightMax` compared in the row's unit (`no_rate_for_weight` states the heaviest bracket and that rates are not extrapolated). Minimum charge = max(row, service) → a separate `minimum_charge` line for the difference.
+7. **Surcharges** (`surcharges.ts`, `calculate.ts`): candidate rules = carrier matches, service listed or null, effective on the ship date, highest version per key, not in the service's `excludedSurchargeKeys`. Customer overrides by key (effective on the date): `exclude` lists the line uncounted with warning `rule_overridden`; `override_amount`/`override_percent` replace the figure. Conditions are ANDed; each evaluates to *applies*, *not*, or *unknown* (needed input missing: dimensions, destination ZIP, zone, or a ZIP list not loaded). Per-package rules evaluate per package; per-shipment rules evaluate once (greater-than tests hold if any package satisfies them, less-than-or-equal only if all do). **Exclusivity**: within a group (per package), the applying rule with the highest priority wins (ties → higher amount → key order); losers are omitted. **Bundling**: an applying rule suppresses the keys in `excludesRuleKeys`. Rules in `includedSurchargeKeys` are listed uncounted ("included in base rate"). *Unknown* outcomes are listed uncounted and classed **estimated**. `conditional` rules are listed uncounted and summed into `conditionalExposure`.
+8. **Amounts**: `flat`; `per_unit` = amount × ceil((declared value − free allowance) ÷ unit size) per package, summed; `percent` = percent × base, computed **after** all other lines. Base kinds: `base_rate` (base + minimum lines), `base_plus_all_surcharges`, `base_plus_categories`. Percent rules are computed per package (one line each) plus one shipment-level line when shipment-level lines are in the base, so rounding matches carrier billing. A percentage of an estimated base is itself **estimated**. Fuel is a `fuel`-category percent rule and is always last.
+9. **Totals**: definite = Σ counted definite lines; estimated = Σ counted estimated lines; expected = definite + estimated; conditionalExposure = Σ conditional lines (never counted).
+10. **References and warnings**: every line with a rule carries key, version, scope, source reference and verification status; `references.rules` lists every rule that produced a line; `unverified_rule_applied` warns when a counted line comes from an unverified rule.
 
-## Charge classes (never mixed silently)
+Line order in results: per package (base, minimum, surcharges in the carrier's category order), then shipment-level lines, fuel last. Consumers must not depend on order.
 
-1. **Definite**: base + surcharges known from the inputs.
-2. **Estimated**: depend on assumptions (e.g. residential share, zone mix, DAS probability); labeled and itemized separately.
-3. **Conditional**: possible post-shipment adjustments (reweight, remeasure, address correction); shown separately, never added to a definite total without a label.
+## Carrier adapters
 
-## Surcharge rules
+`src/engine/carriers/index.ts` holds **structure only**: how a carrier rounds and measures (offered as *structural defaults* when a 3PL sets up service terms, labelled "verify against the carrier's current service guide"), the evaluation order of surcharge categories, and the known mutually exclusive groups for the rule editor's guidance. No amounts, divisors or ZIP lists live there. The engine reads only `ServiceTerms`, so a 3PL can override every structural default per service.
 
-Each rule: carrier, applicable services, eligibility conditions, effective dates, source reference, version, calculation method (flat / percent / tiered), amount or percentage, **calculation base** (what the percentage applies to: base only, base + selected surcharges, …), inclusion/exclusion flags, override rules, verification status.
+## Data the engine receives
 
-Categories supported by the model: fuel, residential, DAS, extended DAS, remote, additional handling, oversize/large package, demand/peak, address correction, signature, declared value, reweight, remeasurement, shipping-charge corrections, other configurable accessorials.
+* `RateCardSnapshot`: one active version (services with DIM rules, minimum charge, included/excluded surcharge keys; rate rows; zone chart). Built by `src/lib/pricing/snapshot.ts` under the caller's Row Level Security, so a brand user can only ever load cards assigned to their brand.
+* `SurchargeRule[]`: published rule versions in force (platform scope or the tenant's own), each with `verification_status`.
+* `ZipList[]`: lists referenced by `destination_zip_in_list` conditions (platform or tenant).
+* `SurchargeOverride[]`: the brand's active exceptions.
 
-**Precedence and exclusivity** are per carrier and data-driven: a carrier's rule set declares mutually exclusive groups (e.g. only the highest of Additional Handling / Large Package applies where the carrier says so) and bundled-surcharge exclusions, so one surcharge is never counted twice. Fuel's calculation base is configured per carrier/service because carriers differ on what it applies to.
+## Rate-card import (`src/lib/import`)
 
-Order of operations is defined by the carrier adapter and recorded in the result so it is auditable.
+CSV/XLSX → tables (`parse-table.ts`, 5 MB, 50,000 rows and 600,000 cells per sheet caps; type sniffing) → detection (`rate-card-mapping.ts`: header synonyms for the long layout, grid layout detection, service-name suggestions with confidence; **heuristics only, no AI; the administrator approves**) → validation (`rate-card-validate.ts`: strict numeric parsing, bracket derivation and overlap/duplicate/gap checks, zone and origin formats, unmapped services, decreasing-price warnings, per-service coverage summary) → draft version with rows and service terms → activation with effective dates (two active versions can never overlap; enforced by a database exclusion constraint).
 
-## Order-level aggregation
+## Testing
 
-* Package charges → shipment → **order**. Shipment, package and order counts are distinct.
-* **Average shipping cost per order = Σ modeled shipping charges ÷ modeled orders.** Imported orders vs modeled orders are both shown, with coverage %, and incomplete orders are *not* silently dropped from the denominator.
+* `tests/unit/engine-golden.test.ts`: 32 scenarios against `tests/fixtures/pricing/expected.json`, whose values were derived **independently of the engine** by two separate computations (one scripted, one by hand) from the design document and the fixture files, then reconciled. One deliberate post-reconciliation decision is recorded in the file (fuel on an estimated base is estimated).
+* `tests/unit/engine-*.test.ts`: per-area tests (dimensional weight and rounding, zones and brackets and unavailable paths, surcharge semantics, money and validation) with hand-derived expectations.
+* `tests/unit/import-pipeline.test.ts`: parsers, mapping heuristics, validation.
+* `tests/db/pricing.test.ts`: who can see and change pricing data (RLS), activation/publication state machines, audit.
 
-## Processing and all-in (Milestone 4)
+All fixture data is fictional and must never be shown as real pricing.
 
-Separate engine for 3PL fees (fixed, per-unit, tiered, percentage, minimum rules; effective-dated schedule versions). Order-variable fees are kept apart from monthly allocated costs (storage, receiving, account minimums), which use a stated forecast period and order volume; a monthly minimum is applied once and never double-counted with the fees it covers. Storage is never derived from shipped orders alone without explicit inventory assumptions.
+## Not implemented yet
 
-## Reweight / remeasure adjustment risk (Milestone 5)
-
-Separates carrier correction amounts, separate correction fees, 3PL-absorbed losses and contractually customer-billable adjustments; per-adjustment policy: absorbed / passed-through / manual approval. Postage differences already in a corrected shipping forecast are not counted twice. Customers see only authorized scenarios, never internal failure rates.
-
-## Test strategy (to be created in Milestone 2)
-
-* A **golden dataset** whose expected values are calculated independently of the engine (spreadsheet or hand arithmetic, checked in with the derivation).
-* Unit tests for every item in the spec's list: weight rounding, DIM and exemptions, per-service divisors, zones, brackets, minimums, fuel bases, residential, DAS/extended DAS, handling/oversize exclusions, peak effective dates, overrides, bundled exclusions, missing values, multi-package, multi-line, historical rule versions, money rounding, invalid data, tenant/customer isolation.
-* The engine is **not** labeled production-ready until golden tests pass **and** real carrier/customer examples supplied by the 3PL have been validated against it.
+Order-level aggregation and average cost per order (Milestone 3), processing/fulfillment fees (4), reweight/remeasure adjustment risk (5), metric units, non-US destinations, carrier-published rule monitoring (8). Platform-scope (carrier-verified) rules can only be inserted by the service role today; the review/approval workflow arrives in Milestone 8.

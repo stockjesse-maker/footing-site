@@ -1,0 +1,487 @@
+[
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "5.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "residential",
+        "value": true
+      }
+    ],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.residential",
+    "ruleId": "r-res",
+    "versionId": "r-res-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "residential",
+    "name": "Residential surcharge"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "4.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "destination_zip_in_list",
+        "listKey": "fixture.ups.das_zips"
+      }
+    ],
+    "exclusivityGroup": "ups.das",
+    "exclusivityPriority": 1,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.das",
+    "ruleId": "r-das",
+    "versionId": "r-das-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "das",
+    "name": "Delivery area surcharge"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "6.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "destination_zip_in_list",
+        "listKey": "fixture.ups.das_extended_zips"
+      }
+    ],
+    "exclusivityGroup": "ups.das",
+    "exclusivityPriority": 2,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.das_extended",
+    "ruleId": "r-dasx",
+    "versionId": "r-dasx-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "das_extended",
+    "name": "Extended delivery area surcharge"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "20.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "longest_side_gt",
+        "inches": "48"
+      }
+    ],
+    "exclusivityGroup": "ups.handling_vs_large_package",
+    "exclusivityPriority": 1,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.additional_handling_length",
+    "ruleId": "r-ahl",
+    "versionId": "r-ahl-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "additional_handling",
+    "name": "Additional handling (length)"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "28.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "weight_gt",
+        "valueLb": "50",
+        "basis": "actual"
+      }
+    ],
+    "exclusivityGroup": "ups.handling_vs_large_package",
+    "exclusivityPriority": 1,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.additional_handling_weight",
+    "ruleId": "r-ahw",
+    "versionId": "r-ahw-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "additional_handling",
+    "name": "Additional handling (weight)"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "100.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "length_plus_girth_gt",
+        "inches": "130"
+      }
+    ],
+    "exclusivityGroup": "ups.handling_vs_large_package",
+    "exclusivityPriority": 2,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.large_package",
+    "ruleId": "r-lp",
+    "versionId": "r-lp-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "oversize",
+    "name": "Large package surcharge"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "1.50",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "residential",
+        "value": true
+      }
+    ],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-10-27",
+    "expirationDate": "2027-01-17",
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.peak_residential",
+    "ruleId": "r-peak",
+    "versionId": "r-peak-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "peak",
+    "name": "Peak residential surcharge"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "6.50",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "signature_in",
+        "values": [
+          "direct",
+          "adult"
+        ]
+      }
+    ],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": false,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.signature",
+    "ruleId": "r-sig",
+    "versionId": "r-sig-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "signature",
+    "name": "Delivery signature"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "per_unit",
+    "amount": "1.05",
+    "percent": null,
+    "perUnit": {
+      "basis": "declared_value",
+      "unitSize": "100",
+      "freeAllowance": "100"
+    },
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "declared_value_gt",
+        "amount": "100"
+      }
+    ],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.declared_value",
+    "ruleId": "r-dv",
+    "versionId": "r-dv-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "declared_value",
+    "name": "Declared value"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "conditional",
+    "method": "flat",
+    "amount": "21.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": false,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.address_correction",
+    "ruleId": "r-ac",
+    "versionId": "r-ac-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "address_correction",
+    "name": "Address correction (if needed)"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "percent",
+    "amount": null,
+    "percent": "14.00",
+    "perUnit": null,
+    "base": {
+      "kind": "base_plus_categories",
+      "categories": [
+        "residential",
+        "das",
+        "das_extended",
+        "additional_handling",
+        "oversize",
+        "peak"
+      ]
+    },
+    "conditions": [],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": "2026-09-30",
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.fuel",
+    "ruleId": "r-fuel",
+    "versionId": "r-fuel-1",
+    "version": 1,
+    "carrierCode": "ups",
+    "category": "fuel",
+    "name": "Fuel surcharge"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "percent",
+    "amount": null,
+    "percent": "15.50",
+    "perUnit": null,
+    "base": {
+      "kind": "base_plus_categories",
+      "categories": [
+        "residential",
+        "das",
+        "das_extended",
+        "additional_handling",
+        "oversize",
+        "peak"
+      ]
+    },
+    "conditions": [],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-10-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.ups.fuel",
+    "ruleId": "r-fuel",
+    "versionId": "r-fuel-2",
+    "version": 2,
+    "carrierCode": "ups",
+    "category": "fuel",
+    "name": "Fuel surcharge"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "4.00",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "longest_side_gt",
+        "inches": "22"
+      }
+    ],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: fictional amount for engine tests",
+    "sourceUrl": null,
+    "verificationStatus": "approved_3pl_config",
+    "key": "fixture.usps.nonstandard_length",
+    "ruleId": "r-nsl",
+    "versionId": "r-nsl-1",
+    "version": 1,
+    "carrierCode": "usps",
+    "category": "oversize",
+    "name": "Nonstandard length fee"
+  },
+  {
+    "scope": "tenant",
+    "serviceCodes": null,
+    "chargeClass": "definite",
+    "method": "flat",
+    "amount": "0.75",
+    "percent": null,
+    "perUnit": null,
+    "base": {
+      "kind": "base_rate"
+    },
+    "conditions": [
+      {
+        "type": "flag_present",
+        "flag": "fragile"
+      }
+    ],
+    "exclusivityGroup": null,
+    "exclusivityPriority": 0,
+    "excludesRuleKeys": [],
+    "perPackage": true,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "sourceReference": "FIXTURE: deliberately unverified",
+    "sourceUrl": null,
+    "verificationStatus": "unverified",
+    "key": "fixture.usps.unverified_handling",
+    "ruleId": "r-unv",
+    "versionId": "r-unv-1",
+    "version": 1,
+    "carrierCode": "usps",
+    "category": "other",
+    "name": "Unverified handling fee (test)"
+  }
+]

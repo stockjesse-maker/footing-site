@@ -45,6 +45,21 @@ Raw tokens are 256-bit random values returned once (email or the inviter's scree
 
 Security-relevant changes (tenant, brand, membership, invitation) are written by database triggers with the real `auth.uid()`, cannot be forged by clients, and are append-only (UPDATE/DELETE/TRUNCATE rejected). Application events go through `log_audit_event`, which restricts action names and requires tenant membership. Audit rows deliberately have no foreign keys so they outlive deleted entities.
 
+## Pricing data (Milestone 2)
+
+| Threat | Control | Test |
+|---|---|---|
+| Brand sees another brand's pricing, an unassigned card, a draft, or a customer exception | RLS on every pricing table keyed by active assignment + active version; overrides visible only to the brand they concern | `tests/db/pricing.test.ts` |
+| Brand or 3PL employee writes pricing | Every write policy requires `ratecard.manage`; status changes only via RPCs that re-check the permission | `pricing.test.ts` |
+| Cross-tenant references (card ↔ version ↔ brand ↔ rule) | Composite foreign keys `(id, tenant_id)` on versions, assignments, overrides and imports | `pricing.test.ts` |
+| Silent change to prices in force | Rows/terms/zones immutable once a version leaves draft; published rule versions immutable; exclusion constraints forbid overlapping active/published versions | `pricing.test.ts` |
+| Forged audit records of activation/publication | Trigger-only namespaces; `log_audit_event()` rejects them | `audit.test.ts` |
+| Hostile uploads | Extension + content sniffing, 5 MB cap, 50k rows / 600k cells / 20 sheets caps, strict cell parsing, files stored in the database under RLS (no public storage), never executed or rendered as HTML | `import-pipeline.test.ts` |
+| Prompt injection through uploaded documents | No AI reads uploads; cell text is data only; mapping is approved by an administrator | by construction |
+| Uploaded file read by the wrong person | `uploaded_files` readable only by managers of the owning tenant | `pricing.test.ts` |
+
+Not yet done: malware scanning of uploads (files are never executed or served back, which bounds the risk; a scanning step is planned for Milestone 3 with order files), and moving large files to private object storage with signed URLs (needed for order imports in Milestone 3).
+
 ## Other controls
 
 * Security headers: `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, `Strict-Transport-Security`; `poweredByHeader` off; pages `noindex`.

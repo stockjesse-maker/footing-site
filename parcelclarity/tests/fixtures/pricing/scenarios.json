@@ -1,0 +1,726 @@
+{
+  "_comment": "Golden scenarios for the pricing engine against the FICTIONAL fixture rate card in this folder. Expected results live in expected.json and were derived independently of src/engine. Context flags: withOverrides loads fixture-overrides.json; withZipLists=false removes the ZIP lists; rateCard overrides effective/expiration dates.",
+  "scenarios": [
+    {
+      "id": "ground_commercial_dim_wins",
+      "description": "UPS Ground, commercial, DIM weight exceeds actual, zone from chart",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_residential",
+      "description": "Same shipment, residential: residential surcharge and fuel on base + residential",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": true,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_das",
+      "description": "Residential delivery to a DAS ZIP (93920 is in the DAS list): residential + DAS, not extended",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "93920",
+        "residential": true,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "2",
+            "weightUnit": "lb",
+            "length": "8",
+            "width": "6",
+            "height": "4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_das_extended_only",
+      "description": "Delivery to 95991: prefix 9599 is in the extended list; the DAS list has 958 (not 959) and 95995 (not equal), so only extended DAS applies",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "95991",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "2",
+            "weightUnit": "lb",
+            "length": "8",
+            "width": "6",
+            "height": "4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_das_prefix_match",
+      "description": "Delivery to 93620 matches DAS list prefix 9362 (and nothing in the extended list): DAS only",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "93620",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "2",
+            "weightUnit": "lb",
+            "length": "8",
+            "width": "6",
+            "height": "4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_das_both_lists_extended_wins",
+      "description": "Delivery to 95995 is in BOTH lists (DAS exact entry 95995; extended prefix 9599). Both rules apply but share group ups.das; extended DAS has priority 2 > 1 so only extended DAS is charged",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "95995",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "2",
+            "weightUnit": "lb",
+            "length": "8",
+            "width": "6",
+            "height": "4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_additional_handling_length",
+      "description": "50 x 10 x 10 in, 6 lb actual: DIM 5000/139 = 35.97 \u2192 36 lb; longest side > 48 \u2192 additional handling (length); L+G = 90 so no large package",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "60601",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "6",
+            "weightUnit": "lb",
+            "length": "50",
+            "width": "10",
+            "height": "10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_large_package_beats_handling",
+      "description": "61 x 20 x 15 in, 40 lb actual: DIM 18300/139 = 131.65 \u2192 132 lb; L+G = 131 > 130 \u2192 large package wins over additional handling (same group, higher priority)",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "60601",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "40",
+            "weightUnit": "lb",
+            "length": "61",
+            "width": "20",
+            "height": "15"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_heavy_actual_handling_weight",
+      "description": "55 lb actual in a 20 x 20 x 20 box: DIM 8000/139 = 57.55 \u2192 58 lb billable; additional handling (weight) applies because actual > 50; length rule does not",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "60601",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "55",
+            "weightUnit": "lb",
+            "length": "20",
+            "width": "20",
+            "height": "20"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_minimum_charge",
+      "description": "Zone 2, 1 lb: bracket price 7.90 is below the service minimum 8.50 \u2192 minimum charge adjustment 0.60; fuel on 8.50",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "90210",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "1",
+            "weightUnit": "lb",
+            "length": "6",
+            "width": "4",
+            "height": "2"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_multi_package_residential",
+      "description": "Two packages, residential: each package gets its own base and residential line, fuel per package, shipment-level conditional once",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "30301",
+        "residential": true,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "5",
+            "weightUnit": "lb",
+            "length": "12",
+            "width": "10",
+            "height": "8"
+          },
+          {
+            "weight": "12.3",
+            "weightUnit": "lb",
+            "length": "14",
+            "width": "12",
+            "height": "10"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_peak_in_window",
+      "description": "Ship date 2026-12-01 inside the peak window, residential: peak residential surcharge applies and fuel includes it",
+      "context": {},
+      "input": {
+        "shipDate": "2026-12-01",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": true,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_peak_outside_window",
+      "description": "Ship date 2027-02-01 after the peak window: no peak surcharge",
+      "context": {},
+      "input": {
+        "shipDate": "2027-02-01",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": true,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_historical_fuel_version",
+      "description": "Ship date 2026-09-15: fuel rule version 1 (14.00%) is in force, not version 2",
+      "context": {},
+      "input": {
+        "shipDate": "2026-09-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_signature_and_declared_value",
+      "description": "Direct signature (per shipment) and declared value 650 (per-unit: (650-100)/100 = 5.5 \u2192 6 units \u00d7 1.05); neither is in the fuel base",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "options": {
+          "signature": "direct"
+        },
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6",
+            "declaredValue": "650"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_customer_overrides",
+      "description": "With overrides: residential waived (listed, not counted, warning) and fuel overridden to 10.00%",
+      "context": {
+        "withOverrides": true
+      },
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": true,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_zip_list_missing",
+      "description": "Without ZIP lists loaded: DAS and extended DAS cannot be decided \u2192 both listed as estimated, not counted; warning zip_list_missing",
+      "context": {
+        "withZipLists": false
+      },
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ground_no_dimensions_estimated",
+      "description": "No dimensions given: base line is estimated (DIM unknown), additional handling (length) and large package are unknown \u2192 estimated, uncounted",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb"
+          }
+        ]
+      }
+    },
+    {
+      "id": "second_day_air_included_and_excluded",
+      "description": "UPS 2nd Day Air residential to 95991: residential is included in base (listed, not counted); extended DAS is excluded by the service terms (absent); DAS (not extended) does not match 95991 so nothing else",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "95991",
+        "residential": true,
+        "carrierCode": "ups",
+        "serviceCode": "second_day_air",
+        "packages": [
+          {
+            "weight": "4",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "usps_ounces",
+      "description": "USPS Ground Advantage 6 oz, 10 x 6 x 1 in (below the 1728 cu in DIM threshold), zone 5, origin-specific rows (900): 5\u20138 oz bracket, no fuel rule for USPS",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": true,
+        "carrierCode": "usps",
+        "serviceCode": "ground_advantage",
+        "packages": [
+          {
+            "weight": "6",
+            "weightUnit": "oz",
+            "length": "10",
+            "width": "6",
+            "height": "1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "usps_pounds_rounded_to_ounce",
+      "description": "USPS 1.2 lb = 19.2 oz \u2192 rounds up to 20 oz = 1.25 lb \u2192 1\u20132 lb bracket, zone 5; 24 in long \u2192 nonstandard length fee",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "usps",
+        "serviceCode": "ground_advantage",
+        "packages": [
+          {
+            "weight": "1.2",
+            "weightUnit": "lb",
+            "length": "24",
+            "width": "6",
+            "height": "4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "usps_dim_above_threshold",
+      "description": "USPS 2 lb in 14 x 14 x 12 (2352 cu in > 1728): DIM 2352/166 = 14.17 lb \u2192 rounds up to the next ounce \u2192 14.1875 lb \u2192 14\u201315 lb bracket, zone 5",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "usps",
+        "serviceCode": "ground_advantage",
+        "packages": [
+          {
+            "weight": "2",
+            "weightUnit": "lb",
+            "length": "14",
+            "width": "14",
+            "height": "12"
+          }
+        ]
+      }
+    },
+    {
+      "id": "usps_unverified_rule_warning",
+      "description": "USPS with a 'fragile' flag: the unverified handling fee applies, is counted, and produces warning unverified_rule_applied",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "usps",
+        "serviceCode": "ground_advantage",
+        "packages": [
+          {
+            "weight": "6",
+            "weightUnit": "oz",
+            "length": "10",
+            "width": "6",
+            "height": "1",
+            "flags": [
+              "fragile"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "usps_origin_not_priced",
+      "description": "USPS rows exist only for origin prefix 900; shipping from 10001 \u2192 unavailable no_rate_for_origin",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "10001",
+        "destinationZone": "5",
+        "residential": false,
+        "carrierCode": "usps",
+        "serviceCode": "ground_advantage",
+        "packages": [
+          {
+            "weight": "6",
+            "weightUnit": "oz",
+            "length": "10",
+            "width": "6",
+            "height": "1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "zone_chart_specific_origin",
+      "description": "From 90210 to 90301: the 5-digit origin row says 903xx is zone 3 (the generic 900 row would give zone 2)",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90210",
+        "destinationZip": "90301",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "1",
+            "weightUnit": "lb",
+            "length": "6",
+            "width": "4",
+            "height": "2"
+          }
+        ]
+      }
+    },
+    {
+      "id": "zone_entered_directly",
+      "description": "Destination zone 7 entered directly, no destination ZIP: priced; DAS rules cannot be decided (no ZIP) \u2192 estimated uncounted",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZone": "7",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "10",
+            "weightUnit": "lb",
+            "length": "12",
+            "width": "12",
+            "height": "12"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unavailable_weight_over_card",
+      "description": "151 lb actual exceeds the heaviest UPS Ground bracket (150 lb) \u2192 unavailable no_rate_for_weight, no extrapolation",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "151",
+            "weightUnit": "lb",
+            "length": "20",
+            "width": "20",
+            "height": "20"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unavailable_zone_not_on_card",
+      "description": "Destination zone 9 entered: the card has zones 2\u20138 only \u2192 unavailable no_rate_for_zone",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZone": "9",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unavailable_service_not_on_card",
+      "description": "FedEx Ground is not on the card \u2192 unavailable service_not_on_rate_card",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "fedex",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unavailable_card_not_effective",
+      "description": "Rate card effective 2026-11-01; ship date 2026-10-15 \u2192 unavailable rate_card_not_effective",
+      "context": {
+        "rateCard": {
+          "effectiveDate": "2026-11-01",
+          "expirationDate": null
+        }
+      },
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "unavailable_zone_unresolved",
+      "description": "Destination 00401 is below every range in the chart (005\u2013299 is the lowest) \u2192 unavailable zone_unresolved",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "90001",
+        "destinationZip": "00401",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "3",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ]
+      }
+    },
+    {
+      "id": "invalid_input",
+      "description": "Zero weight and a 4-digit ZIP \u2192 unavailable invalid_input",
+      "context": {},
+      "input": {
+        "shipDate": "2026-10-15",
+        "originZip": "9000",
+        "destinationZip": "85001",
+        "residential": false,
+        "carrierCode": "ups",
+        "serviceCode": "ground",
+        "packages": [
+          {
+            "weight": "0",
+            "weightUnit": "lb"
+          }
+        ]
+      }
+    }
+  ]
+}

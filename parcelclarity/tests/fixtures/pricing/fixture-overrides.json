@@ -1,0 +1,20 @@
+[
+  {
+    "ruleKey": "fixture.ups.residential",
+    "mode": "exclude",
+    "amount": null,
+    "percent": null,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "reference": "FIXTURE agreement: residential waived for Beta Beverages"
+  },
+  {
+    "ruleKey": "fixture.ups.fuel",
+    "mode": "override_percent",
+    "amount": null,
+    "percent": "10.00",
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "reference": "FIXTURE agreement: fuel capped at 10% for Beta Beverages"
+  }
+]

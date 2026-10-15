@@ -1,0 +1,22 @@
+[
+  {
+    "key": "fixture.ups.das_zips",
+    "version": 1,
+    "sourceReference": "FIXTURE",
+    "entries": [
+      "93920",
+      "9362",
+      "958",
+      "95995"
+    ]
+  },
+  {
+    "key": "fixture.ups.das_extended_zips",
+    "version": 1,
+    "sourceReference": "FIXTURE",
+    "entries": [
+      "93921",
+      "9599"
+    ]
+  }
+]

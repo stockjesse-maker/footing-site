@@ -1,0 +1,45 @@
+{
+  "ups/ground": {
+    "dim": {
+      "divisor": "139",
+      "thresholdCubicIn": null,
+      "dimensionRounding": "nearest_whole",
+      "weightRounding": "up_whole_lb",
+      "minBillableLb": null,
+      "exempt": false
+    },
+    "minCharge": "8.50",
+    "includedSurchargeKeys": [],
+    "excludedSurchargeKeys": []
+  },
+  "ups/second_day_air": {
+    "dim": {
+      "divisor": "139",
+      "thresholdCubicIn": null,
+      "dimensionRounding": "nearest_whole",
+      "weightRounding": "up_whole_lb",
+      "minBillableLb": null,
+      "exempt": false
+    },
+    "minCharge": null,
+    "includedSurchargeKeys": [
+      "fixture.ups.residential"
+    ],
+    "excludedSurchargeKeys": [
+      "fixture.ups.das_extended"
+    ]
+  },
+  "usps/ground_advantage": {
+    "dim": {
+      "divisor": "166",
+      "thresholdCubicIn": "1728",
+      "dimensionRounding": "nearest_whole",
+      "weightRounding": "up_whole_oz",
+      "minBillableLb": null,
+      "exempt": false
+    },
+    "minCharge": null,
+    "includedSurchargeKeys": [],
+    "excludedSurchargeKeys": []
+  }
+}
