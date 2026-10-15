@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+/*
+ * ParcelClarity design tokens.
+ * Components use only the semantic utilities below (bg-surface, text-muted, ...), never raw
+ * colors, so a future dark theme only needs to redefine these variables under
+ * [data-theme="dark"]. White-label accents (Milestone 6) override --pc-accent per tenant
+ * after a contrast check.
+ */
+:root {
+  --pc-bg: #ffffff;
+  --pc-surface: #f5f5f7;
+  --pc-raised: #ffffff;
+  --pc-fg: #1d1d1f;
+  --pc-muted: #6e6e73;
+  --pc-border: rgb(0 0 0 / 0.1);
+  --pc-border-strong: rgb(0 0 0 / 0.2);
+  --pc-accent: #0071e3;
+  --pc-accent-hover: #0066cc;
+  /* Text/link variant of the accent: >= 4.5:1 on white, surface and accent-soft backgrounds. */
+  --pc-accent-text: #0066cc;
+  --pc-accent-fg: #ffffff;
+  --pc-accent-soft: #e8f1fd;
+  --pc-danger: #c4001a;
+  --pc-danger-soft: #fdecee;
+  --pc-success: #1f7a38;
+  --pc-success-soft: #e8f6ec;
+  --pc-warning: #8f4700;
+  --pc-warning-soft: #fdf3e6;
+  --pc-shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.04);
+  --pc-focus: #0071e3;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-bg: var(--pc-bg);
+  --color-surface: var(--pc-surface);
+  --color-raised: var(--pc-raised);
+  --color-fg: var(--pc-fg);
+  --color-muted: var(--pc-muted);
+  --color-line: var(--pc-border);
+  --color-line-strong: var(--pc-border-strong);
+  --color-accent: var(--pc-accent);
+  --color-accent-hover: var(--pc-accent-hover);
+  --color-accent-text: var(--pc-accent-text);
+  --color-accent-fg: var(--pc-accent-fg);
+  --color-accent-soft: var(--pc-accent-soft);
+  --color-danger: var(--pc-danger);
+  --color-danger-soft: var(--pc-danger-soft);
+  --color-success: var(--pc-success);
+  --color-success-soft: var(--pc-success-soft);
+  --color-warning: var(--pc-warning);
+  --color-warning-soft: var(--pc-warning-soft);
+  --shadow-card: var(--pc-shadow);
+  --radius-card: 1.25rem;
+  --radius-control: 0.75rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Inter, system-ui, Roboto, sans-serif;
+}
+
+html {
+  background: var(--pc-bg);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--pc-surface);
+  color: var(--pc-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100dvh;
+}
+
+/* Visible, consistent keyboard focus everywhere. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--pc-focus);
+  outline-offset: 2px;
+}
+
+/* Prevent iOS Safari from zooming into form controls on focus. */
+input, select, textarea { font-size: 16px; }
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* iOS safe areas for the installed PWA. */
+.safe-bottom { padding-bottom: max(env(safe-area-inset-bottom), 0px); }
+.safe-top { padding-top: env(safe-area-inset-top); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
