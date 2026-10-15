@@ -28,9 +28,10 @@ export function allocate(input: AllocationInput): AllocationResult {
   let monthlyShipping: Dec | null = null;
   let monthlyProcessing: Dec | null = null;
   if (V !== null) {
-    if (covered && perOrderShipping && perOrderProcessing) {
-      monthlyShipping = perOrderShipping.times(V);
-      monthlyProcessing = perOrderProcessing.times(V);
+    if (covered && !modeled.isZero()) {
+      // (total × V) / modeled: one division at the end, the same operation order the database uses to recompute it.
+      monthlyShipping = shipping.times(V).div(modeled);
+      monthlyProcessing = processing.times(V).div(modeled);
     } else {
       monthlyShipping = shipping.div(months);
       monthlyProcessing = processing.div(months);

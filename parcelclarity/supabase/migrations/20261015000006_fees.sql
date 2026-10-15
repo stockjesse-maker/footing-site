@@ -20,7 +20,7 @@
 create table public.fee_schedules (
   id          uuid primary key default gen_random_uuid(),
   tenant_id   uuid not null references public.tenants (id) on delete restrict,
-  -- Customers see this name.
+  -- Customers see the name and the description (staff-only text lives in fee_schedule_version_notes).
   name        text not null check (char_length(btrim(name)) between 1 and 120),
   description text check (description is null or char_length(description) <= 1000),
   status      text not null default 'active' check (status in ('active', 'archived')),
@@ -981,7 +981,9 @@ alter table public.simulation_runs
   add column monthly_fixed numeric(14,4),
   add column minimum_topup numeric(14,4),
   add column minimum_status text check (minimum_status is null or minimum_status in ('exact', 'upper_bound', 'not_computed', 'none')),
-  add constraint sr_fee_schedule_in_tenant foreign key (fee_schedule_id, tenant_id) references public.fee_schedules (id, tenant_id) on delete restrict;
+  add column projected_monthly numeric(14,2),
+  add constraint sr_fee_schedule_in_tenant foreign key (fee_schedule_id, tenant_id) references public.fee_schedules (id, tenant_id) on delete restrict,
+  add constraint sr_monthly_version_in_tenant foreign key (monthly_fee_schedule_version_id, tenant_id) references public.fee_schedule_versions (id, tenant_id) on delete restrict;
 
 -- Which fee schedule version each fee date was priced with.
 create table public.simulation_run_fee_contexts (
@@ -993,6 +995,7 @@ create table public.simulation_run_fee_contexts (
   fee_schedule_version_id uuid references public.fee_schedule_versions (id) on delete restrict,
   unavailable_reason      text check (unavailable_reason is null or unavailable_reason in ('no_schedule', 'not_effective')),
   constraint srfc_run foreign key (run_id, tenant_id, brand_id) references public.simulation_runs (id, tenant_id, brand_id) on delete cascade,
+  constraint srfc_version_in_tenant foreign key (fee_schedule_version_id, tenant_id) references public.fee_schedule_versions (id, tenant_id) on delete restrict,
   constraint srfc_one_of check ((fee_schedule_version_id is null) <> (unavailable_reason is null)),
   unique (run_id, fee_date)
 );
@@ -1274,6 +1277,18 @@ end $$;
 -- ---------------------------------------------------------------------------
 -- simulation_batch_input: adds the order's content and ordinal for the fee engine.
 -- ---------------------------------------------------------------------------
+-- Line-derived quantities of an order with "unknown" made explicit (RULES.md A2): lines is null when the
+-- order has no counted line (units > 0); distinct SKUs is null when lines is null or any counted line has
+-- no SKU (a per-product fee is then reported as not computed rather than undercounted). The batch input
+-- and advance_simulation_run read the same function, so an echoed quantity can never disagree by construction.
+create function app.order_line_counts(p_order uuid) returns table (lines integer, skus integer, null_sku_lines integer)
+language sql stable set search_path = '' as $$
+  select nullif(count(*) filter (where x.units > 0), 0)::integer as lines,
+         case when count(*) filter (where x.units > 0) = 0 or count(*) filter (where x.units > 0 and x.sku is null) > 0 then null
+              else count(distinct x.sku) filter (where x.units > 0 and x.sku is not null) end::integer as skus,
+         (count(*) filter (where x.units > 0 and x.sku is null))::integer as null_sku_lines
+  from public.order_lines x where x.order_id = p_order;
+$$;
 create or replace function public.simulation_batch_input(p_run uuid, p_limit integer default 200) returns jsonb
 language plpgsql security definer set search_path = '' as $$
 declare
@@ -1310,10 +1325,7 @@ begin
   into v_rows
   from public.shipments s
   join public.orders o on o.id = s.order_id
-  left join lateral (
-    select count(*) filter (where x.units > 0) as lines, count(distinct x.sku) filter (where x.units > 0 and x.sku is not null) as skus, count(*) filter (where x.units > 0 and x.sku is null) as null_sku_lines
-    from public.order_lines x where x.order_id = o.id
-  ) l on true
+  left join lateral (select * from app.order_line_counts(o.id)) l on true
   where s.dataset_id = v_ds and s.row_no between v_r.next_row_no and v_to;
   return jsonb_build_object('status', v_r.status, 'fromRow', v_r.next_row_no, 'toRow', v_to, 'total', v_r.total_shipments, 'shipments', v_rows, 'partialSummary', v_r.partial_summary);
 end $$;
@@ -1394,20 +1406,21 @@ begin
              (select count(*) from public.packages p join public.shipments y on y.id = p.shipment_id where y.order_id = o.id) as npkg
       from public.shipments s where s.order_id = o.id
     ) s on true
-    left join lateral (
-      select count(*) filter (where l.units > 0) as lines, count(distinct l.sku) filter (where l.units > 0 and l.sku is not null) as skus
-      from public.order_lines l where l.order_id = o.id
-    ) l on true
+    left join lateral (select * from app.order_line_counts(o.id)) l on true
     where o.id is null or s.first_row is distinct from x.first_row_no or s.first_row < p_from_row or s.first_row > p_to_row
        or x.shipments is distinct from s.n or x.packages is distinct from s.npkg
        or x.order_month is distinct from to_char(coalesce(o.order_date, s.first_ship), 'YYYY-MM')
+       -- A quantity may be assumed only when the file does not carry it; otherwise it must echo the file.
        or (coalesce(x.assumed ->> 'units', 'false') <> 'true' and x.units is distinct from o.units)
        or (coalesce(x.assumed ->> 'units', 'false') = 'true' and o.units is not null)
        or (coalesce(x.assumed ->> 'lines', 'false') <> 'true' and x.lines is distinct from case when v_has_lines then l.lines end)
-       or (coalesce(x.assumed ->> 'lines', 'false') = 'true' and v_has_lines)
+       or (coalesce(x.assumed ->> 'lines', 'false') = 'true' and v_has_lines and l.lines is not null)
        or (coalesce(x.assumed ->> 'skus', 'false') <> 'true' and x.distinct_skus is distinct from case when v_has_lines then l.skus end)
-       or (coalesce(x.assumed ->> 'skus', 'false') = 'true' and v_has_lines)
+       or (coalesce(x.assumed ->> 'skus', 'false') = 'true' and v_has_lines and l.skus is not null)
        or x.fee_status not in ('ok', 'partial', 'no_content', 'no_schedule', 'not_effective', 'date_missing', 'skipped')
+       -- The fee date is the run's as-of date, or the order's own date under the ship-date basis.
+       or (x.fee_status not in ('skipped', 'date_missing') and x.fee_date is distinct from case when v_r.pricing_basis = 'fixed_date' then v_r.as_of_date else coalesce(o.order_date, s.first_ship) end)
+       or (x.fee_status = 'date_missing' and (v_r.pricing_basis = 'fixed_date' or coalesce(o.order_date, s.first_ship) is not null))
        or (x.fee_status in ('ok', 'partial', 'no_content') and (x.fee_date is null or x.fee_schedule_version_id is null))
        or (x.fee_status not in ('ok', 'partial', 'no_content') and (x.fee_schedule_version_id is not null or x.processing_definite <> 0 or x.processing_estimated <> 0 or x.fee_lines <> '[]'::jsonb))
        or (x.fee_date is not null and not exists (select 1 from public.simulation_run_fee_contexts c where c.run_id = p_run and c.fee_date = x.fee_date and c.fee_schedule_version_id is not distinct from x.fee_schedule_version_id))
@@ -1433,7 +1446,7 @@ end $$;
 -- Minimum top-up recomputation from stored order results (design §4), used by finish.
 -- Returns one row per minimum rule of the monthly version with the figures the engine must agree with.
 -- ---------------------------------------------------------------------------
-create function app.run_minimums(p_run uuid)
+create function app.run_minimums(p_run uuid, p_dict jsonb)
 returns table (rule_id uuid, rule_key text, minimum_e4 bigint, counted_e4 bigint, topup_e4 bigint, status text)
 language plpgsql stable security definer set search_path = '' as $$
 declare
@@ -1441,7 +1454,8 @@ declare
   v_upper boolean; v_modeled integer; v_shipped integer; v_sum bigint; v_amount numeric; v_line record; v_undated integer;
 begin
   select * into v_r from public.simulation_runs where id = p_run;
-  v_dict := v_r.reference_data -> 'feeDictionary';
+  -- The fee dictionary is passed in: finish validates it before calling and only stores it afterwards.
+  v_dict := coalesce(p_dict, '[]'::jsonb);
   if v_r.monthly_fee_schedule_version_id is null then return; end if;
   select count(*) into v_undated from public.simulation_order_results x where x.run_id = p_run and x.in_totals and x.order_month is null;
   for r in select * from public.fee_rules x where x.version_id = v_r.monthly_fee_schedule_version_id and x.basis = 'minimum' order by x.position, x.key loop
@@ -1466,7 +1480,8 @@ begin
           select coalesce(sum((e ->> 1)::bigint), 0) into v_sum
           from public.simulation_order_results x, jsonb_array_elements(x.fee_lines) e
           where x.run_id = p_run and x.in_totals and x.order_month = b.month and (v_dict -> (e ->> 0)::integer ->> 'key') = k;
-          if v_modeled > 0 and v_shipped > v_modeled then v_counted := v_counted + round(v_sum::numeric * v_shipped / v_modeled / 100) * 100; else v_counted := v_counted + v_sum; end if;
+          -- Each rule's monthly sum is rounded to cents once (RULES.md C1), scaled by coverage first when the month is not fully modeled.
+          if v_modeled > 0 and v_shipped > v_modeled then v_counted := v_counted + round(v_sum::numeric * v_shipped / v_modeled / 100) * 100; else v_counted := v_counted + round(v_sum::numeric / 100) * 100; end if;
         else
           select ml.amount into v_amount from public.simulation_monthly_lines ml join public.fee_rules mr on mr.id = ml.rule_id where ml.run_id = p_run and mr.key = k and ml.status = 'priced';
           if v_amount is not null then v_counted := v_counted + round(round(v_amount * 10000) * v_f / 100) * 100; end if;
@@ -1475,7 +1490,7 @@ begin
       if (r.minimum ->> 'includesShipping')::boolean then
         select coalesce(sum(round(sr.expected * 10000)), 0) into v_sum from public.simulation_results sr
         where sr.run_id = p_run and sr.in_totals and sr.order_id in (select x.order_id from public.simulation_order_results x where x.run_id = p_run and x.in_totals and x.order_month = b.month);
-        if v_modeled > 0 and v_shipped > v_modeled then v_counted := v_counted + round(v_sum::numeric * v_shipped / v_modeled / 100) * 100; else v_counted := v_counted + v_sum; end if;
+        if v_modeled > 0 and v_shipped > v_modeled then v_counted := v_counted + round(v_sum::numeric * v_shipped / v_modeled / 100) * 100; else v_counted := v_counted + round(v_sum::numeric / 100) * 100; end if;
       end if;
       v_min := round((r.minimum ->> 'amount')::numeric * 10000 * v_f / 100) * 100;
       v_tot_min := v_tot_min + v_min; v_tot_counted := v_tot_counted + v_counted; v_tot_top := v_tot_top + greatest(0, v_min - v_counted);
@@ -1496,6 +1511,7 @@ declare
   v_mo integer; v_ms integer; v_mp integer; v_ok integer; v_un integer;
   v_def numeric(14,2); v_est numeric(14,2); v_exp numeric(14,2); v_cond numeric(14,2); v_unr numeric(14,2);
   v_po integer; v_pdef numeric(14,4); v_pest numeric(14,4); v_counts jsonb; v_fixed numeric(14,4); v_topup numeric(14,4); v_mstatus text; v_n integer; m record; v_line record;
+  v_ship numeric; v_projected numeric(14,2);
 begin
   select * into v_r from public.simulation_runs where id = p_run for update;
   if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
@@ -1567,7 +1583,7 @@ begin
     end if;
     -- Minimum top-ups per calendar month, from stored order results.
     v_topup := 0; v_mstatus := 'none';
-    for m in select * from app.run_minimums(p_run) loop
+    for m in select * from app.run_minimums(p_run, p_reference_data -> 'feeDictionary') loop
       if not exists (select 1 from jsonb_array_elements(coalesce(p_summary -> 'minimums', '[]'::jsonb)) e
                      where e ->> 'ruleKey' = m.rule_key and (e ->> 'topUpE4')::bigint = m.topup_e4 and e ->> 'status' = m.status and (e ->> 'minimumE4')::bigint = m.minimum_e4 and (e ->> 'countedE4')::bigint = m.counted_e4) then
         raise exception 'minimum top-up for "%" does not reconcile (sql: % %, counted %)', m.rule_key, m.status, m.topup_e4, m.counted_e4 using errcode = 'PC003';
@@ -1577,6 +1593,22 @@ begin
                         when m.status = 'upper_bound' or v_mstatus = 'upper_bound' then 'upper_bound' else 'exact' end;
     end loop;
     if (p_summary #>> '{minimumStatus}') is distinct from v_mstatus then raise exception 'minimum status does not reconcile (%)', v_mstatus using errcode = 'PC003'; end if;
+
+    -- Projected monthly total (design §2 allocate, D3–D5): shipping and processing extrapolated from the processing
+    -- orders at ≥ 80 % coverage (else the period average), plus monthly fixed charges and an exact top-up. One rounding.
+    if v_r.monthly_orders is not null and v_po > 0 then
+      select coalesce(sum(sr.expected), 0) into v_ship from public.simulation_results sr
+       where sr.run_id = p_run and sr.in_totals and sr.order_id in (select x.order_id from public.simulation_order_results x where x.run_id = p_run and x.in_totals);
+      if v_r.population_orders > 0 and v_po::numeric * 100 / v_r.population_orders >= 80 then
+        v_projected := v_ship * v_r.monthly_orders / v_po + (v_pdef + v_pest) * v_r.monthly_orders / v_po;
+      else
+        v_projected := (v_ship + v_pdef + v_pest) / coalesce(nullif(v_r.forecast_months, 0), 1);
+      end if;
+      v_projected := round(v_projected + v_fixed + case when v_mstatus = 'exact' then v_topup / coalesce(nullif(v_r.forecast_months, 0), 1) else 0 end, 2);
+      if p_summary #>> '{allocation,monthly,total}' is null or abs((p_summary #>> '{allocation,monthly,total}')::numeric - v_projected) > 0.01 then
+        raise exception 'projected monthly total does not reconcile (sql %)', v_projected using errcode = 'PC003';
+      end if;
+    end if;
   else
     if jsonb_array_length(coalesce(p_monthly_lines, '[]'::jsonb)) <> 0 then raise exception 'this run has no monthly fees' using errcode = 'PC003'; end if;
   end if;
@@ -1586,11 +1618,12 @@ begin
          modeled_orders = v_mo, modeled_shipments = v_ms, modeled_packages = v_mp, ok_shipments = v_ok, unavailable_shipments = v_un,
          total_definite = v_def, total_estimated = v_est, total_expected = v_exp, total_conditional = v_cond, total_unresolved = v_unr,
          processing_orders = v_po, processing_definite = v_pdef, processing_estimated = v_pest, fee_status_counts = v_counts,
-         monthly_fixed = v_fixed, minimum_topup = v_topup, minimum_status = v_mstatus,
+         monthly_fixed = v_fixed, minimum_topup = v_topup, minimum_status = v_mstatus, projected_monthly = v_projected,
          finished_at = now(), last_progress_at = now()
    where id = p_run;
   return jsonb_build_object('modeledOrders', v_mo, 'modeledShipments', v_ms, 'modeledPackages', v_mp, 'okShipments', v_ok, 'unavailableShipments', v_un, 'expected', v_exp::text,
-                            'processingOrders', v_po, 'processingDefinite', v_pdef::text, 'processingEstimated', v_pest::text, 'monthlyFixed', v_fixed::text, 'minimumTopUp', v_topup::text, 'minimumStatus', v_mstatus);
+                            'processingOrders', v_po, 'processingDefinite', v_pdef::text, 'processingEstimated', v_pest::text, 'monthlyFixed', v_fixed::text, 'minimumTopUp', v_topup::text, 'minimumStatus', v_mstatus,
+                            'projectedMonthly', v_projected::text);
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -1599,7 +1632,7 @@ end $$;
 create function public.save_forecast_run(p_brand uuid, p_rate_card uuid, p_name text, p_assumptions jsonb, p_summary jsonb, p_pins jsonb, p_engine_version text, p_fee_engine_version text) returns uuid
 language plpgsql security definer set search_path = '' as $$
 declare
-  v_tenant uuid; v_project uuid; v_run uuid; v_as_of date; v_schedule uuid; v_version uuid; v_orders numeric; v_parts numeric; v_allin numeric;
+  v_tenant uuid; v_project uuid; v_run uuid; v_as_of date; v_schedule uuid; v_version uuid; v_orders numeric; v_parts numeric; v_allin numeric; v_monthly_e4 bigint;
 begin
   select tenant_id into v_tenant from public.brands where id = p_brand;
   if v_tenant is null or not app.can_model_brand(v_tenant, p_brand) then raise exception 'customer not found' using errcode = 'P0002'; end if;
@@ -1636,6 +1669,11 @@ begin
     perform app.validate_fulfillment(p_assumptions -> 'fulfillment', v_version);
   end if;
   if (p_pins ->> 'feeScheduleVersionId')::uuid is distinct from v_version then raise exception 'the forecast was priced with a fee schedule version that is not in effect on its date' using errcode = 'PC003'; end if;
+  -- The monthly charges of a forecast are recomputed here from the answers and must agree with the summary.
+  if v_version is not null and p_assumptions -> 'fulfillment' is not null and jsonb_typeof(p_assumptions -> 'fulfillment') <> 'null' and coalesce(p_assumptions #>> '{fulfillment,skip}', 'false') <> 'true' then
+    select coalesce(sum(round(l.amount * 10000)), 0)::bigint into v_monthly_e4 from app.fee_monthly_lines(v_version, p_assumptions -> 'fulfillment', v_orders) l where l.status = 'priced';
+    if (p_summary #>> '{monthly,totalE4}')::bigint is distinct from v_monthly_e4 then raise exception 'forecast monthly charges do not reconcile (sql %)', v_monthly_e4 using errcode = 'PC003'; end if;
+  end if;
 
   insert into public.simulation_projects (tenant_id, brand_id, kind, name, rate_card_id) values (v_tenant, p_brand, 'forecast', btrim(p_name), p_rate_card) returning id into v_project;
   insert into public.simulation_runs (project_id, tenant_id, brand_id, kind, status, pricing_basis, as_of_date, assumptions, total_shipments, processed_shipments, next_row_no, summary, reference_data, engine_version, fee_engine_version,

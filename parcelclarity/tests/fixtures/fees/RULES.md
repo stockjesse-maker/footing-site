@@ -4,7 +4,7 @@ These rules restate `m4-design-v2.md` §1, §2 and §4 precisely enough to compu
 
 ## A. Order-scope rules (`calculateOrderFees(input, schedule, context)`)
 
-Quantities (q) per basis: `order` 1; `unit` input.units; `line` input.lines; `sku` input.distinctSkus; `package` number of packages; `shipment` input.shipments; `shipping_percent` the base amount (see A6); `order_driver` the driver count (see A7). A null quantity is **unknown**.
+Quantities (q) per basis: `order` 1; `unit` input.units; `line` input.lines; `sku` input.distinctSkus; `package` number of packages; `shipment` input.shipments; `shipping_percent` the base amount (see A6); `order_driver` the driver count (see A7). A null quantity is **unknown**. The caller derives them from the order file as: `lines` = the order's lines with units > 0, **null when there are none** (a file with no line data, or an order with no line rows); `distinctSkus` = distinct non-null SKUs among those lines, **null when lines is null or any counted line has no SKU** (a per-product fee is then not computed rather than undercounted).
 
 A1. Free allowance: free = includedQuantity × count(includedPer) where count(order) = 1, count(line) = lines, count(sku) = distinctSkus, count(shipment) = shipments, (null includedPer) = 1. Chargeable c = max(0, q − free). If the count the allowance reads is unknown → the rule is unresolved (`lines_unknown` / `skus_unknown`).
 
