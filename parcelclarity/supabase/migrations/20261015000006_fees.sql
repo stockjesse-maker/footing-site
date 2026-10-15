@@ -1170,7 +1170,7 @@ declare
   v_live uuid; v_run uuid; v_total integer;
   v_f jsonb; v_schedule uuid; v_mversion uuid; v_period jsonb; v_months numeric(12,6); v_basis text := 'none';
   v_orders numeric(14,4); v_units numeric(14,4); v_pkgs numeric(14,4); v_ships numeric(14,4); v_in integer; v_rates jsonb := '{}'::jsonb; v_ver record; v_rule record; v_q numeric; v_rate numeric; v_vr jsonb;
-  v_from date; v_to date;
+  v_from date; v_to date; v_mdate date;
 begin
   select * into v_p from public.simulation_projects where id = p_project for update;
   if not found or not app.can_model_brand(v_p.tenant_id, v_p.brand_id) or (not v_p.shared_with_brand and not app.is_tenant_staff(v_p.tenant_id)) then
@@ -1228,10 +1228,18 @@ begin
     v_ships := round((v_period ->> 'shipments')::numeric / v_in * v_orders, 4);
   end if;
 
-  -- Fee schedule: the brand's active assignment; monthly components use the version in effect on the as-of date (or the period end).
+  -- Fee schedule: the brand's active assignment; monthly components use the version in effect on the as-of date (or the period
+  -- end). When no version covers that date but an earlier one existed, the latest version that started on or before it is used
+  -- for the monthly components (its dates are shown as provenance); orders are still pinned per date.
   v_schedule := app.brand_fee_schedule(v_p.brand_id);
   if v_schedule is not null then
-    v_mversion := app.fee_version_on(v_schedule, coalesce(case when p_pricing_basis = 'fixed_date' then p_as_of_date end, v_to, current_date));
+    v_mdate := coalesce(case when p_pricing_basis = 'fixed_date' then p_as_of_date end, v_to, current_date);
+    v_mversion := app.fee_version_on(v_schedule, v_mdate);
+    if v_mversion is null then
+      select v.id into v_mversion from public.fee_schedule_versions v
+       where v.schedule_id = v_schedule and v.status in ('active', 'archived') and v.effective_date <= v_mdate
+       order by v.effective_date desc, v.version_number desc limit 1;
+    end if;
   end if;
   if v_f is not null and coalesce(v_f ->> 'skip', 'false') <> 'true' then
     if v_mversion is null and (jsonb_typeof(v_f -> 'drivers') = 'object' and v_f -> 'drivers' <> '{}'::jsonb or jsonb_typeof(v_f -> 'orderShares') = 'object' and v_f -> 'orderShares' <> '{}'::jsonb) then
@@ -1393,6 +1401,9 @@ begin
   select count(distinct s.order_id) into v_orders from public.shipments s where s.dataset_id = v_ds and s.row_no between p_from_row and p_to_row;
   if jsonb_typeof(coalesce(p_order_results, 'null'::jsonb)) <> 'array' or jsonb_array_length(p_order_results) <> v_orders then
     raise exception 'window %–% covers % orders, got % order results', p_from_row, p_to_row, v_orders, jsonb_array_length(coalesce(p_order_results, '[]'::jsonb)) using errcode = 'PC003';
+  end if;
+  if (select count(distinct x.order_id) from jsonb_to_recordset(p_order_results) as x(order_id uuid)) <> v_orders then
+    raise exception 'order results name the same order twice' using errcode = 'PC003';
   end if;
   if exists (
     select 1
@@ -1670,6 +1681,10 @@ begin
   if v_version is not null and p_assumptions -> 'fulfillment' is not null and jsonb_typeof(p_assumptions -> 'fulfillment') <> 'null' and coalesce(p_assumptions #>> '{fulfillment,skip}', 'false') <> 'true' then
     select coalesce(sum(round(l.amount * 10000)), 0)::bigint into v_monthly_e4 from app.fee_monthly_lines(v_version, p_assumptions -> 'fulfillment', v_orders) l where l.status = 'priced';
     if (p_summary #>> '{monthly,totalE4}')::bigint is distinct from v_monthly_e4 then raise exception 'forecast monthly charges do not reconcile (sql %)', v_monthly_e4 using errcode = 'PC003'; end if;
+    -- "none" means the version has no account minimum; anything else means it has one (the amounts are application-computed).
+    if (coalesce(p_summary ->> 'minimumStatus', 'none') = 'none') <> not exists (select 1 from public.fee_rules r where r.version_id = v_version and r.basis = 'minimum') then
+      raise exception 'forecast minimum status does not match the fee schedule' using errcode = 'PC003';
+    end if;
   end if;
 
   insert into public.simulation_projects (tenant_id, brand_id, kind, name, rate_card_id) values (v_tenant, p_brand, 'forecast', btrim(p_name), p_rate_card) returning id into v_project;

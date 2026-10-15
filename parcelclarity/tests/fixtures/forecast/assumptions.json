@@ -241,7 +241,6 @@
         "scope": "monthly",
         "basis": "minimum",
         "method": "minimum",
-        "amount": "500.0000",
         "percent": null,
         "minimum": {
           "amount": "500.0000",

@@ -22,7 +22,7 @@
       { "key": "receiving_case", "name": "Loose carton receiving", "category": "receiving", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "0.3500", "percent": null, "driver": { "key": "cases_received", "label": "Loose cartons (not on pallets) you send in each month", "unit": "cartons", "kind": "monthly_quantity" }, "position": 11 },
       { "key": "returns", "name": "Returns processing", "category": "returns", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "3.0000", "percent": null, "driver": { "key": "returns_rate", "label": "Out of every 100 orders, how many come back?", "unit": "returns", "kind": "returns_rate" }, "position": 12 },
       { "key": "admin", "name": "Account administration", "category": "account", "scope": "monthly", "basis": "month", "method": "flat", "amount": "99.0000", "percent": null, "position": 13 },
-      { "key": "minimum", "name": "Monthly account minimum", "category": "account", "scope": "monthly", "basis": "minimum", "method": "minimum", "amount": "500.0000", "percent": null, "minimum": { "amount": "500.0000", "appliesTo": { "categories": ["pick_pack", "packaging", "storage", "receiving"], "includeRuleKeys": [], "excludeRuleKeys": [] }, "includesShipping": false }, "resolvedRuleKeys": ["pick_order", "pick_additional", "pack_mailer", "pack_box", "pack_other", "storage_pallet", "storage_long_term", "receiving_pallet", "receiving_case"], "position": 14 }
+      { "key": "minimum", "name": "Monthly account minimum", "category": "account", "scope": "monthly", "basis": "minimum", "method": "minimum", "percent": null, "minimum": { "amount": "500.0000", "appliesTo": { "categories": ["pick_pack", "packaging", "storage", "receiving"], "includeRuleKeys": [], "excludeRuleKeys": [] }, "includesShipping": false }, "resolvedRuleKeys": ["pick_order", "pick_additional", "pack_mailer", "pack_box", "pack_other", "storage_pallet", "storage_long_term", "receiving_pallet", "receiving_case"], "position": 14 }
     ]
   },
   "lines": {
@@ -108,7 +108,7 @@
     "rounding": "invoice_line",
     "rules": [
       { "key": "pick_order", "name": "Pick & pack, per order", "category": "pick_pack", "scope": "order", "basis": "order", "method": "flat", "amount": "2.0000", "percent": null, "position": 1 },
-      { "key": "minimum_all", "name": "Monthly minimum (fees and shipping)", "category": "account", "scope": "monthly", "basis": "minimum", "method": "minimum", "amount": "1000.0000", "percent": null, "minimum": { "amount": "1000.0000", "appliesTo": { "categories": ["pick_pack"], "includeRuleKeys": [], "excludeRuleKeys": [] }, "includesShipping": true }, "resolvedRuleKeys": ["pick_order"], "position": 2 }
+      { "key": "minimum_all", "name": "Monthly minimum (fees and shipping)", "category": "account", "scope": "monthly", "basis": "minimum", "method": "minimum", "percent": null, "minimum": { "amount": "1000.0000", "appliesTo": { "categories": ["pick_pack"], "includeRuleKeys": [], "excludeRuleKeys": [] }, "includesShipping": true }, "resolvedRuleKeys": ["pick_order"], "position": 2 }
     ]
   }
 }
