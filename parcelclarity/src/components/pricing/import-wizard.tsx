@@ -618,7 +618,7 @@ function GridSheetCard({ index, sheet, detected, groups, onChange }: { index: nu
           <h3 className="text-lg font-semibold tracking-tight">{sheet.sheet}</h3>
           <CardDescription>{detected ? `${count(detected.rowCount)} rows below header row ${sheet.headerRow + 1}` : "This sheet was not found in the file."}</CardDescription>
         </div>
-        <Button variant="secondary" aria-pressed={!sheet.include} onClick={() => onChange({ ...sheet, include: !sheet.include })}>
+        <Button variant="secondary" onClick={() => onChange({ ...sheet, include: !sheet.include })}>
           {sheet.include ? "Skip this sheet" : "Include this sheet"}
         </Button>
       </div>
@@ -692,7 +692,7 @@ function SampleTable({ sheet, tags }: { sheet: DetectedSheet; tags: ReadonlyMap<
   const width = Math.max(sheet.headers.length, ...sheet.sample.map((r) => r.length));
   const cols = Array.from({ length: width }, (_, i) => i);
   return (
-    <div className="overflow-x-auto rounded-control border border-line">
+    <div tabIndex={0} role="region" aria-label={`First rows of ${sheet.name}`} className="overflow-x-auto rounded-control border border-line">
       <table className="w-full text-sm">
         <caption className="sr-only">
           First {sheet.sample.length} rows of sheet {sheet.name}
@@ -856,24 +856,29 @@ function ReviewSection({
 
 function IssueList({ title, issues, tone, collapsible }: { title: string; issues: Issue[]; tone: "danger" | "warning"; collapsible?: boolean }) {
   const heading = `${title} (${count(issues.length)})`;
+  // The scroll region is focusable so keyboard users can reach issues beyond the first screenful.
   const list = (
-    <ul className="max-h-96 divide-y divide-line overflow-y-auto rounded-card border border-line bg-raised">
-      {issues.map((issue, i) => (
-        <li key={`${issue.code}-${issue.sheet ?? ""}-${issue.row ?? ""}-${i}`} className="px-4 py-3 text-sm">
-          <span className={cn("mr-2 font-medium", tone === "danger" ? "text-danger" : "text-warning")}>{where(issue) || "File"}</span>
-          {issue.message}
-        </li>
-      ))}
-    </ul>
+    <div tabIndex={0} role="region" aria-label={heading} className="max-h-96 overflow-y-auto rounded-card border border-line bg-raised">
+      <ul className="divide-y divide-line">
+        {issues.map((issue, i) => (
+          <li key={`${issue.code}-${issue.sheet ?? ""}-${issue.row ?? ""}-${i}`} className="px-4 py-3 text-sm">
+            <span className={cn("mr-2 font-medium", tone === "danger" ? "text-danger" : "text-warning")}>{where(issue) || "File"}</span>
+            {issue.message}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
   if (collapsible && issues.length > 5) {
+    // The heading stays outside the disclosure: inside <summary> it would drop out of the heading outline.
     return (
-      <details>
-        <summary className="inline-flex min-h-11 cursor-pointer items-center">
-          <h3 className="text-base font-semibold">{heading}</h3>
-        </summary>
-        <div className="mt-3">{list}</div>
-      </details>
+      <div>
+        <h3 className="text-base font-semibold">{heading}</h3>
+        <details className="mt-2">
+          <summary className="inline-flex min-h-11 cursor-pointer items-center text-sm font-medium text-accent-text">Show {title.toLowerCase()}</summary>
+          <div className="mt-3">{list}</div>
+        </details>
+      </div>
     );
   }
   return (

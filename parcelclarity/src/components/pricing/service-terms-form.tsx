@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { updateServiceTerms } from "@/app/actions/rate-cards";
 import { ActionForm, SubmitButton, useFormState } from "@/components/forms/action-form";
+import { formatUsd } from "@/components/pricing/version-rows-table";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
@@ -60,8 +61,6 @@ const WEIGHT_ROUNDING_LABELS: Record<WeightRounding, string> = {
 };
 const DIMENSION_ROUNDING_OPTIONS = (Object.keys(DIMENSION_ROUNDING_LABELS) as DimensionRounding[]).map((value) => ({ value, label: DIMENSION_ROUNDING_LABELS[value] }));
 const WEIGHT_ROUNDING_OPTIONS = (Object.keys(WEIGHT_ROUNDING_LABELS) as WeightRounding[]).map((value) => ({ value, label: WEIGHT_ROUNDING_LABELS[value] }));
-
-const money = (value: string) => `$${Number(value).toFixed(2)}`;
 
 // ---------------------------------------------------------------------------
 // Form fields that TextField/SelectField do not cover: date inputs, decimal inputs with a
@@ -126,10 +125,11 @@ function CheckboxField({ name, label, hint, id, defaultChecked }: BaseFieldProps
   const state = useFormState();
   const controlId = id ?? name;
   const error = state.errors?.[name];
+  const describedBy = [hint ? `${controlId}-hint` : null, error ? `${controlId}-error` : null].filter(Boolean).join(" ") || undefined;
   return (
     <div className="space-y-1.5">
       <label htmlFor={controlId} className="flex min-h-11 items-center gap-3 text-sm font-medium">
-        <input id={controlId} name={name} type="checkbox" defaultChecked={defaultChecked} aria-describedby={hint ? `${controlId}-hint` : undefined} className="size-5 shrink-0 accent-accent" />
+        <input id={controlId} name={name} type="checkbox" defaultChecked={defaultChecked} aria-invalid={error ? true : undefined} aria-describedby={describedBy} className="size-5 shrink-0 accent-accent" />
         {label}
       </label>
       {hint ? (
@@ -138,7 +138,7 @@ function CheckboxField({ name, label, hint, id, defaultChecked }: BaseFieldProps
         </p>
       ) : null}
       {error ? (
-        <p role="alert" className="text-sm font-medium text-danger">
+        <p id={`${controlId}-error`} role="alert" className="text-sm font-medium text-danger">
           {error}
         </p>
       ) : null}
@@ -260,7 +260,7 @@ function TermsSummary({ terms }: { terms: ServiceTermsRecord }) {
     ["Billable weight rounding", WEIGHT_ROUNDING_LABELS[terms.weightRounding]],
     ["Minimum billable weight", terms.minBillableLb ? `${terms.minBillableLb} lb` : "None"],
     ["Exempt from DIM", terms.dimExempt ? "Yes" : "No"],
-    ["Minimum charge", terms.minCharge ? money(terms.minCharge) : "None"],
+    ["Minimum charge", terms.minCharge ? formatUsd(terms.minCharge) : "None"],
     ["Included surcharges", terms.includedSurchargeKeys.join(", ") || "None"],
     ["Waived surcharges", terms.excludedSurchargeKeys.join(", ") || "None"],
     ["Surcharge markup", terms.surchargeMarkupPercent ? `${terms.surchargeMarkupPercent}%` : "None"],

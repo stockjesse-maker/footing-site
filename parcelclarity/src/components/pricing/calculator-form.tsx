@@ -175,7 +175,7 @@ function PackageRow({
       <div className="flex min-h-9 items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Package {index + 1}</h3>
         {removable ? (
-          <Button type="button" size="sm" variant="ghost" onClick={onRemove} aria-label={`Remove package ${index + 1}`}>
+          <Button type="button" size="sm" className="min-h-11 sm:min-h-9" variant="ghost" onClick={onRemove} aria-label={`Remove package ${index + 1}`}>
             Remove
           </Button>
         ) : null}
@@ -244,10 +244,11 @@ function CompareCell({ label, children, emphasis }: { label: string; children: R
   );
 }
 
-function sumBillableLb(result: ShipmentCalculation): string {
-  if (!result.packages.length) return "—";
-  const total = result.packages.reduce((acc, p) => acc + Number(p.billableLb), 0);
-  return formatDecimal(total.toFixed(4));
+/** The engine prices each package on its own billable weight; the UI never sums them. Several packages are counted, and the expanded result lists each weight. */
+function billableLbCell(result: ShipmentCalculation): string {
+  const [first] = result.packages;
+  if (!first) return "—";
+  return result.packages.length === 1 ? formatDecimal(first.billableLb) : `${result.packages.length} pkgs`;
 }
 
 function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
@@ -261,7 +262,7 @@ function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
       <div className={`hidden gap-3 px-5 text-xs font-medium text-muted sm:grid ${COMPARE_COLUMNS}`} aria-hidden="true">
         <span>Service</span>
         <span>Status</span>
-        <span>Billable lb</span>
+        <span>Billable lb (1 pkg)</span>
         <span>Expected</span>
         <span>Definite</span>
         <span>Estimated</span>
@@ -279,7 +280,7 @@ function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
                   <span className="text-xs text-muted sm:sr-only">Status</span>
                   <Badge tone={ok ? "success" : "warning"}>{ok ? "Priced" : "Unavailable"}</Badge>
                 </span>
-                <CompareCell label="Billable lb">{ok ? sumBillableLb(r) : "—"}</CompareCell>
+                <CompareCell label="Billable lb (1 pkg)">{ok ? billableLbCell(r) : "—"}</CompareCell>
                 <CompareCell label="Expected" emphasis>
                   {ok ? formatMoney(r.totals.expected) : "—"}
                 </CompareCell>
@@ -472,7 +473,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
     <div className="space-y-8">
       <Card>
         <CardTitle>Shipment</CardTitle>
-        <CardDescription>Price one shipment the way a customer&apos;s invoice is built: base rate, surcharges and fuel from the rate card and the rules in force on the ship date.</CardDescription>
+        <CardDescription>Price one shipment from the rate card: base rate, surcharges and fuel under the rules in force on the ship date. The result is an estimate, never an invoice.</CardDescription>
         <form onSubmit={submit} noValidate className="mt-5 space-y-8">
           <fieldset className="space-y-4">
             <legend className="text-sm font-semibold">Pricing</legend>

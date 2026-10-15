@@ -24,8 +24,8 @@ _Last updated: end of Milestone 2. This file is the source of truth for what wor
 
 | Capability | State | How verified |
 |---|---|---|
-| Pure pricing engine `src/engine` (no framework imports, enforced by ESLint): decimal money, DIM/billable weight with service rounding (incl. postal), zone charts per service, weight-bracket rate lookup with origin scoping, surcharge rules (flat / per-unit / percent, conditions incl. ZIP lists, `any_of`, `rule_applied`), exclusivity groups, bundling, rule-imposed billable-weight floors, customer overrides (5 modes), service markup, line statuses (charged / included / waived / conditional / unknown), charge classes (definite / estimated / conditional), split totals incl. `unresolved`, full references (engine, card, terms, rule key@version, ZIP lists, overrides) and warnings | Done | 271 unit tests: 32-scenario golden dataset derived independently of the engine, per-area suites, two adversarial review suites whose findings were fixed |
-| Rate-card schema: carriers/services reference data, rate cards, versions (draft → active → archived/discarded, non-overlapping active windows), per-service terms, rows (generated bracket bounds, no overlaps), zone charts, brand assignments (optionally limited to services), uploaded files (bytea, 5 MB), imports | Done | 25 DB tests on real PostgreSQL (108 DB tests in total), exclusion constraints exercised |
+| Pure pricing engine `src/engine` (no framework imports, enforced by ESLint): decimal money, DIM/billable weight with service rounding (incl. postal), zone charts per service, weight-bracket rate lookup with origin scoping, surcharge rules (flat / per-unit / percent, conditions incl. ZIP lists, `any_of`, `rule_applied`), exclusivity groups, bundling, rule-imposed billable-weight floors, customer overrides (5 modes), service markup, line statuses (charged / included / waived / conditional / unknown), charge classes (definite / estimated / conditional), split totals incl. `unresolved`, full references (engine, card, terms, rule key@version, ZIP lists, overrides) and warnings | Done | 279 unit tests: 32-scenario golden dataset derived independently of the engine, per-area suites, two adversarial review suites whose findings were fixed |
+| Rate-card schema: carriers/services reference data, rate cards, versions (draft → active → archived/discarded, non-overlapping active windows), per-service terms, rows (generated bracket bounds, no overlaps), zone charts, brand assignments (optionally limited to services), uploaded files (bytea, 5 MB), imports | Done | 31 DB tests on real PostgreSQL (114 DB tests in total), exclusion constraints exercised |
 | Surcharge rules: platform or tenant scope (optionally one brand), immutable published versions, retire, verification status + source reference required, ZIP lists (draft/published, entries), customer overrides with non-overlapping dates | Done | DB tests + engine tests |
 | RLS: brands see only cards assigned to them, only the active version, only allowed services; never drafts, imports, files, other brands' overrides or other tenants; writes need `ratecard.manage`; lifecycle only via SECURITY DEFINER RPCs; `pricing_rules_for_card` authorizes once and returns only what the caller may see | Done | `tests/db/pricing.test.ts` (every role, cross-tenant, cross-brand, suspended brand, ended assignment) |
 | Audit: card creation, activation, assignment, rule publication, calculator runs; lifecycle namespaces unforgeable through `log_audit_event` | Done | DB tests |
@@ -40,9 +40,9 @@ _Last updated: end of Milestone 2. This file is the source of truth for what wor
 |---|---|
 | `npm run typecheck` | pass |
 | `npm run lint` | pass |
-| `npm test` (unit) | 271 / 271 pass |
-| `npm run test:db` (RLS/authorization, real PostgreSQL 16 + real Supabase Auth schema) | 108 / 108 pass |
-| `npm run test:e2e` (Playwright, desktop + iPhone emulation) | __E2E_LINE__ |
+| `npm test` (unit) | 279 / 279 pass |
+| `npm run test:db` (RLS/authorization, real PostgreSQL 16 + real Supabase Auth schema) | 114 / 114 pass |
+| `npm run test:e2e` (Playwright: 19 desktop incl. axe and the pricing journey, 3 iPhone-emulated) | 22 / 22 pass |
 | `next build` | pass |
 | `npm audit --omit=dev --audit-level=high` | 0 vulnerabilities |
 | `npm audit` (including dev tooling) | 5 high advisories, all the same `braces` issue reachable only through the ESLint/Next lint toolchain (dev-only) |
@@ -58,7 +58,9 @@ _Last updated: end of Milestone 2. This file is the source of truth for what wor
 7. **Calculator rate limit** is 600 runs per user per hour (PostgreSQL-backed). Bulk pricing (order files) is Milestone 3.
 8. **Grid-format import** requires a labelled weight column and zone headers; unusual layouts fall back to manual mapping in the wizard, and some may need re-saving in the long format (template provided).
 9. **Metric units and non-US destinations** are not supported by the engine or forms.
-10. Milestone 1 limitations still apply: not exercised against hosted Supabase; email delivery untested on a real provider; no real iPhone testing; no CSP; no MFA/SSO; no CI workflow committed; no tenant export/deletion.
+10. **End-to-end coverage is a single journey.** `pricing.spec.ts` drives the long-format CSV fixture through import → terms → zone chart → activation → three rules → calculator (three golden scenarios) → assignment, plus cross-tenant 404s and an honest import failure. Not driven in a browser: grid/XLSX imports, customer exceptions and ZIP-list uploads, version end/archive, rule retire/new-version, multi-package and USPS ounce scenarios, the brand side of an assignment, and axe/iPhone checks on the new pages (unit and database tests cover the logic; the UI paths are untested).
+11. **Adversarial code review was run and acted on.** Three reviewers (authorization, data-path correctness, UI honesty/accessibility) produced 40 findings; the confirmed ones were fixed in this milestone (brand exceptions were silently dropped for brand callers, inclusive-integer weight ranges imported with holes, unknown weight units fell back to a default, over-long sheets were truncated silently, zone charts could be replaced half-way, archived cards still accepted versions, and others) and each fix has a test. One finding was rejected after discussion: the surcharge markup percentage is a term of the customer's own rate card, so customers may see it; it is labelled as customer-visible in the terms form.
+12. Milestone 1 limitations still apply: not exercised against hosted Supabase; email delivery untested on a real provider; no real iPhone testing; no CSP; no MFA/SSO; no CI workflow committed; no tenant export/deletion.
 
 ## Design decisions made in Milestone 2 (say so if you disagree)
 

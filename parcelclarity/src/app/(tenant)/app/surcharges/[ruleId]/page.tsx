@@ -210,7 +210,7 @@ export default async function SurchargeRuleDetail({ params }: { params: Promise<
       ) : null}
       {!own ? (
         <Alert className="mb-6">
-          This rule is published by ParcelClarity from a verified carrier source and cannot be edited here. To charge a customer something different, add an exception from the customer&apos;s page or create your own rule.
+          This rule is published by ParcelClarity and cannot be edited here. Each version shows its own source and verification status. To charge a customer something different, add an exception from the customer&apos;s page or create your own rule.
         </Alert>
       ) : null}
       {own && !archived && versions.length > 0 && !current ? (

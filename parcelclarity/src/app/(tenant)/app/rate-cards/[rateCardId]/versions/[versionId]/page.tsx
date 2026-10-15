@@ -184,7 +184,7 @@ export default async function VersionPage({ params, searchParams }: { params: Pr
         }
         actions={
           <>
-            {can(role, "simulation.run") && (draft || active) ? (
+            {can(role, "simulation.run") && (draft || active) && card.status !== "archived" ? (
               <ButtonLink href={`/app/calculator?rateCardId=${card.id}&versionId=${version.id}`} variant="secondary">
                 Test in calculator
               </ButtonLink>

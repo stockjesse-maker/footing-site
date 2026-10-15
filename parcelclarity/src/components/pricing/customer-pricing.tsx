@@ -222,7 +222,7 @@ function AssignedRateCards({ assignments, serviceName, canManage }: { assignment
           <DataRow key={a.id}>
             <div className="min-w-0">
               <p className="font-medium">
-                <Link href={`/app/rate-cards/${a.rate_card_id}`} className="text-accent-text hover:underline">
+                <Link href={`/app/rate-cards/${a.rate_card_id}`} className="inline-flex min-h-11 items-center text-accent-text hover:underline">
                   {a.rate_cards?.name ?? "Rate card"}
                 </Link>
               </p>
@@ -302,7 +302,11 @@ function AssignRateCardForm({ brandId, cards, groups, hasActiveCards }: { brandI
 // ---------------------------------------------------------------------------
 function OverridesList({ overrides, carrierLabel, canManage }: { overrides: OverrideRow[]; carrierLabel: (code: string) => string; canManage: boolean }) {
   if (!overrides.length) {
-    return <EmptyState title="No exceptions">{canManage ? "Every published surcharge applies to this customer exactly as the rule states." : "Every published surcharge applies to this customer exactly as the rule states. Administrators can add exceptions."}</EmptyState>;
+    return (
+      <EmptyState title="No exceptions">
+        No customer-specific exceptions. Published surcharges apply as their rules and the assigned rate card&apos;s service terms state.{canManage ? "" : " Administrators can add exceptions."}
+      </EmptyState>
+    );
   }
   return (
     <DataList>

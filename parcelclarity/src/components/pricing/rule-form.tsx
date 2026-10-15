@@ -57,7 +57,8 @@ const CHARGE_CLASS_OPTIONS = (Object.keys(CHARGE_CLASS_LABELS) as ChargeClass[])
 const METHOD_LABELS: Record<CalculationMethod, string> = { flat: "Flat amount", percent: "Percentage", per_unit: "Per unit of declared value" };
 const METHOD_OPTIONS = (Object.keys(METHOD_LABELS) as CalculationMethod[]).map((value) => ({ value, label: METHOD_LABELS[value] }));
 
-const VERIFICATION: Record<VerificationStatus, { label: string; tone: "accent" | "success" | "warning" }> = {
+/** One label and one tone per verification status, wherever a rule version is shown (rule pages, calculator results). */
+export const VERIFICATION: Record<VerificationStatus, { label: string; tone: "accent" | "success" | "warning" }> = {
   approved_3pl_config: { label: "Approved 3PL configuration", tone: "accent" },
   verified: { label: "Verified published source", tone: "success" },
   unverified: { label: "Unverified", tone: "warning" },
@@ -401,14 +402,26 @@ function CheckBox({ id, label, hint, name, value, checked, onChange }: { id: str
   );
 }
 
-function FormError({ name }: { name: string }) {
+function FormError({ name, id }: { name: string; id?: string }) {
   const state = useFormState();
   const error = state.errors?.[name];
   return error ? (
-    <p role="alert" className="text-sm font-medium text-danger">
+    <p id={id} role="alert" className="text-sm font-medium text-danger">
       {error}
     </p>
   ) : null;
+}
+
+/** Fieldset whose group-level error (conditions, services) is announced with the group, like a Field's error with its input. */
+function ErrorFieldset({ name, id, className, children }: { name: string; id: string; className: string; children: ReactNode }) {
+  const state = useFormState();
+  const errorId = `${id}-error`;
+  return (
+    <fieldset className={className} aria-describedby={state.errors?.[name] ? errorId : undefined}>
+      {children}
+      <FormError name={name} id={errorId} />
+    </fieldset>
+  );
 }
 
 const toggle = <T,>(list: T[], item: T, on: boolean): T[] => (on ? (list.includes(item) ? list : [...list, item]) : list.filter((x) => x !== item));
@@ -560,6 +573,8 @@ function draftProblem(d: ConditionDraft): string | null {
 
 interface ConditionRowProps {
   draft: ConditionDraft;
+  /** Position in its list, for DOM ids and the accessible name of the remove button. */
+  index: number;
   /** Prefix for DOM ids (derived from the row position, so server and client render the same ids). */
   idPrefix: string;
   nested: boolean;
@@ -569,7 +584,7 @@ interface ConditionRowProps {
   onAddChild?: () => void;
 }
 
-function ConditionRow({ draft, idPrefix, nested, zipListId, onChange, onRemove, onAddChild }: ConditionRowProps) {
+function ConditionRow({ draft, index, idPrefix, nested, zipListId, onChange, onRemove, onAddChild }: ConditionRowProps) {
   const set = (patch: Partial<ConditionDraft>) => onChange({ ...draft, ...patch });
   const id = (suffix: string) => `${idPrefix}-${suffix}`;
   const types = nested ? CONDITION_TYPES.filter((t) => t.type !== "any_of") : CONDITION_TYPES;
@@ -714,7 +729,7 @@ function ConditionRow({ draft, idPrefix, nested, zipListId, onChange, onRemove, 
           {describeCondition(toCondition(draft))}
           {problem ? <span className="block font-medium text-warning">{problem}</span> : null}
         </p>
-        <Button variant="ghost" onClick={onRemove} className="self-start sm:self-auto">
+        <Button variant="ghost" onClick={onRemove} className="self-start sm:self-auto" aria-label={`Remove ${nested ? "inner condition" : "condition"} ${index + 1}`}>
           Remove
         </Button>
       </div>
@@ -749,7 +764,7 @@ function ConditionList({
       {drafts.length ? (
         <ul className="space-y-3">
           {drafts.map((d, i) => (
-            <ConditionRow key={d.id} draft={d} idPrefix={`${idPrefix}-${i}`} nested={nested} zipListId={zipListId} onChange={(next) => onChangeRow(i, next)} onRemove={() => onRemoveRow(i)} onAddChild={onAddChild ? () => onAddChild(i) : undefined} />
+            <ConditionRow key={d.id} draft={d} index={i} idPrefix={`${idPrefix}-${i}`} nested={nested} zipListId={zipListId} onChange={(next) => onChangeRow(i, next)} onRemove={() => onRemoveRow(i)} onAddChild={onAddChild ? () => onAddChild(i) : undefined} />
           ))}
         </ul>
       ) : null}
@@ -1032,14 +1047,13 @@ export function RuleForm({ mode, ruleId, catalog, carriers, brands = [], knownGr
         </div>
       </fieldset>
 
-      <fieldset className="space-y-3">
+      <ErrorFieldset name="conditions" id={id("conditions")} className="space-y-3">
         <legend className={legend}>When it applies</legend>
         <p className="text-sm text-muted">Every condition must hold. With no conditions the rule applies to every shipment on the services below.</p>
         <ConditionList drafts={cond.drafts} idPrefix={id("cond")} nested={false} zipListId={zipListId} onChangeRow={changeRow} onRemoveRow={removeRow} onAdd={addTop} onAddChild={addChild} />
-        <FormError name="conditions" />
-      </fieldset>
+      </ErrorFieldset>
 
-      <fieldset className="space-y-3">
+      <ErrorFieldset name="appliesToServiceIds" id={id("appliesToServiceIds")} className="space-y-3">
         <legend className={legend}>Services</legend>
         <p className="text-sm text-muted">{v.appliesToServiceIds.length ? `Only the ${v.appliesToServiceIds.length} selected ${carrierName} ${v.appliesToServiceIds.length === 1 ? "service" : "services"}.` : `Every ${carrierName} service. Tick services to narrow the rule.`}</p>
         {services.length ? (
@@ -1051,8 +1065,7 @@ export function RuleForm({ mode, ruleId, catalog, carriers, brands = [], knownGr
         ) : (
           <p className="text-sm text-muted">No active services are listed for this carrier.</p>
         )}
-        <FormError name="appliesToServiceIds" />
-      </fieldset>
+      </ErrorFieldset>
 
       <fieldset className="space-y-4">
         <legend className={legend}>Interaction with other rules</legend>

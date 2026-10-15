@@ -144,7 +144,7 @@ export function VersionRowsBrowser({ basePath, services, filter, rows, total }: 
             Showing rows {(from + 1).toLocaleString("en-US")}–{(from + rows.length).toLocaleString("en-US")} of {total.toLocaleString("en-US")}
             {filtered ? " matching the filters" : ""}. Prices are the base rate before surcharges; a bracket covers weights above its lower bound up to and including its upper bound.
           </p>
-          <div className="overflow-x-auto rounded-card border border-line bg-raised shadow-card">
+          <div tabIndex={0} role="region" aria-label="Rate rows" className="overflow-x-auto rounded-card border border-line bg-raised shadow-card">
             <table className="w-full text-sm">
               <caption className="sr-only">Rate rows for this version</caption>
               <thead>
@@ -196,7 +196,7 @@ export function VersionRowsBrowser({ basePath, services, filter, rows, total }: 
           {pages > 1 ? (
             <nav className="flex items-center justify-between text-sm" aria-label="Rate rows pagination">
               {filter.page > 1 ? (
-                <ButtonLink href={rowsHref(basePath, filter, filter.page - 1)} variant="secondary" size="sm">
+                <ButtonLink href={rowsHref(basePath, filter, filter.page - 1)} variant="secondary" size="sm" className="min-h-11 sm:min-h-9">
                   Previous
                 </ButtonLink>
               ) : (
@@ -206,7 +206,7 @@ export function VersionRowsBrowser({ basePath, services, filter, rows, total }: 
                 Page {filter.page} of {pages}
               </span>
               {filter.page < pages ? (
-                <ButtonLink href={rowsHref(basePath, filter, filter.page + 1)} variant="secondary" size="sm">
+                <ButtonLink href={rowsHref(basePath, filter, filter.page + 1)} variant="secondary" size="sm" className="min-h-11 sm:min-h-9">
                   Next
                 </ButtonLink>
               ) : (
@@ -220,7 +220,7 @@ export function VersionRowsBrowser({ basePath, services, filter, rows, total }: 
           title={filtered ? "No rows match these filters" : "No rate rows"}
           action={
             filtered ? (
-              <ButtonLink href={`${basePath}#rows`} variant="secondary" size="sm">
+              <ButtonLink href={`${basePath}#rows`} variant="secondary" size="sm" className="min-h-11 sm:min-h-9">
                 Clear filters
               </ButtonLink>
             ) : undefined
@@ -250,7 +250,7 @@ export function ZoneChartSummary({ count, sample }: { count: number; sample: Zon
       <p className="text-sm text-muted">
         {count.toLocaleString("en-US")} {count === 1 ? "entry" : "entries"} map origin and destination ZIP prefixes to zones. The first {Math.min(sample.length, count)} are shown.
       </p>
-      <div className="overflow-x-auto rounded-card border border-line bg-raised shadow-card">
+      <div tabIndex={0} role="region" aria-label="Zone chart sample" className="overflow-x-auto rounded-card border border-line bg-raised shadow-card">
         <table className="w-full text-sm">
           <caption className="sr-only">Zone chart sample</caption>
           <thead>

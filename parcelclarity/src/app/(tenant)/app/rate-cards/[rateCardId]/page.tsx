@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { archiveRateCard, renameRateCard, unassignRateCard } from "@/app/actions/rate-cards";
 import { ActionForm, SubmitButton, TextField } from "@/components/forms/action-form";
 import { ConfirmAction } from "@/components/forms/confirm-action";
+import { ImportStatusBadge } from "@/components/pricing/import-wizard";
 import { formatEffectivity } from "@/components/pricing/version-rows-table";
 import { Alert } from "@/components/ui/alert";
 import { Badge, statusTone } from "@/components/ui/badge";
@@ -132,7 +133,7 @@ export default async function RateCardDetail({ params }: { params: Promise<{ rat
         }
         actions={
           <>
-            {can(role, "simulation.run") && hasActive ? (
+            {can(role, "simulation.run") && hasActive && !archived ? (
               <ButtonLink href={`/app/calculator?rateCardId=${card.id}`} variant="secondary">
                 Test in calculator
               </ButtonLink>
@@ -197,7 +198,7 @@ export default async function RateCardDetail({ params }: { params: Promise<{ rat
                       <span className="mt-0.5 block text-sm text-muted">{IMPORT_STATUS[imp.status] ?? imp.status}</span>
                     </span>
                     <span className="flex shrink-0 flex-wrap items-center gap-2 text-sm text-muted">
-                      <Badge tone={imp.status === "validated" ? "success" : imp.status === "mapped" ? "warning" : "accent"}>{imp.status}</Badge>
+                      <ImportStatusBadge status={imp.status} />
                       <span className="tabular">{formatDateTime(imp.created_at)}</span>
                     </span>
                   </Link>
@@ -219,7 +220,7 @@ export default async function RateCardDetail({ params }: { params: Promise<{ rat
                   <DataRow key={a.id}>
                     <div className="min-w-0">
                       <p className="flex flex-wrap items-center gap-2 font-medium">
-                        <Link href={`/app/customers/${a.brand_id}`} className="text-accent-text hover:underline">
+                        <Link href={`/app/customers/${a.brand_id}`} className="inline-flex min-h-11 items-center text-accent-text hover:underline">
                           {a.brands?.name ?? "Customer"}
                         </Link>
                         {a.brands && a.brands.status !== "active" ? <Badge tone={statusTone(a.brands.status)}>{a.brands.status}</Badge> : null}

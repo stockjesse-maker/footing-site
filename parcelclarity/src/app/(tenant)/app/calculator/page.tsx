@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CalculatorForm, type CalculatorCard, type CalculatorService, type CalculatorVersion } from "@/components/pricing/calculator-form";
+import { Alert } from "@/components/ui/alert";
 import { ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
@@ -93,6 +94,11 @@ export default async function CalculatorPage({ searchParams }: { searchParams: P
   return (
     <>
       <PageHeader title="Calculator" description="Price a shipment against a rate card and see every charge explained: what is definite, what is estimated, and what might be adjusted after shipping." />
+      {wantedCard && !cardIds.has(wantedCard) ? (
+        <Alert tone="warning" className="mb-6">
+          The rate card you came from is archived or not available in the calculator; choose another below.
+        </Alert>
+      ) : null}
       {model.length ? (
         <CalculatorForm cards={model} initialRateCardId={initialRateCardId} initialVersionId={initialVersionId} />
       ) : (

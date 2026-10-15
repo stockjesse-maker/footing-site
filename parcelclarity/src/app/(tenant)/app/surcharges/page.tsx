@@ -203,7 +203,7 @@ export default async function SurchargesPage() {
             <h2 id="platform-heading" className="text-xl font-semibold tracking-tight">
               Published carrier rules
             </h2>
-            <p className="text-sm text-muted">Verified by ParcelClarity from the carriers&apos; published bulletins. Read-only; adjust them per customer with exceptions from the customer&apos;s page.</p>
+            <p className="text-sm text-muted">Published by ParcelClarity. Each version shows its source and verification status. Read-only; adjust them per customer with exceptions from the customer&apos;s page.</p>
           </div>
           {platformRules.length ? (
             <DataList>
@@ -241,9 +241,7 @@ export default async function SurchargesPage() {
               })}
             </DataList>
           ) : (
-            <EmptyState title="No carrier rules have been published yet">
-              ParcelClarity publishes a carrier&apos;s surcharge rules only after a reviewed verification of the carrier&apos;s own bulletin. Until then, calculations use the rules you configure above.
-            </EmptyState>
+            <EmptyState title="No carrier rules have been published yet">No carrier rules are published on this platform yet. Calculations use only the rules you configure above.</EmptyState>
           )}
         </section>
 

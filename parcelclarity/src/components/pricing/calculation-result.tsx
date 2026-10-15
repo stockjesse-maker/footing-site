@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
+import { VerificationBadge } from "@/components/pricing/rule-form";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/ui/stat";
-import type { ChargeClass, ChargeLine, LineStatus, Money, PackageWeightResult, RuleReference, ShipmentCalculation, UnavailableReason, VerificationStatus, WarningCode } from "@/engine/types";
+import type { ChargeClass, ChargeLine, LineStatus, Money, PackageWeightResult, RuleReference, ShipmentCalculation, UnavailableReason, WarningCode } from "@/engine/types";
 
 /**
  * Read-only view of one engine result. Server-safe (no hooks, no browser APIs) so pages and the
@@ -50,12 +51,6 @@ const NOT_COUNTED: Record<LineStatus, string> = {
   included: "Included in the base rate",
   waived: "Waived for this customer",
   conditional: "Only if it occurs after shipping",
-};
-
-const VERIFICATION: Record<VerificationStatus, { label: string; tone: "success" | "accent" | "danger" }> = {
-  verified: { label: "Verified source", tone: "success" },
-  approved_3pl_config: { label: "Approved 3PL configuration", tone: "accent" },
-  unverified: { label: "Unverified", tone: "danger" },
 };
 
 const WEIGHT_BASIS: Record<PackageWeightResult["basis"], string> = {
@@ -119,7 +114,6 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function RuleLine({ rule }: { rule: RuleReference }) {
-  const v = VERIFICATION[rule.verificationStatus];
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
       <span className="font-mono">
@@ -128,7 +122,7 @@ function RuleLine({ rule }: { rule: RuleReference }) {
       <span aria-hidden="true">·</span>
       <span className="break-words">{rule.sourceReference}</span>
       <span aria-hidden="true">·</span>
-      <Badge tone={v.tone}>{v.label}</Badge>
+      <VerificationBadge status={rule.verificationStatus} />
     </span>
   );
 }
