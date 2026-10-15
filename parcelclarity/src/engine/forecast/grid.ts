@@ -24,13 +24,16 @@ const DECIMAL_4 = /^\d{1,12}(\.\d{1,4})?$/;
 const SHARE = /^\d{1,3}(\.\d{1,2})?$/;
 const SLUG = /^[a-z][a-z0-9_]{0,60}$/;
 
+/** Zod keeps running refinements after a failed regex, so every numeric refinement passes a string the regex already rejected. */
+const within = (re: RegExp, test: (v: Xd) => boolean) => (v: string) => !re.test(v) || test(new X(v));
 const decimal4 = z.string().regex(DECIMAL_4, "must be a number with up to 4 decimals");
-const positive4 = decimal4.refine((v) => /[1-9]/.test(v), "must be greater than zero");
+const positive4 = decimal4.refine((v) => !DECIMAL_4.test(v) || /[1-9]/.test(v), "must be greater than zero");
+const atMost = (max: number) => within(DECIMAL_4, (v) => v.lte(max));
 const share = z
   .string()
   .regex(SHARE, "must be a percentage with up to 2 decimals")
-  .refine((v) => new X(v).lte(100), "must be at most 100");
-const rowShare = share.refine((v) => /[1-9]/.test(v), "must be greater than zero (remove the row instead)");
+  .refine(within(SHARE, (v) => v.lte(100)), "must be at most 100");
+const rowShare = share.refine((v) => !SHARE.test(v) || /[1-9]/.test(v), "must be greater than zero (remove the row instead)");
 const isoDate = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "must be a YYYY-MM-DD date")
@@ -42,10 +45,10 @@ const packagingType = z.string().trim().min(1, "must not be blank (use null for 
 
 const parcelSchema = z
   .strictObject({
-    weightLb: positive4.refine((v) => new X(v).lte(10_000), "must be at most 10,000 lb"),
-    lengthIn: positive4.refine((v) => new X(v).lte(1_000), "must be at most 1,000 in").optional(),
-    widthIn: positive4.refine((v) => new X(v).lte(1_000), "must be at most 1,000 in").optional(),
-    heightIn: positive4.refine((v) => new X(v).lte(1_000), "must be at most 1,000 in").optional(),
+    weightLb: positive4.refine(atMost(10_000), "must be at most 10,000 lb"),
+    lengthIn: positive4.refine(atMost(1_000), "must be at most 1,000 in").optional(),
+    widthIn: positive4.refine(atMost(1_000), "must be at most 1,000 in").optional(),
+    heightIn: positive4.refine(atMost(1_000), "must be at most 1,000 in").optional(),
     packagingType,
     sharePct: rowShare,
     unknownSize: z.boolean().optional(),
@@ -77,7 +80,10 @@ const contentRowSchema = z
   })
   .refine((r) => r.lines <= r.units, { message: "an order cannot have more lines than items", path: ["lines"] });
 
-const average = positive4.refine((v) => new X(v).gte(1) && new X(v).lte(FORECAST_LIMITS.unitsMax), `must be between 1 and ${FORECAST_LIMITS.unitsMax}`);
+const average = positive4.refine(
+  within(DECIMAL_4, (v) => v.gte(1) && v.lte(FORECAST_LIMITS.unitsMax)),
+  `must be between 1 and ${FORECAST_LIMITS.unitsMax}`,
+);
 
 const contentSchema = z
   .strictObject({
@@ -89,7 +95,7 @@ const contentSchema = z
     message: "describe the typical order either as rows or as averageUnits and averageLines",
   });
 
-const driverAnswer = decimal4.refine((v) => new X(v).lte(1_000_000_000), "is out of range").nullable();
+const driverAnswer = decimal4.refine(atMost(1_000_000_000), "is out of range").nullable();
 const orderShareAnswer = z
   .strictObject({
     sharePct: share,
@@ -109,7 +115,7 @@ const assumptionsSchema = z.strictObject({
   monthlyOrders: z
     .string()
     .regex(/^\d{1,8}$/, "must be a whole number of orders")
-    .refine((v) => new X(v).gte(FORECAST_LIMITS.monthlyOrdersMin) && new X(v).lte(FORECAST_LIMITS.monthlyOrdersMax), "must be between 1 and 5,000,000"),
+    .refine(within(/^\d{1,8}$/, (v) => v.gte(FORECAST_LIMITS.monthlyOrdersMin) && v.lte(FORECAST_LIMITS.monthlyOrdersMax)), "must be between 1 and 5,000,000"),
   asOfDate: isoDate,
   originZip: z.string().regex(/^\d{5}$/, "must be a 5-digit US ZIP code"),
   parcels: z.array(parcelSchema).min(1).max(FORECAST_LIMITS.parcels),

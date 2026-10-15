@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { FEE_CATEGORIES } from "@/engine/fees";
 import type { FeeCategory, FeeRule, FeeScheduleSnapshot } from "@/engine/fees/types";
-import { emptyPartial, finalizeSummary, foldBatch, type CategoryCompleteness, type CompactFeeLine, type DatasetCounts, type FeeDictionaryEntry, type FeeStatus, type FinalizeFeeInput, type FoldOrder, type FoldOrderFees, type PartialSummary, type RunPeriod } from "@/engine/modeling";
+import { PACKAGING_OTHER_KEY, emptyPartial, finalizeSummary, foldBatch, type CategoryCompleteness, type CompactFeeLine, type DatasetCounts, type FeeDictionaryEntry, type FeeStatus, type FinalizeFeeInput, type FoldOrder, type FoldOrderFees, type PartialSummary, type RunPeriod } from "@/engine/modeling";
 
 /**
  * finalizeSummary v2: the fee sections (processing, completeness, monthly charges, minimums,
@@ -192,6 +192,35 @@ describe("finalizeSummary: completeness per category", () => {
       ["pack_box", "Box", "priced", null],
       ["packaging:tube", "Packaging (tube)", "not_modeled", "packaging_unmatched"],
     ]);
+  });
+
+  it("never calls an order rule priced when no order was priced: a file whose every order has no content leaves the rules not modeled", () => {
+    // The file carries no item counts and nothing was assumed: no rule computed on any order, so there are no processing orders at all.
+    const noContent = fees("no_content", { unresolved: [{ ruleKey: "pick_order", reason: "units_unknown" }] });
+    const s = finalizeSummary(fold([A, B, C, D2].map((o) => ({ ...o, fees: noContent }))), counts, [], "2.2.0", input());
+    expect(s.fees.processing).toMatchObject({ orders: 0, perOrder: null });
+    expect(s.fees.statusCounts).toEqual({ no_content: 4 });
+    const c = byCategory(s);
+    expect(c.pick_pack).toMatchObject({ state: "not_modeled", notModeledOrders: 4, rules: [{ key: "pick_order", state: "not_modeled", reason: "no_content" }] });
+    expect(c.packaging).toMatchObject({ state: "not_modeled", notModeledOrders: 4, rules: [{ key: "pack_box", state: "not_modeled", reason: "no_content" }] });
+    expect(c.other).toMatchObject({ state: "not_modeled", rules: [{ key: "inserts", state: "not_modeled", reason: "no_content" }] });
+    // Monthly rules are unaffected: they come from the answers, not the orders.
+    expect(c.storage).toMatchObject({ state: "priced" });
+    expect(c.account).toMatchObject({ state: "priced" });
+    // The same when every order fell before the schedule's effective date.
+    const early = finalizeSummary(fold([A, B, C, D2].map((o) => ({ ...o, fees: fees("not_effective") }))), counts, [], "2.2.0", input());
+    expect(byCategory(early).pick_pack).toMatchObject({ state: "not_modeled", notModeledOrders: 4, rules: [{ key: "pick_order", state: "not_modeled", reason: "not_effective" }] });
+    // One priced order is enough for the rule to count as priced over the processing orders; the no-content orders show in the status counts.
+    const mixed = finalizeSummary(fold([A, ...[B, C, D2].map((o) => ({ ...o, fees: noContent }))]), counts, [], "2.2.0", input());
+    expect(byCategory(mixed).pick_pack).toMatchObject({ state: "priced", notModeledOrders: 0 });
+    expect(mixed.fees.statusCounts).toEqual({ ok: 1, no_content: 3 });
+  });
+
+  it("names the capped 'other packaging types' row in the packaging category", () => {
+    const other = modeledOrder("T", 5, "2026-04-20", "9.00", fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: PACKAGING_OTHER_KEY, reason: "packaging_unmatched" }] }));
+    const s = finalizeSummary(fold([A, B, C, D2, other]), { ...counts, orders: 5, shipments: 5, packages: 5, rows: 5 }, [], "2.2.0", input());
+    const row = byCategory(s).packaging.rules.find((r) => r.key === PACKAGING_OTHER_KEY);
+    expect(row).toMatchObject({ name: "Packaging (other types)", state: "not_modeled", reason: "packaging_unmatched", describe: "No charge on the fee schedule covers these packaging types." });
   });
 
   it("reports every rule as not modeled when fees were skipped, and nothing in the schedule when the brand has none", () => {

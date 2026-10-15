@@ -11,6 +11,7 @@ import {
   foldBatch,
   moneyToCents,
   weightBracket,
+  PACKAGING_OTHER_KEY,
   WEIGHT_BRACKET_EDGES,
   WEIGHT_BRACKET_LABELS,
   type CompactFeeLine,
@@ -428,6 +429,29 @@ describe("foldBatch: fees of processing orders", () => {
     expect(p.fees.byMonth["2026-03"]!.unresolvedRuleKeys).toEqual(["pack_mailer", "packaging:tube"]);
     const unknownRule = order("U2", [ship(1, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], { fees: fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: "mystery", reason: "units_unknown" }] }) });
     expect(() => foldBatch(start(), [unknownRule])).toThrow(/not in the fee dictionary/);
+  });
+
+  it("keeps at most 50 unmatched packaging types by name and folds every further type into one 'other' row, whatever the batch boundaries", () => {
+    // 52 orders, each with a packaging type no rule prices, plus one that repeats the first type.
+    const typed = (n: number) =>
+      order(`P${n}`, [ship(n, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], {
+        fees: fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: `packaging:type ${n}`, reason: "packaging_unmatched" }] }),
+      });
+    const orders = [...Array.from({ length: 52 }, (_, i) => typed(i + 1)), order("P53", [ship(53, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], { fees: fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: "packaging:type 1", reason: "packaging_unmatched" }] }) })];
+    const p = foldBatch(start(), orders);
+    const packagingKeys = Object.keys(p.fees.byRule).filter((k) => k.startsWith("packaging:"));
+    expect(packagingKeys).toHaveLength(51);
+    expect(packagingKeys.filter((k) => k !== PACKAGING_OTHER_KEY)).toEqual(Array.from({ length: 50 }, (_, i) => `packaging:type ${i + 1}`));
+    expect(p.fees.byRule["packaging:type 1"]).toMatchObject({ unresolvedOrders: 2, unresolvedBy: { packaging_unmatched: 2 } });
+    expect(p.fees.byRule[PACKAGING_OTHER_KEY]).toEqual({ ruleIds: [], name: "Packaging (other types)", category: "packaging", basis: "package", scope: "order", definiteE4: 0, estimatedE4: 0, orders: 0, lines: 0, unresolvedOrders: 2, unresolvedBy: { packaging_unmatched: 2 }, replacedOrders: 0 });
+    expect(p.fees.byMonth["2026-03"]!.unresolvedRuleKeys).toEqual([...Array.from({ length: 50 }, (_, i) => `packaging:type ${i + 1}`), PACKAGING_OTHER_KEY]);
+    // Two types beyond the cap in one order count that order once under "other".
+    const two = order("P54", [ship(54, okResult({ billableLb: ["1"], lines: [line(BASE, 1000)] }))], {
+      fees: fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: "packaging:type 60", reason: "packaging_unmatched" }, { ruleKey: "packaging:type 61", reason: "packaging_unmatched" }] }),
+    });
+    expect(foldBatch(p, [two]).fees.byRule[PACKAGING_OTHER_KEY]!.unresolvedOrders).toBe(3);
+    // Batch boundaries never change which types keep their rows.
+    expect(foldBatch(foldBatch(start(), orders.slice(0, 30)), orders.slice(30))).toEqual(p);
   });
 
   it("counts a warning once per order and refuses fee results that do not add up", () => {

@@ -121,8 +121,9 @@ export function buildOrderShippingInput(shipments: FoldShipment[]): OrderShippin
 /**
  * The engine input for one order. Units, lines and distinct SKUs come from the file when it has them;
  * otherwise from the apportioned content row (flagged assumed) when the customer described the typical
- * order; otherwise they stay unknown. Lines and SKUs are taken from the row only when the file has no
- * line data at all, and never exceed the file's item count.
+ * order; otherwise they stay unknown. Lines and SKUs are taken from the row only when the file gives
+ * this order no counted line (no line data at all, or no line rows for the order), and never exceed the
+ * file's item count. `advance_simulation_run` accepts an assumed quantity only where the file has none.
  */
 export function buildOrderFeeInput(order: OrderContentSource, shipping: OrderShippingInput | null, apportionment: Apportionment | null): OrderFeeInput {
   if (order.orderSeq === null || !Number.isInteger(order.orderSeq) || order.orderSeq < 1) {

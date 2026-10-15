@@ -46,6 +46,14 @@ const ZERO: DecimalString = "0.00";
 /** One label per edge, then the open-ended top bracket; same order as `WEIGHT_BRACKET_EDGES`. */
 export const WEIGHT_BRACKET_LABELS: readonly WeightBracketLabel[] = ["≤1 lb", "≤2 lb", "≤3 lb", "≤5 lb", "≤10 lb", "≤20 lb", "≤50 lb", "≤70 lb", "≤150 lb", ">150 lb"];
 
+/**
+ * A run reports at most this many unmatched packaging types by name (`packaging:<type>`); every
+ * further type folds into `PACKAGING_OTHER_KEY`, so a free-text packaging column cannot grow the
+ * partial summary without bound (design D22). The raw types stay on each order's stored result.
+ */
+export const PACKAGING_UNMATCHED_CAP = 50;
+export const PACKAGING_OTHER_KEY = "packaging:other";
+
 export function emptyPartial(): PartialSummary {
   return {
     version: 2,
@@ -222,9 +230,10 @@ function foldOrderFees(p: PartialSummary, order: FoldOrder, shippingExpectedCent
 
   const seenUnresolved = new Set<string>();
   for (const u of fees.unresolved) {
-    if (!firstTime(seenUnresolved, u.ruleKey)) continue;
-    const named = feeEntryFor(p.feeDictionary, u.ruleKey, u.reason, order.orderKey);
-    const bucket = touch(f.byRule, u.ruleKey, () => emptyFeeRule(named.entry));
+    const key = unresolvedKeyFor(f.byRule, u.ruleKey, u.reason);
+    if (!firstTime(seenUnresolved, key)) continue;
+    const named = feeEntryFor(p.feeDictionary, key, u.reason, order.orderKey);
+    const bucket = touch(f.byRule, key, () => emptyFeeRule(named.entry));
     if (named.ruleId !== null && !bucket.ruleIds.includes(named.ruleId)) bucket.ruleIds = [...bucket.ruleIds, named.ruleId];
     if (u.reason === "replaced") {
       bucket.replacedOrders += 1;
@@ -232,7 +241,7 @@ function foldOrderFees(p: PartialSummary, order: FoldOrder, shippingExpectedCent
     }
     bucket.unresolvedOrders += 1;
     bucket.unresolvedBy[u.reason] = (bucket.unresolvedBy[u.reason] ?? 0) + 1;
-    if (!month.unresolvedRuleKeys.includes(u.ruleKey)) month.unresolvedRuleKeys = [...month.unresolvedRuleKeys, u.ruleKey];
+    if (!month.unresolvedRuleKeys.includes(key)) month.unresolvedRuleKeys = [...month.unresolvedRuleKeys, key];
   }
 
   for (const code of new Set(fees.warnings)) f.warnings[code] = (f.warnings[code] ?? 0) + 1;
@@ -245,6 +254,19 @@ function foldOrderFees(p: PartialSummary, order: FoldOrder, shippingExpectedCent
 type NamedFeeEntry = Pick<FeeDictionaryEntry, "key" | "name" | "category" | "basis" | "scope">;
 
 /**
+ * The per-rule row an unresolved entry counts under. Rules count under their key. An unmatched
+ * packaging type counts under `packaging:<type>` while the run has fewer than `PACKAGING_UNMATCHED_CAP`
+ * such rows, else under `PACKAGING_OTHER_KEY`. Which types keep a row of their own depends only on the
+ * order they were first seen in, so a run split into batches folds to the same partial as one batch.
+ */
+function unresolvedKeyFor(byRule: Record<string, FeeRulePartial>, ruleKey: string, reason: FeeUnresolvedReason): string {
+  if (reason !== "packaging_unmatched" || !ruleKey.startsWith("packaging:") || ruleKey === PACKAGING_OTHER_KEY || byRule[ruleKey] !== undefined) return ruleKey;
+  let named = 0;
+  for (const key of Object.keys(byRule)) if (key.startsWith("packaging:") && key !== PACKAGING_OTHER_KEY) named += 1;
+  return named >= PACKAGING_UNMATCHED_CAP ? PACKAGING_OTHER_KEY : ruleKey;
+}
+
+/**
  * What an unresolved key stands for. Rules are named from the fee dictionary (the batch core adds every
  * unresolved rule to it); `packaging:<type>` entries are not rules but a packaging type no rule prices,
  * and are named from the key. Anything else is inconsistent input.
@@ -253,7 +275,8 @@ function feeEntryFor(feeDictionary: FeeDictionaryEntry[], key: string, reason: F
   const entry = feeDictionary.find((e) => e.key === key);
   if (entry) return { entry, ruleId: entry.ruleId };
   if (reason === "packaging_unmatched" && key.startsWith("packaging:")) {
-    return { entry: { key, name: `Packaging (${key.slice("packaging:".length)})`, category: "packaging", basis: "package", scope: "order" }, ruleId: null };
+    const name = key === PACKAGING_OTHER_KEY ? "Packaging (other types)" : `Packaging (${key.slice("packaging:".length)})`;
+    return { entry: { key, name, category: "packaging", basis: "package", scope: "order" }, ruleId: null };
   }
   throw new RangeError(`order ${orderKey}: unresolved fee rule "${key}" is not in the fee dictionary`);
 }

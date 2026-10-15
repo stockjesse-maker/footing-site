@@ -3,8 +3,8 @@ import type { AllocationResult, E4, FeeRule, MinimumResult, MonthBucket, Monthly
 import { D, dec, type Dec } from "../money";
 import { compareKeys } from "../surcharges";
 import type { DecimalString } from "../types";
-import { WEIGHT_BRACKET_LABELS } from "./fold";
-import type { BulkSummary, CategoryCompleteness, CompletenessState, DatasetCounts, FeeSummary, FinalizeFeeInput, PartialSummary, SurchargeBucket } from "./types";
+import { PACKAGING_OTHER_KEY, WEIGHT_BRACKET_LABELS } from "./fold";
+import type { BulkSummary, CategoryCompleteness, CompletenessState, DatasetCounts, FeeStatus, FeeSummary, FinalizeFeeInput, PartialSummary, SurchargeBucket } from "./types";
 
 /**
  * Turns the running partial into the customer-facing `BulkSummary`. Averages are HALF_UP to cents
@@ -214,11 +214,16 @@ interface RuleRow {
  * some rule could not be computed (an unanswered question, an unknown quantity on N processing orders),
  * `not_in_schedule` when the version has no rule in the category. Account minimums are reported through
  * `minimumStatus`, not here. A packaging type that no rule prices counts against the packaging category.
+ *
+ * An order rule is only ever `priced` over the processing orders. When there is no processing order at
+ * all (every shipping-modeled order had no content to price, or no version in effect on its date), no
+ * order rule was computed for anyone, and every one of them is `not_modeled` for that reason.
  */
 function completeness(partial: PartialSummary, input: FinalizeFeeInput, monthly: MonthlyFeeResult | null): CategoryCompleteness[] {
   const rules = (input.monthlySchedule?.rules ?? []).filter((r) => r.basis !== "minimum").sort((a, b) => a.position - b.position || compareKeys(a.key, b.key));
   const pricedMonthly = new Set(monthly?.lines.map((l) => l.ruleKey) ?? []);
   const notModeledMonthly = new Map(monthly?.notModeled.map((n) => [n.ruleKey, n.reason]) ?? []);
+  const noProcessing = partial.fees.processing.orders === 0 ? unpricedStatus(partial.fees.statusCounts) : null;
   const unmatchedPackaging = Object.entries(partial.fees.byRule)
     .filter(([key, b]) => key.startsWith("packaging:") && b.unresolvedOrders > 0)
     .sort(([a], [b]) => compareKeys(a, b));
@@ -231,14 +236,17 @@ function completeness(partial: PartialSummary, input: FinalizeFeeInput, monthly:
         if (rule.scope === "order") {
           const b = partial.fees.byRule[rule.key];
           const unresolved = b?.unresolvedOrders ?? 0;
-          return { ...base, state: unresolved > 0 ? "not_modeled" : "priced", reason: unresolved > 0 && b ? topReason(b.unresolvedBy) : null, orders: unresolved };
+          if (unresolved > 0) return { ...base, state: "not_modeled", reason: b ? topReason(b.unresolvedBy) : null, orders: unresolved };
+          if (noProcessing) return { ...base, state: "not_modeled", reason: noProcessing.status, orders: noProcessing.orders };
+          return { ...base, state: "priced", reason: null, orders: 0 };
         }
         if (pricedMonthly.has(rule.key)) return { ...base, state: "priced", reason: null, orders: 0 };
         return { ...base, state: "not_modeled", reason: notModeledMonthly.get(rule.key) ?? "no_answer", orders: 0 };
       });
     if (category === "packaging") {
       for (const [key, b] of unmatchedPackaging) {
-        rows.push({ key, name: b.name, scope: "order", state: "not_modeled", reason: "packaging_unmatched", describe: "No charge on the fee schedule covers this packaging type.", orders: b.unresolvedOrders });
+        const describe = key === PACKAGING_OTHER_KEY ? "No charge on the fee schedule covers these packaging types." : "No charge on the fee schedule covers this packaging type.";
+        rows.push({ key, name: b.name, scope: "order", state: "not_modeled", reason: "packaging_unmatched", describe, orders: b.unresolvedOrders });
       }
     }
     const state: CompletenessState = rows.length === 0 ? "not_in_schedule" : rows.every((r) => r.state === "priced") ? "priced" : "not_modeled";
@@ -255,6 +263,17 @@ function completeness(partial: PartialSummary, input: FinalizeFeeInput, monthly:
 function topReason(by: Record<string, number>): string | null {
   const entries = Object.entries(by).sort((a, b) => b[1] - a[1] || compareKeys(a[0], b[0]));
   return entries[0]?.[0] ?? null;
+}
+
+/**
+ * Why no shipping-modeled order became a processing order: the fee status that kept the most orders out
+ * (ties to the first alphabetically), with its count. `status` is null when no order was shipping-modeled.
+ */
+function unpricedStatus(counts: Partial<Record<FeeStatus, number>>): { status: string | null; orders: number } {
+  const entries = Object.entries(counts)
+    .filter(([status, n]) => status !== "ok" && status !== "partial" && n > 0)
+    .sort((a, b) => b[1] - a[1] || compareKeys(a[0], b[0]));
+  return entries[0] ? { status: entries[0][0], orders: entries[0][1] } : { status: null, orders: 0 };
 }
 
 /** Exact E4 amount as dollars with four decimals ("12.3400"). */
