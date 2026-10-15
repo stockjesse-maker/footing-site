@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { setBrandStatus } from "@/app/actions/team";
 import { ConfirmAction } from "@/components/forms/confirm-action";
+import { CustomerPricing } from "@/components/pricing/customer-pricing";
 import { InviteForm } from "@/components/team/invite-form";
 import { MembersList, PendingInvitations, type InvitationRow, type MemberRow } from "@/components/team/members";
 import { Alert } from "@/components/ui/alert";
@@ -38,6 +39,7 @@ export default async function CustomerDetail({ params }: { params: Promise<{ bra
   ]);
 
   const manage = can(role, "brand.manage");
+  const canViewPricing = can(role, "ratecard.view");
   return (
     <>
       <p className="mb-3 text-sm"><Link href="/app/customers" className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">← Customers</Link></p>
@@ -83,6 +85,12 @@ export default async function CustomerDetail({ params }: { params: Promise<{ bra
       ) : (
         <Alert>You can view this customer, but only administrators can manage its team.</Alert>
       )}
+
+      {canViewPricing ? (
+        <div className="mt-10">
+          <CustomerPricing brandId={brand.id} brandName={brand.name} brandStatus={brand.status} tenantId={ctx.active.tenantId} canManage={can(role, "ratecard.manage")} />
+        </div>
+      ) : null}
     </>
   );
 }

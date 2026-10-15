@@ -158,6 +158,49 @@ describe("who can see and write rate cards", () => {
     expect(await asUser(w.brandA.admin.id, "select id from public.rate_cards")).toHaveLength(1);
   });
 
+  it("a brand limited to some services cannot read the other services' rows or terms", async () => {
+    await asUser(w.t1.admin.id, "update public.brand_rate_card_assignments set unassigned_at = now() where id = $1", [brandAssignment]);
+    const [a] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.brand_rate_card_assignments (tenant_id, brand_id, rate_card_id, allowed_service_ids) values ($1, $2, $3, $4) returning id", [w.t1.id, w.brandA.id, cardId, [uspsGa]]);
+    try {
+      expect(await asUser(w.brandA.admin.id, "select id from public.rate_card_rows where version_id = $1", [v1])).toHaveLength(0); // v1 only has UPS Ground rows
+      expect(await asUser(w.brandA.admin.id, "select id from public.rate_card_service_terms where version_id = $1", [v1])).toHaveLength(0);
+      const [json] = await asUser<{ rows: unknown[] }>(w.brandA.admin.id, "select public.rate_card_rows_json($1) as rows", [v1]);
+      expect(json!.rows).toHaveLength(0);
+      expect(await asUser(w.brandA.admin.id, "select id from public.rate_cards where id = $1", [cardId])).toHaveLength(1); // the card itself is still visible
+    } finally {
+      await asUser(w.t1.admin.id, "update public.brand_rate_card_assignments set unassigned_at = now() where id = $1", [a!.id]);
+      const [back] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.brand_rate_card_assignments (tenant_id, brand_id, rate_card_id) values ($1, $2, $3) returning id", [w.t1.id, w.brandA.id, cardId]);
+      brandAssignment = back!.id;
+    }
+    expect(await asUser(w.brandA.admin.id, "select id from public.rate_card_rows where version_id = $1", [v1])).toHaveLength(4);
+  });
+
+  it("overlapping brackets and overlapping zone ranges are rejected by the database itself", async () => {
+    const draft = await createDraft(w.t1.admin.id, w.t1.id, cardId, 40);
+    await asUser(w.t1.admin.id, "insert into public.rate_card_rows (version_id, service_id, zone, weight_min, weight_max, weight_unit, price) values ($1, $2, '2', 0, 5, 'lb', 9.00)", [draft, upsGround]);
+    await expectDenied(asUser(w.t1.admin.id, "insert into public.rate_card_rows (version_id, service_id, zone, weight_min, weight_max, weight_unit, price) values ($1, $2, '2', 3, 10, 'lb', 9.50)", [draft, upsGround]), /rate_card_rows_no_overlap/);
+    await expectDenied(asUser(w.t1.admin.id, "insert into public.rate_card_rows (version_id, service_id, zone, weight_min, weight_max, weight_unit, price) values ($1, $2, '2', 64, 96, 'oz', 9.50)", [draft, upsGround]), /rate_card_rows_no_overlap/); // 4–6 lb overlaps 0–5 lb
+    await asUser(w.t1.admin.id, "insert into public.rate_card_rows (version_id, service_id, zone, weight_min, weight_max, weight_unit, price) values ($1, $2, '2', 5, 10, 'lb', 9.50)", [draft, upsGround]); // adjacent is fine
+    await asUser(w.t1.admin.id, "insert into public.rate_card_zones (version_id, carrier_code, origin_prefix, dest_prefix_from, dest_prefix_to, zone) values ($1, 'ups', '900', '100', '199', '8')", [draft]);
+    await expectDenied(asUser(w.t1.admin.id, "insert into public.rate_card_zones (version_id, carrier_code, origin_prefix, dest_prefix_from, dest_prefix_to, zone) values ($1, 'ups', '900', '150', '250', '7')", [draft]), /rate_card_zones_no_overlap/);
+    await asUser(w.t1.admin.id, "insert into public.rate_card_zones (version_id, carrier_code, origin_prefix, dest_prefix_from, dest_prefix_to, zone) values ($1, 'ups', '900', '10001', '10099', '8')", [draft]); // different prefix length: allowed (more specific)
+    await asUser(w.t1.admin.id, "select public.archive_rate_card_version($1)", [draft]);
+  });
+
+  it("an active version can be ended on a date so a successor can start the next day", async () => {
+    const next = await createDraft(w.t1.admin.id, w.t1.id, cardId, 41);
+    await fillVersion(w.t1.admin.id, next);
+    await expectDenied(asUser(w.t1.admin.id, "select public.activate_rate_card_version($1, '2027-01-01')", [next]), /already covers those dates/);
+    await expectDenied(asUser(w.t1.employee.id, "select public.end_rate_card_version($1, '2026-12-31')", [v1]), /version not found/);
+    await asUser(w.t1.admin.id, "select public.end_rate_card_version($1, '2026-12-31')", [v1]);
+    await asUser(w.t1.admin.id, "select public.activate_rate_card_version($1, '2027-01-01')", [next]);
+    const rows = await asUser<{ id: string; status: string; expiration_date: string | null }>(w.brandA.admin.id, "select id, status, expiration_date from public.rate_card_versions where rate_card_id = $1 order by version_number", [cardId]);
+    expect(rows.map((r) => r.status)).toEqual(["active", "active"]); // both visible to the brand; dates decide which applies
+    expect(await sql("select 1 from public.audit_events where action = 'ratecard.version_ended' and entity_id = $1", [v1])).toHaveLength(1);
+    await asUser(w.t1.admin.id, "select public.archive_rate_card_version($1)", [next]);
+    await sql("update public.rate_card_versions set expiration_date = null where id = $1", [v1]);
+  });
+
   it("a suspended brand loses sight of its rate card until reactivated", async () => {
     await asUser(w.t1.admin.id, "update public.brands set status = 'suspended' where id = $1", [w.brandA.id]);
     try {
@@ -220,8 +263,14 @@ describe("surcharge rules", () => {
     expect(await asUser(w.t1.employee.id, "select id from public.surcharge_rule_versions where id = $1", [ruleV1])).toHaveLength(1);
     await expectDenied(asUser(w.t1.employee.id, "select public.publish_surcharge_rule_version($1)", [ruleV1]), /not found/);
     await asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [ruleV1]);
-    expect(await asUser(w.brandA.admin.id, "select id from public.surcharge_rule_versions where id = $1 and status = 'published'", [ruleV1])).toHaveLength(1);
+    // Brand users never read tenant rules directly; they get what applies to them through pricing_rules_for_card().
+    expect(await asUser(w.brandA.admin.id, "select id from public.surcharge_rule_versions where id = $1", [ruleV1])).toHaveLength(0);
+    expect(await asUser(w.brandA.admin.id, "select id from public.surcharge_rules where id = $1", [ruleId])).toHaveLength(0);
     expect(await asUser(w.brandC.admin.id, "select id from public.surcharge_rule_versions where id = $1", [ruleV1])).toHaveLength(0);
+    const [viaRpc] = await asUser<{ r: { rules: { key: string; version: number }[] } }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-03-01') as r", [cardId]);
+    expect(viaRpc!.r.rules.map((r) => [r.key, r.version])).toEqual([["northwind.residential", 1]]);
+    await expectDenied(asUser(w.brandB.admin.id, "select public.pricing_rules_for_card($1, '2026-03-01')", [cardId]), /rate card not found/);
+    await expectDenied(asUser(w.brandC.admin.id, "select public.pricing_rules_for_card($1, '2026-03-01')", [cardId]), /rate card not found/);
     expect(await asUser(w.t2.admin.id, "select id from public.surcharge_rules where id = $1", [ruleId])).toHaveLength(0);
     expect(await asUser(w.t1.admin.id, "update public.surcharge_rule_versions set amount = 9 where id = $1 returning id", [ruleV1])).toHaveLength(0); // policy: drafts only
     await expectDenied(sql("update public.surcharge_rule_versions set amount = 9 where id = $1", [ruleV1]), /immutable/);
@@ -235,10 +284,17 @@ describe("surcharge rules", () => {
       [ruleId, w.t1.id],
     );
     await expectDenied(asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [v2!.id]), /already covers those dates/);
-    await asUser(w.t1.admin.id, "select public.retire_surcharge_rule_version($1)", [ruleV1]);
+    // Retiring keeps the old version for history: it still covers dates up to its last effective date.
+    await asUser(w.t1.admin.id, "select public.retire_surcharge_rule_version($1, '2026-10-15')", [ruleV1]);
+    await expectDenied(asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [v2!.id]), /already covers those dates/);
+    await sql("update public.surcharge_rule_versions set expiration_date = '2026-06-30' where id = $1", [ruleV1]);
     await asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [v2!.id]);
-    expect(await asUser(w.brandA.admin.id, "select id from public.surcharge_rule_versions where rule_id = $1 and status = 'published'", [ruleId])).toHaveLength(1);
-    await expectDenied(sql("update public.surcharge_rule_versions set status = 'published' where id = $1", [ruleV1]), /cannot be reactivated/);
+    const [march] = await asUser<{ r: { rules: { version: number; amount: string }[] } }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-03-01') as r", [cardId]);
+    expect(march!.r.rules.map((r) => [r.version, r.amount])).toEqual([[1, "5.0000"]]);
+    const [august] = await asUser<{ r: { rules: { version: number; amount: string }[] } }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    expect(august!.r.rules.map((r) => [r.version, r.amount])).toEqual([[2, "5.5000"]]);
+    await expectDenied(sql("update public.surcharge_rule_versions set status = 'published' where id = $1", [ruleV1]), /cannot be reactivated|immutable/);
+    await expectDenied(sql("update public.surcharge_rule_versions set amount = 1 where id = $1", [ruleV1]), /immutable/);
   });
 
   it("nobody can create platform-scope rules through the Data API, but everyone can read published ones", async () => {
@@ -247,12 +303,17 @@ describe("surcharge rules", () => {
     const [pr] = await sql<{ id: string }>("insert into public.surcharge_rules (scope, tenant_id, carrier_code, rule_key, category, name) values ('platform', null, 'ups', 'ups.fuel', 'fuel', 'UPS fuel surcharge') returning id");
     const [pv] = await sql<{ id: string }>(
       `insert into public.surcharge_rule_versions (rule_id, tenant_id, version_number, charge_class, method, percent, effective_date, source_reference, verification_status, status, published_at)
-       values ($1, null, 1, 'definite', 'percent', 0, '2026-01-01', 'placeholder: amount must be entered from the published schedule', 'unverified', 'published', now()) returning id`,
+       values ($1, null, 1, 'definite', 'percent', 0, '2026-01-01', 'placeholder: amount must be entered from the published schedule', 'verified', 'published', now()) returning id`,
       [pr!.id],
     );
     for (const user of [w.t1.admin, w.brandA.admin, w.brandC.admin, w.t2.admin]) {
       expect(await asUser(user.id, "select id from public.surcharge_rule_versions where id = $1", [pv!.id]), user.email).toHaveLength(1);
     }
+    // A published platform version must not be unverified.
+    await expectDenied(
+      sql("insert into public.surcharge_rule_versions (rule_id, tenant_id, version_number, charge_class, method, percent, effective_date, source_reference, verification_status, status) values ($1, null, 2, 'definite', 'percent', 1, '2027-01-01', 'x', 'unverified', 'published')", [pr!.id]),
+      /srv_published_verified/,
+    );
     expect(await asUser(w.t1.admin.id, "update public.surcharge_rules set name = 'x' where id = $1 returning id", [pr!.id])).toHaveLength(0);
     await expectDenied(asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [pv!.id]), /not found/);
   });
@@ -286,20 +347,61 @@ describe("surcharge rules", () => {
     // Another tenant cannot reference this tenant's rule or brand.
     await expectDenied(asUser(w.t2.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'x')", [w.t2.id, w.brandC.id, ruleId]), /row-level security/);
     await expectDenied(asUser(w.t2.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'x')", [w.t2.id, w.brandA.id, ruleId]), /row-level security|foreign key/);
+    // Two live exceptions for the same brand and rule may not overlap in time; ending one frees the dates.
+    await expectDenied(
+      asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, percent, effective_date, reference) values ($1, $2, $3, 'markup_percent', 10, '2026-06-01', 'Addendum')", [w.t1.id, w.brandA.id, ruleId]),
+      /cso_no_overlap/,
+    );
+    await asUser(w.t1.admin.id, "update public.customer_surcharge_overrides set ended_at = now() where id = $1", [o!.id]);
+    await asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, percent, effective_date, reference) values ($1, $2, $3, 'markup_percent', 10, '2026-06-01', 'Addendum')", [w.t1.id, w.brandA.id, ruleId]);
   });
 
-  it("ZIP lists: tenant lists are readable by the tenant's brands only", async () => {
+  it("a rule scoped to one brand is delivered only to that brand", async () => {
+    const [r] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.surcharge_rules (scope, tenant_id, carrier_code, rule_key, category, name, brand_id) values ('tenant', $1, 'ups', 'northwind.alpha_handling', 'other', 'Alpha special handling', $2) returning id", [w.t1.id, w.brandA.id]);
+    const [v] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.surcharge_rule_versions (rule_id, tenant_id, version_number, charge_class, method, amount, effective_date, source_reference, verification_status) values ($1, $2, 1, 'definite', 'flat', 2.50, '2026-01-01', 'Alpha MSA', 'approved_3pl_config') returning id", [r!.id, w.t1.id]);
+    await asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [v!.id]);
+    const [a] = await asUser<{ r: { rules: { key: string }[] } }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    expect(a!.r.rules.map((x) => x.key)).toContain("northwind.alpha_handling");
+    await asUser(w.t1.admin.id, "insert into public.brand_rate_card_assignments (tenant_id, brand_id, rate_card_id) values ($1, $2, $3)", [w.t1.id, w.brandB.id, cardId]);
+    const [b] = await asUser<{ r: { rules: { key: string }[] } }>(w.brandB.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    expect(b!.r.rules.map((x) => x.key)).not.toContain("northwind.alpha_handling");
+    // Staff asking on behalf of brand B get brand B's view; asking for a brand of another tenant fails.
+    const [staffB] = await asUser<{ r: { rules: { key: string }[] } }>(w.t1.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01', $2) as r", [cardId, w.brandB.id]);
+    expect(staffB!.r.rules.map((x) => x.key)).not.toContain("northwind.alpha_handling");
+    await expectDenied(asUser(w.t1.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01', $2)", [cardId, w.brandC.id]), /brand not found/);
+    // A brand cannot ask for another brand's rules.
+    await expectDenied(asUser(w.brandB.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01', $2)", [cardId, w.brandA.id]), /rate card not found/);
+    await asUser(w.t1.admin.id, "update public.brand_rate_card_assignments set unassigned_at = now() where brand_id = $1 and rate_card_id = $2", [w.brandB.id, cardId]);
+    // Another tenant cannot scope a rule to this tenant's brand.
+    await expectDenied(asUser(w.t2.admin.id, "insert into public.surcharge_rules (scope, tenant_id, carrier_code, rule_key, category, name, brand_id) values ('tenant', $1, 'ups', 'sneaky.brand', 'other', 'x', $2)", [w.t2.id, w.brandA.id]), /row-level security|foreign key/);
+  });
+
+  it("ZIP lists: drafted, published, immutable afterwards, and delivered to brands only through the RPC", async () => {
     const [l] = await asUser<{ id: string }>(
       w.t1.admin.id,
-      "insert into public.zip_lists (tenant_id, carrier_code, key, name, source_reference, verification_status, effective_date, entry_count) values ($1, 'ups', 'northwind.das', 'DAS ZIPs', 'Uploaded from carrier bulletin', 'approved_3pl_config', '2026-01-01', 2) returning id",
+      "insert into public.zip_lists (tenant_id, carrier_code, key, name, source_reference, verification_status, effective_date) values ($1, 'ups', 'northwind.das', 'DAS ZIPs', 'Uploaded from carrier bulletin', 'approved_3pl_config', '2026-01-01') returning id",
       [w.t1.id],
     );
+    await expectDenied(asUser(w.t1.admin.id, "select public.publish_zip_list($1)", [l!.id]), /empty ZIP list/);
     await asUser(w.t1.admin.id, "insert into public.zip_list_entries (list_id, entry) values ($1, '93920'), ($1, '958')", [l!.id]);
-    expect(await asUser(w.brandA.employee.id, "select entry from public.zip_list_entries where list_id = $1", [l!.id])).toHaveLength(2);
-    expect(await asUser(w.brandC.admin.id, "select entry from public.zip_list_entries where list_id = $1", [l!.id])).toHaveLength(0);
+    const [count] = await sql<{ entry_count: number }>("select entry_count from public.zip_lists where id = $1", [l!.id]);
+    expect(count?.entry_count).toBe(2); // maintained by trigger, not by the client
+    await asUser(w.t1.admin.id, "select public.publish_zip_list($1)", [l!.id]);
+    await expectDenied(asUser(w.t1.admin.id, "insert into public.zip_list_entries (list_id, entry) values ($1, '10001')", [l!.id]), /not a draft|row-level security/);
+    await expectDenied(sql("delete from public.zip_list_entries where list_id = $1", [l!.id]), /not a draft/);
+    // Brands do not read tenant lists directly…
+    expect(await asUser(w.brandA.employee.id, "select entry from public.zip_list_entries where list_id = $1", [l!.id])).toHaveLength(0);
+    expect(await asUser(w.brandC.admin.id, "select id from public.zip_lists where id = $1", [l!.id])).toHaveLength(0);
     expect(await asUser(w.t2.admin.id, "select id from public.zip_lists where id = $1", [l!.id])).toHaveLength(0);
-    await expectDenied(asUser(w.t1.employee.id, "insert into public.zip_list_entries (list_id, entry) values ($1, '10001')", [l!.id]), /row-level security/);
+    expect((await asUser(w.t1.employee.id, "select id from public.zip_lists where id = $1", [l!.id]))).toHaveLength(1);
+    await expectDenied(asUser(w.t1.employee.id, "insert into public.zip_list_entries (list_id, entry) values ($1, '10001')", [l!.id]), /row-level security|not a draft/);
     await expectDenied(asUser(w.t1.admin.id, "insert into public.zip_lists (tenant_id, key, name, source_reference, verification_status, effective_date) values (null, 'ups.das', 'x', 'x', 'verified', '2026-01-01')"), /row-level security/);
+    // …but a rule referencing the list brings it along through pricing_rules_for_card.
+    const [r] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.surcharge_rules (scope, tenant_id, carrier_code, rule_key, category, name) values ('tenant', $1, 'ups', 'northwind.das', 'das', 'Delivery area surcharge') returning id", [w.t1.id]);
+    const [v] = await asUser<{ id: string }>(w.t1.admin.id, `insert into public.surcharge_rule_versions (rule_id, tenant_id, version_number, charge_class, method, amount, conditions, effective_date, source_reference, verification_status) values ($1, $2, 1, 'definite', 'flat', 4.00, '[{"type":"destination_zip_in_list","listKey":"northwind.das"}]', '2026-01-01', 'Customer agreement', 'approved_3pl_config') returning id`, [r!.id, w.t1.id]);
+    await asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [v!.id]);
+    const [ctx] = await asUser<{ r: { zipLists: { key: string; entries: string[] }[] } }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    expect(ctx!.r.zipLists).toEqual([expect.objectContaining({ key: "northwind.das", entries: ["93920", "958"] })]);
   });
 });
 
@@ -307,10 +409,12 @@ describe("audit trail for pricing", () => {
   it("records card creation, activation, assignment and rule publication with the actor", async () => {
     const rows = await sql<{ action: string; actor_id: string }>("select action, actor_id from public.audit_events where tenant_id = $1 and action like 'ratecard.%' or (tenant_id = $1 and action like 'carrier_rule.%')", [w.t1.id]);
     const actions = new Set(rows.map((r) => r.action));
-    for (const a of ["ratecard.created", "ratecard.version_active", "ratecard.version_archived", "ratecard.version_discarded", "ratecard.assigned", "ratecard.unassigned", "carrier_rule.published", "carrier_rule.retired", "ratecard.override_created"]) {
-      expect(actions.has(a), a).toBe(true);
+    for (const a of ["ratecard.created", "ratecard.version_active", "ratecard.version_archived", "ratecard.version_discarded", "ratecard.version_ended", "ratecard.assigned", "ratecard.unassigned", "carrier_rule.published", "carrier_rule.retired", "carrier_rule.zip_list_published", "ratecard.override_created", "ratecard.override_ended"]) {
+      expect([...actions].sort()).toContain(a);
     }
-    expect(rows.every((r) => r.actor_id === w.t1.admin.id)).toBe(true);
+    // Every user-initiated row names the administrator; the one superuser cleanup in these tests has no actor.
+    expect(rows.filter((r) => r.actor_id !== null).every((r) => r.actor_id === w.t1.admin.id)).toBe(true);
+    expect(rows.filter((r) => r.action === "ratecard.version_active").every((r) => r.actor_id === w.t1.admin.id)).toBe(true);
   });
 });
 
@@ -327,8 +431,10 @@ describe("bulk read helpers respect RLS", () => {
       expect(none!.rows, user.email).toHaveLength(0);
     }
     const [list] = await sql<{ id: string }>("select id from public.zip_lists where key = 'northwind.das'");
-    const [entries] = await asUser<{ e: string[] }>(w.brandA.employee.id, "select public.zip_list_entries_array($1) as e", [list!.id]);
+    const [entries] = await asUser<{ e: string[] }>(w.t1.employee.id, "select public.zip_list_entries_array($1) as e", [list!.id]);
     expect(entries!.e).toEqual(["93920", "958"]);
+    const [brandDirect] = await asUser<{ e: string[] }>(w.brandA.employee.id, "select public.zip_list_entries_array($1) as e", [list!.id]);
+    expect(brandDirect!.e).toEqual([]);
     const [noEntries] = await asUser<{ e: string[] }>(w.brandC.admin.id, "select public.zip_list_entries_array($1) as e", [list!.id]);
     expect(noEntries!.e).toEqual([]);
   });

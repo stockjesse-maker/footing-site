@@ -1,4 +1,4 @@
-import { D, dec, fmt, toLb, type Dec } from "./money";
+import { D, dec, fmt, fmtWeight, toLb, type Dec } from "./money";
 import type { DimRules, DimensionRounding, PackageInput, PackageWeightResult, WeightRounding } from "./types";
 
 export interface PackageMeasurements {
@@ -9,6 +9,13 @@ export interface PackageMeasurements {
   dimLb: Dec | null;
   billableLb: Dec;
   result: PackageWeightResult;
+}
+
+/** A billable-weight floor imposed by an applying surcharge rule (e.g. a large-package minimum). */
+export interface RuleFloor {
+  lb: Dec;
+  ruleKey: string;
+  ruleName: string;
 }
 
 export function roundDimension(value: Dec, mode: DimensionRounding): Dec {
@@ -31,16 +38,19 @@ export function roundWeightLb(value: Dec, mode: WeightRounding): Dec {
     case "up_whole_oz":
       // Round up to the next whole ounce, expressed in pounds (1 oz = 1/16 lb).
       return value.times(16).toDecimalPlaces(0, D.ROUND_CEIL).div(16);
+    case "postal":
+      // Whole ounces below one pound, whole pounds from one pound.
+      return value.lessThan(1) ? value.times(16).toDecimalPlaces(0, D.ROUND_CEIL).div(16) : value.toDecimalPlaces(0, D.ROUND_CEIL);
   }
 }
 
 /**
  * Billable weight for one package under the service's DIM rules.
  * Order of operations (see PRICING_ENGINE.md): convert actual weight → round dimensions → cubic
- * volume → threshold test → DIM weight → compare unrounded candidates → apply minimum → round the
- * winner per the service's weight rounding.
+ * volume → threshold test → DIM weight → compare unrounded candidates → apply the service minimum
+ * and any rule-imposed floor → round the winner per the service's weight rounding.
  */
-export function measurePackage(pkg: PackageInput, index: number, rules: DimRules): PackageMeasurements {
+export function measurePackage(pkg: PackageInput, index: number, rules: DimRules, ruleFloor: RuleFloor | null = null): PackageMeasurements {
   const actualLb = toLb(dec(pkg.weight), pkg.weightUnit);
   const hasDims = pkg.length !== undefined && pkg.width !== undefined && pkg.height !== undefined;
 
@@ -94,9 +104,15 @@ export function measurePackage(pkg: PackageInput, index: number, rules: DimRules
       explanation = `${explanation} Raised to the service minimum billable weight of ${fmt(min, 3)} lb.`;
     }
   }
+  if (ruleFloor && raw.lessThan(ruleFloor.lb)) {
+    raw = ruleFloor.lb;
+    basis = "rule_minimum";
+    explanation = `${explanation} Raised to the ${fmt(ruleFloor.lb, 3)} lb minimum billable weight that applies with ${ruleFloor.ruleName} (${ruleFloor.ruleKey}).`;
+  }
   const billableLb = roundWeightLb(raw, rules.weightRounding);
   if (!billableLb.equals(raw)) {
-    explanation = `${explanation} Rounded ${rules.weightRounding === "up_whole_oz" ? "up to the next ounce" : "up to the next pound"}: ${fmt(billableLb, 4)} lb billable.`;
+    const how = rules.weightRounding === "up_whole_lb" ? "up to the next pound" : rules.weightRounding === "postal" && raw.greaterThanOrEqualTo(1) ? "up to the next pound" : "up to the next ounce";
+    explanation = `${explanation} Rounded ${how}: ${fmt(billableLb, 4)} lb billable.`;
   }
 
   return {
@@ -107,11 +123,11 @@ export function measurePackage(pkg: PackageInput, index: number, rules: DimRules
     billableLb,
     result: {
       packageIndex: index,
-      actualLb: fmt(actualLb, 4),
+      actualLb: fmtWeight(actualLb),
       roundedDimensionsIn: dimsIn ? [fmt(dimsIn[0], 2), fmt(dimsIn[1], 2), fmt(dimsIn[2], 2)] : null,
       cubicIn: cubicIn ? fmt(cubicIn, 2) : null,
-      dimLb: dimLb ? fmt(dimLb, 4) : null,
-      billableLb: fmt(billableLb, 4),
+      dimLb: dimLb ? fmtWeight(dimLb) : null,
+      billableLb: fmtWeight(billableLb),
       basis,
       explanation,
     },

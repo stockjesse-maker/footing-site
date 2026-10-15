@@ -1,7 +1,9 @@
 export * from "./types";
 export { calculateShipment } from "./calculate";
+export { ruleConditionSchema, calculationBaseSchema } from "./validate";
 export { measurePackage, roundDimension, roundWeightLb, lengthPlusGirth } from "./dim";
 export { resolveZone, normalizeZone } from "./zones";
+export type { ZoneLookup } from "./zones";
 export { lookupRate } from "./rates";
 export { validateShipment, shipmentSchema, packageSchema, zipSchema } from "./validate";
 export { carrierProfile, categoryRank, UPS, FEDEX, USPS, DHL_ECOMMERCE, GENERIC } from "./carriers";

@@ -1,8 +1,8 @@
 import { z } from "zod";
-import type { ShipmentInput } from "./types";
+import type { RuleCondition, ShipmentInput } from "./types";
 
 const decimalString = z.string().regex(/^\d+(\.\d+)?$/, "must be a non-negative decimal string");
-const positiveDecimal = decimalString.refine((v) => Number.parseFloat(v) > 0, "must be greater than zero");
+const positiveDecimal = decimalString.refine((v) => /[1-9]/.test(v), "must be greater than zero");
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "must be a YYYY-MM-DD date").refine((v) => {
   const d = new Date(`${v}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
@@ -75,7 +75,7 @@ export function isValidShipment(input: unknown): input is ShipmentInput {
 const zoneList = z.array(z.string().trim().min(1).max(12)).min(1).max(50);
 const inches = z.string().regex(/^\d+(\.\d+)?$/);
 
-export const ruleConditionSchema = z.discriminatedUnion("type", [
+const baseConditionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("residential"), value: z.boolean() }),
   z.object({ type: z.literal("weight_gt"), valueLb: inches, basis: z.enum(["actual", "billable"]) }),
   z.object({ type: z.literal("weight_lte"), valueLb: inches, basis: z.enum(["actual", "billable"]) }),
@@ -93,7 +93,13 @@ export const ruleConditionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("flag_present"), flag: z.string().trim().min(1).max(40) }),
   z.object({ type: z.literal("ship_date_between"), from: isoDate, to: isoDate }),
   z.object({ type: z.literal("package_count_gt"), value: z.number().int().min(0).max(200) }),
+  z.object({ type: z.literal("rule_applied"), ruleKey: z.string().regex(/^[a-z][a-z0-9_.]{1,80}$/) }),
 ]);
+
+/** Conditions, including `any_of` groups (one level of nesting is plenty; deeper groups are allowed but discouraged). */
+export const ruleConditionSchema: z.ZodType<RuleCondition> = z.lazy(() =>
+  z.union([baseConditionSchema, z.object({ type: z.literal("any_of"), conditions: z.array(ruleConditionSchema).min(1).max(10) })]),
+) as unknown as z.ZodType<RuleCondition>;
 
 export const calculationBaseSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("base_rate") }),

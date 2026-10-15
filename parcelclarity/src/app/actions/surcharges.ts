@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
+import { SURCHARGE_CATEGORIES } from "@/engine/types";
 import { calculationBaseSchema, ruleConditionSchema } from "@/engine/validate";
 import type { ActionState } from "@/lib/actions";
 import { fieldErrors, nameSchema, uuidSchema } from "@/lib/auth/validation";
@@ -16,22 +17,22 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Enter a date.");
 const decimal = z.string().trim().regex(/^\d+(\.\d+)?$/, "Enter a number.");
 const optionalDecimal = z.preprocess((v) => (v === "" || v === null ? null : v), decimal.nullable());
 
-export const CATEGORIES = [
-  "fuel", "residential", "das", "das_extended", "remote_area", "additional_handling", "oversize", "peak", "address_correction",
-  "signature", "declared_value", "saturday_delivery", "reweight", "remeasure", "shipping_charge_correction", "other",
-] as const;
+
 
 const ruleVersionFields = z
   .object({
     name: nameSchema,
     carrierCode: z.string().regex(/^[a-z][a-z0-9_]{1,30}$/),
-    category: z.enum(CATEGORIES),
+    category: z.enum(SURCHARGE_CATEGORIES),
     chargeClass: z.enum(["definite", "estimated", "conditional"]),
     method: z.enum(["flat", "percent", "per_unit"]),
     amount: optionalDecimal,
     percent: optionalDecimal,
     perUnitSize: optionalDecimal,
     perUnitFreeAllowance: optionalDecimal,
+    perUnitMinimumCharge: optionalDecimal,
+    billableWeightFloorLb: optionalDecimal,
+    brandId: z.preprocess((v) => (v === "" || v === null ? null : v), uuidSchema.nullable()),
     base: calculationBaseSchema,
     conditions: z.array(ruleConditionSchema).max(10),
     appliesToServiceIds: z.array(uuidSchema).max(50),
@@ -72,6 +73,9 @@ function readRuleFields(formData: FormData) {
     percent: formData.get("percent"),
     perUnitSize: formData.get("perUnitSize"),
     perUnitFreeAllowance: formData.get("perUnitFreeAllowance") || "0",
+    perUnitMinimumCharge: formData.get("perUnitMinimumCharge") ?? "",
+    billableWeightFloorLb: formData.get("billableWeightFloorLb") ?? "",
+    brandId: formData.get("brandId") ?? "",
     base: parseJsonField(formData, "base", { kind: "base_rate" }),
     conditions: parseJsonField(formData, "conditions", []),
     appliesToServiceIds: formData.getAll("appliesToServiceIds").map(String).filter(Boolean),
@@ -99,6 +103,8 @@ function versionRow(v: z.infer<typeof ruleVersionFields>, tenantId: string, rule
     per_unit_basis: v.method === "per_unit" ? "declared_value" : null,
     per_unit_size: v.method === "per_unit" ? v.perUnitSize : null,
     per_unit_free_allowance: v.method === "per_unit" ? (v.perUnitFreeAllowance ?? "0") : null,
+    per_unit_minimum_charge: v.method === "per_unit" ? v.perUnitMinimumCharge : null,
+    billable_weight_floor_lb: v.billableWeightFloorLb,
     calculation_base: v.base,
     conditions: v.conditions,
     exclusivity_group: v.exclusivityGroup,
@@ -131,8 +137,9 @@ export async function createSurchargeRule(_prev: ActionState, formData: FormData
   let ruleId: string | null = null;
   for (let attempt = 0; attempt < 5 && !ruleId; attempt++) {
     const key = attempt === 0 ? ruleKey : `${ruleKey}_${attempt + 1}`;
-    const { data, error } = await supabase.from("surcharge_rules").insert({ scope: "tenant", tenant_id: ctx.active.tenantId, carrier_code: v.carrierCode, rule_key: key, category: v.category, name: v.name }).select("id").single();
+    const { data, error } = await supabase.from("surcharge_rules").insert({ scope: "tenant", tenant_id: ctx.active.tenantId, carrier_code: v.carrierCode, rule_key: key, category: v.category, name: v.name, brand_id: v.brandId }).select("id").single();
     if (data) ruleId = data.id;
+    else if (error?.code === "42501" || error?.code === "23503") return { ok: false, errors: { brandId: "That customer is not in your workspace." } };
     else if (error?.code !== "23505") return { ok: false, message: GENERIC_FAILURE };
   }
   if (!ruleId) return { ok: false, message: "Could not create a unique key for this rule. Try a different name." };
@@ -148,11 +155,12 @@ export async function addSurchargeRuleVersion(_prev: ActionState, formData: Form
   const ctx = await requireTenantContext("ratecard.manage");
   const ruleId = String(formData.get("ruleId") ?? "");
   if (!uuidSchema.safeParse(ruleId).success) return { ok: false, message: GENERIC_FAILURE };
-  const parsed = readRuleFields(formData);
-  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
   const supabase = await createClient();
   const { data: rule } = await supabase.from("surcharge_rules").select("id, tenant_id, scope, carrier_code").eq("id", ruleId).maybeSingle();
   if (!rule || rule.tenant_id !== ctx.active.tenantId || rule.scope !== "tenant") return { ok: false, message: "Rule not found." };
+  formData.set("carrierCode", rule.carrier_code);
+  const parsed = readRuleFields(formData);
+  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
   if (parsed.data.name) await supabase.from("surcharge_rules").update({ name: parsed.data.name }).eq("id", ruleId);
   const { data: latest } = await supabase.from("surcharge_rule_versions").select("version_number").eq("rule_id", ruleId).order("version_number", { ascending: false }).limit(1).maybeSingle();
   const { error } = await supabase.from("surcharge_rule_versions").insert(versionRow({ ...parsed.data, carrierCode: rule.carrier_code }, ctx.active.tenantId, ruleId, (latest?.version_number ?? 0) + 1));
@@ -175,12 +183,18 @@ export async function publishRuleVersion(versionId: string): Promise<{ ok: boole
   return { ok: true };
 }
 
-export async function retireRuleVersion(versionId: string): Promise<{ ok: boolean; message?: string }> {
+/** Retires a published version as of `lastEffective` (default: today, UTC); it stays available for historical calculations. */
+export async function retireRuleVersion(versionId: string, lastEffective?: string): Promise<{ ok: boolean; message?: string }> {
   await requireTenantContext("ratecard.manage");
-  if (!uuidSchema.safeParse(versionId).success) return { ok: false, message: GENERIC_FAILURE };
+  const parsed = z.object({ versionId: uuidSchema, lastEffective: isoDate.optional() }).safeParse({ versionId, lastEffective });
+  if (!parsed.success) return { ok: false, message: GENERIC_FAILURE };
   const supabase = await createClient();
-  const { error } = await supabase.rpc("retire_surcharge_rule_version", { p_version: versionId });
-  if (error) return { ok: false, message: error.message.includes("only a published") ? "Only a published version can be retired." : "Rule version not found." };
+  const { error } = await supabase.rpc("retire_surcharge_rule_version", { p_version: parsed.data.versionId, p_last_effective: parsed.data.lastEffective ?? new Date().toISOString().slice(0, 10) });
+  if (error) {
+    if (error.message.includes("only a published")) return { ok: false, message: "Only a published version can be retired." };
+    if (error.message.includes("precedes")) return { ok: false, message: "The last effective date cannot be before the version's effective date." };
+    return { ok: false, message: "Rule version not found." };
+  }
   revalidatePath("/app/surcharges", "layout");
   return { ok: true };
 }
@@ -190,7 +204,7 @@ export async function archiveSurchargeRule(ruleId: string): Promise<{ ok: boolea
   if (!uuidSchema.safeParse(ruleId).success) return { ok: false, message: GENERIC_FAILURE };
   const supabase = await createClient();
   const { data: published } = await supabase.from("surcharge_rule_versions").select("id").eq("rule_id", ruleId).eq("status", "published");
-  for (const v of published ?? []) await supabase.rpc("retire_surcharge_rule_version", { p_version: v.id });
+  for (const v of published ?? []) await supabase.rpc("retire_surcharge_rule_version", { p_version: v.id, p_last_effective: new Date().toISOString().slice(0, 10) });
   const { data, error } = await supabase.from("surcharge_rules").update({ archived_at: new Date().toISOString() }).eq("id", ruleId).eq("tenant_id", ctx.active.tenantId).select("id");
   if (error || !data?.length) return { ok: false, message: "Rule not found." };
   revalidatePath("/app/surcharges", "layout");
@@ -206,7 +220,7 @@ export async function createOverride(_prev: ActionState, formData: FormData): Pr
     .object({
       brandId: uuidSchema,
       ruleId: uuidSchema,
-      mode: z.enum(["exclude", "override_amount", "override_percent"]),
+      mode: z.enum(["exclude", "override_amount", "override_percent", "markup_percent", "add_percent_points"]),
       amount: optionalDecimal,
       percent: optionalDecimal,
       effectiveDate: isoDate,
@@ -215,7 +229,8 @@ export async function createOverride(_prev: ActionState, formData: FormData): Pr
     })
     .superRefine((v, c) => {
       if (v.mode === "override_amount" && v.amount === null) c.addIssue({ code: "custom", path: ["amount"], message: "Enter the amount." });
-      if (v.mode === "override_percent" && v.percent === null) c.addIssue({ code: "custom", path: ["percent"], message: "Enter the percentage." });
+      if ((v.mode === "override_percent" || v.mode === "markup_percent" || v.mode === "add_percent_points") && v.percent === null) c.addIssue({ code: "custom", path: ["percent"], message: "Enter the percentage." });
+      if (v.expirationDate && v.expirationDate < v.effectiveDate) c.addIssue({ code: "custom", path: ["expirationDate"], message: "Expiration must not precede the effective date." });
     })
     .safeParse({
       brandId: formData.get("brandId"),
@@ -236,12 +251,16 @@ export async function createOverride(_prev: ActionState, formData: FormData): Pr
     rule_id: v.ruleId,
     mode: v.mode,
     amount: v.mode === "override_amount" ? v.amount : null,
-    percent: v.mode === "override_percent" ? v.percent : null,
+    percent: v.mode === "override_percent" || v.mode === "markup_percent" || v.mode === "add_percent_points" ? v.percent : null,
     effective_date: v.effectiveDate,
     expiration_date: v.expirationDate,
     reference: v.reference,
   });
-  if (error) return { ok: false, message: error.code === "42501" ? "That rule cannot be overridden for this customer." : GENERIC_FAILURE };
+  if (error) {
+    if (error.code === "42501") return { ok: false, message: "That rule cannot be overridden for this customer." };
+    if (error.code === "23P01") return { ok: false, errors: { effectiveDate: "Another exception for this surcharge already covers these dates. End it first." } };
+    return { ok: false, message: GENERIC_FAILURE };
+  }
   revalidatePath(`/app/customers/${v.brandId}`);
   return { ok: true, message: "Exception saved." };
 }
@@ -313,7 +332,6 @@ export async function uploadZipList(_prev: ActionState, formData: FormData): Pro
       verification_status: "approved_3pl_config",
       effective_date: parsed.data.effectiveDate,
       expiration_date: parsed.data.expirationDate,
-      entry_count: entries.length,
     })
     .select("id")
     .single();
@@ -321,6 +339,11 @@ export async function uploadZipList(_prev: ActionState, formData: FormData): Pro
   for (let i = 0; i < entries.length; i += 2000) {
     const { error: eError } = await supabase.from("zip_list_entries").insert(entries.slice(i, i + 2000).map((entry) => ({ list_id: list.id, entry })));
     if (eError) return { ok: false, message: GENERIC_FAILURE };
+  }
+  const { error: pError } = await supabase.rpc("publish_zip_list", { p_list: list.id });
+  if (pError) {
+    if (pError.message.includes("already covers")) return { ok: false, errors: { effectiveDate: "A published version of this list already covers these dates. Give the new version a later effective date (the previous one is ended automatically only when you set its expiration)." } };
+    return { ok: false, message: GENERIC_FAILURE };
   }
   revalidatePath("/app/surcharges", "layout");
   return { ok: true, message: `ZIP list "${parsed.data.name}" saved with ${entries.length} entries (version ${(prev?.version ?? 0) + 1}).` };

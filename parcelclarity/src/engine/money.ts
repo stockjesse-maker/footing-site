@@ -54,6 +54,16 @@ export function fromLb(weightLb: Dec, unit: WeightUnit): Dec {
   return unit === "oz" ? weightLb.times(16) : weightLb;
 }
 
+/**
+ * Weight for display/result fields: exact when it terminates within 12 decimals, otherwise rounded
+ * UP at the 12th decimal so the reported weight never falls below the exact value (and so never
+ * outside the bracket that was priced, whose minimum is exclusive).
+ */
+export function fmtWeight(value: Dec): DecimalString {
+  const s = value.toDecimalPlaces(12, D.ROUND_UP).toFixed(12).replace(/(\.\d*?[1-9])0+$|\.0+$/, "$1");
+  return s.includes(".") ? s : `${s}.0`;
+}
+
 /** Fixed-point string with trailing zeros trimmed but at least one decimal digit kept: "12.5", "3.0". */
 export function fmt(value: Dec, maxDp = 6): DecimalString {
   const s = value.toDecimalPlaces(maxDp, D.ROUND_HALF_UP).toFixed(maxDp).replace(/(\.\d*?[1-9])0+$|\.0+$/, "$1");

@@ -1,5 +1,5 @@
 {
-  "_comment": "FICTIONAL golden expectations for the pricing engine, derived INDEPENDENTLY of src/engine by hand/script from docs-m2-design.md and the fixture files in this folder (fixture-rate-card.csv, fixture-zone-chart.csv, fixture-service-terms.json, fixture-rules.json, fixture-zip-lists.json, fixture-overrides.json). Two independent derivations (one scripted, one manual) were reconciled on 2026-10-15; they agreed on every value. Amounts are decimal strings rounded HALF_UP to 2 dp per line; totals are sums of rounded lines. Line order is per package (base, minimum adjustment, per-package surcharges), then shipment-level lines, then fuel lines; tests should compare lines order-insensitively. None of these numbers are real carrier rates. One deliberate post-reconciliation change: in ground_no_dimensions_estimated the fuel line is classed estimated (design rule 1.9: a percentage of an estimated base is an estimate).",
+  "_comment": "FICTIONAL golden expectations for the pricing engine, derived INDEPENDENTLY of src/engine by hand/script from docs-m2-design.md and the fixture files in this folder (fixture-rate-card.csv, fixture-zone-chart.csv, fixture-service-terms.json, fixture-rules.json, fixture-zip-lists.json, fixture-overrides.json). Two independent derivations (one scripted, one manual) were reconciled on 2026-10-15; they agreed on every value. Amounts are decimal strings rounded HALF_UP to 2 dp per line; totals are sums of rounded lines. Line order is per package (base, minimum adjustment, per-package surcharges), then shipment-level lines, then fuel lines; tests should compare lines order-insensitively. None of these numbers are real carrier rates. One deliberate post-reconciliation change: in ground_no_dimensions_estimated the fuel line is classed estimated (design rule 1.9: a percentage of an estimated base is an estimate). Second deliberate change: in usps_unverified_rule_warning the unverified fee is counted as an estimate (rule 1.9: unverified sources never enter the definite total).",
   "ground_commercial_dim_wins": {
     "status": "ok",
     "unavailableReason": null,
@@ -1121,19 +1121,19 @@
         "packageIndex": 0,
         "amount": "0.75",
         "counted": true,
-        "chargeClass": "definite"
+        "chargeClass": "estimated"
       }
     ],
     "totals": {
-      "definite": "6.15",
-      "estimated": "0.00",
+      "definite": "5.40",
+      "estimated": "0.75",
       "expected": "6.15",
       "conditionalExposure": "0.00"
     },
     "warnings": [
       "unverified_rule_applied"
     ],
-    "derivation": "pkg0: 6 oz = 0.375 lb (actual); zone 5; oz bracket 4-8 -> 5.40; flag 'fragile' present -> Unverified handling fee 0.75 counted (class definite); rule verificationStatus unverified and line counted -> warning unverified_rule_applied; definite 6.15"
+    "derivation": "pkg0: 6 oz = 0.375 lb (actual); zone 5; oz bracket 4-8 -> 5.40; flag 'fragile' present -> Unverified handling fee 0.75 counted (class definite); rule verificationStatus unverified and line counted -> warning unverified_rule_applied; definite 6.15 DESIGN DECISION (post-reconciliation): a counted line from an unverified rule is classed estimated, never definite."
   },
   "usps_origin_not_priced": {
     "status": "unavailable",

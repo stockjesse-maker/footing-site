@@ -16,20 +16,30 @@ export interface EvaluationContext {
   zone: string | null;
   packages: PackageContext[];
   zipLists: Map<string, ZipListIndex>;
+  /**
+   * Keys of rules that ended up applying (after exclusivity and overrides) and of rules whose
+   * outcome stayed unknown, per scope. null during the first pass: `rule_applied` conditions are
+   * then deferred.
+   */
+  applied: { shipment: Set<string>; packages: Set<string>[]; unknownShipment: Set<string>; unknownPackages: Set<string>[] } | null;
 }
 
 export interface ZipListIndex {
   key: string;
   version: number;
+  sourceReference: string;
   entries: Set<string>;
 }
 
-export function indexZipLists(lists: ZipList[]): Map<string, ZipListIndex> {
+/** Keeps, per key, the list version in force on the ship date (highest version wins among several in force). */
+export function indexZipLists(lists: ZipList[], shipDate: string): Map<string, ZipListIndex> {
   const map = new Map<string, ZipListIndex>();
   for (const l of lists) {
+    if (l.effectiveDate && shipDate < l.effectiveDate) continue;
+    if (l.expirationDate && shipDate > l.expirationDate) continue;
     const existing = map.get(l.key);
     if (existing && existing.version >= l.version) continue;
-    map.set(l.key, { key: l.key, version: l.version, entries: new Set(l.entries.map((e) => e.trim())) });
+    map.set(l.key, { key: l.key, version: l.version, sourceReference: l.sourceReference, entries: new Set(l.entries.map((e) => e.trim())) });
   }
   return map;
 }
@@ -48,20 +58,25 @@ export function ruleIsCandidate(rule: SurchargeRule, carrierCode: string, servic
   return true;
 }
 
-/** Keeps the highest version per key (the database forbids overlapping published versions, this is belt and braces). */
+/**
+ * One rule per key: a tenant rule shadows a platform rule with the same key (the sanctioned way for a
+ * 3PL to replace a published rule), then the highest version wins.
+ */
 export function latestPerKey(rules: SurchargeRule[]): SurchargeRule[] {
   const byKey = new Map<string, SurchargeRule>();
   for (const r of rules) {
     const cur = byKey.get(r.key);
-    if (!cur || r.version > cur.version) byKey.set(r.key, r);
+    if (!cur) byKey.set(r.key, r);
+    else if (r.scope === "tenant" && cur.scope === "platform") byKey.set(r.key, r);
+    else if (r.scope === cur.scope && r.version > cur.version) byKey.set(r.key, r);
   }
-  return [...byKey.values()];
+  return [...byKey.values()].sort((a, b) => compareKeys(a.key, b.key));
 }
 
 export function activeOverride(overrides: SurchargeOverride[], ruleKey: string, shipDate: string): SurchargeOverride | null {
   const matches = overrides.filter((o) => o.ruleKey === ruleKey && shipDate >= o.effectiveDate && (!o.expirationDate || shipDate <= o.expirationDate));
-  // Latest effective date wins if several overlap (the UI prevents overlap; be deterministic anyway).
-  return matches.sort((a, b) => (a.effectiveDate < b.effectiveDate ? 1 : a.effectiveDate > b.effectiveDate ? -1 : 0))[0] ?? null;
+  // The database forbids overlapping live overrides; if several still match, the latest effective date wins.
+  return matches.sort((a, b) => (a.effectiveDate < b.effectiveDate ? 1 : a.effectiveDate > b.effectiveDate ? -1 : compareKeys(a.reference, b.reference)))[0] ?? null;
 }
 
 function and(a: ConditionOutcome, b: ConditionOutcome): ConditionOutcome {
@@ -70,9 +85,50 @@ function and(a: ConditionOutcome, b: ConditionOutcome): ConditionOutcome {
   return "applies";
 }
 
+function or(outcomes: ConditionOutcome[]): ConditionOutcome {
+  if (outcomes.includes("applies")) return "applies";
+  return outcomes.includes("unknown") ? "unknown" : "not";
+}
+
 function cmpGt(value: Dec | null, threshold: string): ConditionOutcome {
   if (value === null) return "unknown";
   return value.greaterThan(dec(threshold)) ? "applies" : "not";
+}
+
+/** Conditions that depend only on the package itself (never on zone, ZIP, date or other rules). */
+export function isPackageOnlyCondition(c: RuleCondition): boolean {
+  switch (c.type) {
+    case "weight_gt":
+    case "weight_lte":
+      return c.basis === "actual";
+    case "longest_side_gt":
+    case "second_longest_side_gt":
+    case "length_plus_girth_gt":
+    case "cubic_in_gt":
+    case "package_type_in":
+    case "flag_present":
+      return true;
+    case "any_of":
+      return c.conditions.every(isPackageOnlyCondition);
+    default:
+      return false;
+  }
+}
+
+export function referencesRule(c: RuleCondition): boolean {
+  return c.type === "rule_applied" || (c.type === "any_of" && c.conditions.some(referencesRule));
+}
+
+/** Every rule key a condition tree refers to through `rule_applied`. */
+export function referencedRuleKeys(c: RuleCondition): string[] {
+  if (c.type === "rule_applied") return [c.ruleKey];
+  if (c.type === "any_of") return c.conditions.flatMap(referencedRuleKeys);
+  return [];
+}
+
+/** Deterministic, locale-independent ordering for keys and labels (code-point order). */
+export function compareKeys(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /** Evaluates one condition for one package (or for the shipment when pkg is null). */
@@ -83,10 +139,7 @@ export function evaluateCondition(c: RuleCondition, ctx: EvaluationContext, pkg:
   const perPackage = (f: (p: PackageContext) => ConditionOutcome, mode: "any" | "all" = "any"): ConditionOutcome => {
     if (pkg) return f(pkg);
     const outcomes = ctx.packages.map(f);
-    if (mode === "any") {
-      if (outcomes.includes("applies")) return "applies";
-      return outcomes.includes("unknown") ? "unknown" : "not";
-    }
+    if (mode === "any") return or(outcomes);
     if (outcomes.includes("not")) return "not";
     return outcomes.includes("unknown") ? "unknown" : "applies";
   };
@@ -132,6 +185,22 @@ export function evaluateCondition(c: RuleCondition, ctx: EvaluationContext, pkg:
       return s.shipDate >= c.from && s.shipDate <= c.to ? "applies" : "not";
     case "package_count_gt":
       return s.packages.length > c.value ? "applies" : "not";
+    case "any_of":
+      return or(c.conditions.map((inner) => evaluateCondition(inner, ctx, pkg)));
+    case "rule_applied": {
+      if (!ctx.applied) return "unknown"; // first pass: decided later
+      const a = ctx.applied;
+      if (pkg) {
+        // A package companion applies when the parent applied on this package or at shipment level.
+        if (a.packages[pkg.index]?.has(c.ruleKey) || a.shipment.has(c.ruleKey)) return "applies";
+        if (a.unknownPackages[pkg.index]?.has(c.ruleKey) || a.unknownShipment.has(c.ruleKey)) return "unknown";
+        return "not";
+      }
+      // A shipment companion applies when the parent applied at shipment level or on any package.
+      if (a.shipment.has(c.ruleKey) || a.packages.some((set) => set.has(c.ruleKey))) return "applies";
+      if (a.unknownShipment.has(c.ruleKey) || a.unknownPackages.some((set) => set.has(c.ruleKey))) return "unknown";
+      return "not";
+    }
   }
 }
 
@@ -146,8 +215,8 @@ export function evaluateRule(rule: SurchargeRule, ctx: EvaluationContext, pkg: P
 
 /** Why a rule's outcome is unknown, for the explanation text. */
 export function unknownReason(rule: SurchargeRule, ctx: EvaluationContext, pkg: PackageContext | null): string {
-  for (const c of rule.conditions) {
-    if (evaluateCondition(c, ctx, pkg) !== "unknown") continue;
+  const describe = (c: RuleCondition): string | null => {
+    if (evaluateCondition(c, ctx, pkg) !== "unknown") return null;
     switch (c.type) {
       case "destination_zip_in_list":
         return ctx.zipLists.has(c.listKey) ? "no destination ZIP was given" : `the ZIP list "${c.listKey}" is not loaded`;
@@ -155,9 +224,17 @@ export function unknownReason(rule: SurchargeRule, ctx: EvaluationContext, pkg: 
         return "no destination ZIP was given";
       case "zone_in":
         return "the zone could not be resolved";
+      case "any_of":
+        return c.conditions.map(describe).find((d) => d) ?? "an input needed to decide was missing";
+      case "rule_applied":
+        return `it depends on ${c.ruleKey}, which could not be decided`;
       default:
         return "package dimensions were not given";
     }
+  };
+  for (const c of rule.conditions) {
+    const why = describe(c);
+    if (why) return why;
   }
   return "an input needed to decide was missing";
 }

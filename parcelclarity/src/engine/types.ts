@@ -10,6 +10,9 @@
  * between PostgreSQL `numeric`, JSON and this module.
  */
 
+/** Bumped whenever a behavioural change could alter a result for the same inputs. Recorded in every result. */
+export const ENGINE_VERSION = "2.1.0";
+
 /** Decimal number encoded as a string, e.g. "12.5000". Never a JS float. */
 export type DecimalString = string;
 
@@ -78,7 +81,11 @@ export interface ShipmentInput {
 // ---------------------------------------------------------------------------
 
 export type DimensionRounding = "none" | "nearest_whole" | "up_whole";
-export type WeightRounding = "none" | "up_whole_lb" | "up_whole_oz";
+/**
+ * Billable-weight rounding. `postal` = whole ounces below one pound, whole pounds from one pound
+ * (postal/economy products); `up_whole_oz` = always to the next ounce; `up_whole_lb` = next pound.
+ */
+export type WeightRounding = "none" | "up_whole_lb" | "up_whole_oz" | "postal";
 
 /**
  * Dimensional-weight and billable-weight rules for one service, as agreed with the customer.
@@ -110,6 +117,14 @@ export interface ServiceTerms {
   includedSurchargeKeys: string[];
   /** Surcharge rule keys the customer agreement waives: neither listed as charges nor charged. */
   excludedSurchargeKeys: string[];
+  /** Which of the card's zone charts this service uses ("default" when the card has one). */
+  zoneChartKey: string;
+  /** Priced without a zone: rows carry zone "ALL" and no zone is resolved. */
+  zoneIndependent: boolean;
+  /** Customer-facing markup on every surcharge that is not included, excluded or individually overridden ("published + X%"). */
+  surchargeMarkupPercent: DecimalString | null;
+  /** Where these terms come from (activation is the 3PL's approval of them). */
+  sourceReference: string;
   /** Explicit reference recorded in results so a number can be traced to its published terms. */
   termsVersion: string;
 }
@@ -122,6 +137,7 @@ export interface RateRow {
   serviceId: string;
   /** Origin ZIP prefix (3 or 5 digits) when the card prices per origin; null = any origin. */
   originPrefix: string | null;
+  /** Zone, or "ALL" for zone-independent services. */
   zone: string;
   weightMin: DecimalString;
   weightMax: DecimalString;
@@ -131,13 +147,14 @@ export interface RateRow {
   minCharge: DecimalString | null;
 }
 
-/** Zone chart row: origin prefix → inclusive destination prefix range → zone. */
+/** Zone chart row: origin prefix → inclusive destination prefix range → zone, within a named chart. */
 export interface ZoneRow {
   carrierCode: CarrierCode;
   originPrefix: string;
   destPrefixFrom: string;
   destPrefixTo: string;
   zone: string;
+  zoneChartKey: string;
 }
 
 export interface RateCardSnapshot {
@@ -156,6 +173,11 @@ export interface RateCardSnapshot {
 // ---------------------------------------------------------------------------
 // Surcharge rules
 // ---------------------------------------------------------------------------
+
+export const SURCHARGE_CATEGORIES = [
+  "fuel", "residential", "das", "das_extended", "remote_area", "additional_handling", "oversize", "peak", "address_correction",
+  "signature", "declared_value", "saturday_delivery", "reweight", "remeasure", "shipping_charge_correction", "other",
+] as const;
 
 export type SurchargeCategory =
   | "fuel"
@@ -208,7 +230,11 @@ export type RuleCondition =
   | { type: "package_type_in"; types: PackageType[] }
   | { type: "flag_present"; flag: string }
   | { type: "ship_date_between"; from: string; to: string }
-  | { type: "package_count_gt"; value: number };
+  | { type: "package_count_gt"; value: number }
+  /** Holds when at least one inner condition holds (OR). */
+  | { type: "any_of"; conditions: RuleCondition[] }
+  /** Holds when the named rule ended up applying (after exclusivity and overrides); companion surcharges such as peak-on-handling. */
+  | { type: "rule_applied"; ruleKey: string };
 
 export type VerificationStatus = "unverified" | "verified" | "approved_3pl_config";
 
@@ -219,6 +245,8 @@ export interface SurchargeRule {
   versionId: string;
   version: number;
   scope: "platform" | "tenant";
+  /** Tenant rule limited to one brand customer (the data layer only supplies rules for the brand being priced). */
+  brandId: string | null;
   carrierCode: CarrierCode;
   /** null = every service of the carrier. */
   serviceCodes: string[] | null;
@@ -230,8 +258,10 @@ export interface SurchargeRule {
   amount: DecimalString | null;
   /** Percentage, e.g. "16.5" for 16.5% (method = percent). */
   percent: DecimalString | null;
-  /** For per_unit: charge `amount` for each started `unitSize` of the basis above `unitFreeAllowance`. */
-  perUnit: { basis: "declared_value"; unitSize: DecimalString; freeAllowance: DecimalString } | null;
+  /** For per_unit: charge `amount` for each started `unitSize` of the basis above `freeAllowance`, at least `minimumCharge`. */
+  perUnit: { basis: "declared_value"; unitSize: DecimalString; freeAllowance: DecimalString; minimumCharge: DecimalString | null } | null;
+  /** Structural effect: when the rule applies, the package bills at no less than this weight (e.g. large-package minimums). */
+  billableWeightFloorLb: DecimalString | null;
   base: CalculationBase;
   /** All conditions must hold (logical AND). An empty list always applies. */
   conditions: RuleCondition[];
@@ -255,12 +285,20 @@ export interface ZipList {
   entries: string[];
   version: number;
   sourceReference: string;
+  effectiveDate: string;
+  expirationDate: string | null;
 }
 
-/** Customer-specific exception to a rule, configured by the 3PL. */
+/**
+ * Customer-specific exception to a rule, configured by the 3PL.
+ *  - exclude: the rule is waived (listed, not charged).
+ *  - override_amount / override_percent: replace the figure.
+ *  - markup_percent: the published figure plus a percentage ("carrier published + 10%").
+ *  - add_percent_points: for percent rules, the published percentage plus N points.
+ */
 export interface SurchargeOverride {
   ruleKey: string;
-  mode: "exclude" | "override_amount" | "override_percent";
+  mode: "exclude" | "override_amount" | "override_percent" | "markup_percent" | "add_percent_points";
   amount: DecimalString | null;
   percent: DecimalString | null;
   effectiveDate: string;
@@ -289,14 +327,25 @@ export interface RuleReference {
 
 export type LineKind = "base" | "minimum_charge" | "surcharge" | "fuel";
 
+/**
+ * Why a line is or is not part of a total.
+ *  - charged: counted in definite or estimated.
+ *  - unknown: an input needed to decide was missing; shown as an estimate, not counted.
+ *  - included: bundled into the base rate under the customer's terms; not counted.
+ *  - waived: excluded for this customer; not counted.
+ *  - conditional: a possible post-shipment adjustment; not counted.
+ */
+export type LineStatus = "charged" | "unknown" | "included" | "waived" | "conditional";
+
 export interface ChargeLine {
   kind: LineKind;
   category: SurchargeCategory | "base";
   label: string;
   amount: Money;
   chargeClass: ChargeClass;
-  /** false = listed for transparency but not included in any total (included-in-base or conditional). */
+  /** false = listed for transparency but not included in any total (see `status`). */
   counted: boolean;
+  status: LineStatus;
   /** Package this line belongs to, when the charge is per package. */
   packageIndex: number | null;
   /** Human explanation: which inputs and terms produced the amount. */
@@ -313,14 +362,14 @@ export interface PackageWeightResult {
   cubicIn: DecimalString | null;
   dimLb: DecimalString | null;
   billableLb: DecimalString;
-  /** Why billable is what it is: "dim" | "actual" | "minimum" | "exempt" | "no_dimensions" | "no_divisor". */
-  basis: "dim" | "actual" | "minimum" | "exempt" | "no_dimensions" | "no_divisor";
+  /** Why billable is what it is. `rule_minimum` = a surcharge rule's billable-weight floor applied. */
+  basis: "dim" | "actual" | "minimum" | "rule_minimum" | "exempt" | "no_dimensions" | "no_divisor";
   explanation: string;
 }
 
 export interface ZoneResult {
   zone: string;
-  source: "input" | "zone_chart";
+  source: "input" | "zone_chart" | "zone_independent";
   explanation: string;
 }
 
@@ -331,7 +380,8 @@ export type WarningCode =
   | "dimensions_missing"
   | "zone_chart_missing"
   | "rate_card_not_effective"
-  | "rule_overridden";
+  | "rule_overridden"
+  | "rule_reference_cycle";
 
 export interface CalculationWarning {
   code: WarningCode;
@@ -342,6 +392,7 @@ export interface CalculationWarning {
 export type UnavailableReason =
   | "service_not_on_rate_card"
   | "zone_unresolved"
+  | "zone_ambiguous"
   | "no_rate_for_weight"
   | "no_rate_for_zone"
   | "no_rate_for_origin"
@@ -351,12 +402,14 @@ export type UnavailableReason =
 export interface Totals {
   /** Base + definite surcharges + fuel on them. */
   definite: Money;
-  /** Surcharges whose applicability or amount rests on an assumption. */
+  /** Counted lines whose figure rests on an assumption (e.g. DIM could not be checked, unverified source). */
   estimated: Money;
   /** Definite + estimated: the best single estimate of the shipping charge. */
   expected: Money;
   /** Sum of conditional adjustment lines (not part of expected). */
   conditionalExposure: Money;
+  /** Sum of surcharges that could not be decided from the inputs (status "unknown"); not part of expected. */
+  unresolved: Money;
 }
 
 export interface ShipmentCalculation {
@@ -371,11 +424,14 @@ export interface ShipmentCalculation {
   lines: ChargeLine[];
   totals: Totals;
   references: {
+    engineVersion: string;
     rateCardId: string;
     rateCardVersionId: string;
     rateCardVersionNumber: number;
     termsVersion: string | null;
     rules: RuleReference[];
+    zipLists: { key: string; version: number; sourceReference: string }[];
+    overrides: { ruleKey: string; mode: SurchargeOverride["mode"]; reference: string }[];
   };
   warnings: CalculationWarning[];
 }

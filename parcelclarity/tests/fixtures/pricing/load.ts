@@ -38,12 +38,13 @@ export function loadFixtureRateCard(opts: { effectiveDate?: string; expirationDa
     destPrefixFrom: z.dest_prefix_from!,
     destPrefixTo: z.dest_prefix_to!,
     zone: z.zone!,
+    zoneChartKey: "default",
   }));
-  const terms = JSON.parse(readFileSync(path.join(dir, "fixture-service-terms.json"), "utf8")) as Record<string, Omit<ServiceTerms, "serviceId" | "carrierCode" | "serviceCode" | "serviceName" | "termsVersion">>;
+  const terms = JSON.parse(readFileSync(path.join(dir, "fixture-service-terms.json"), "utf8")) as Record<string, Pick<ServiceTerms, "dim" | "minCharge" | "includedSurchargeKeys" | "excludedSurchargeKeys">>;
   const services: ServiceTerms[] = Object.entries(terms).map(([key, t]) => {
     const [carrierCode, serviceCode] = key.split("/") as [string, string];
     const name = Object.entries(SERVICES).find(([, s]) => s.code === serviceCode)!;
-    return { serviceId: name[1].id, carrierCode, serviceCode, serviceName: name[0], termsVersion: "fixture-terms-v1", ...t };
+    return { serviceId: name[1].id, carrierCode, serviceCode, serviceName: name[0], termsVersion: "fixture-terms-v1", zoneChartKey: "default", zoneIndependent: false, surchargeMarkupPercent: null, sourceReference: "FIXTURE terms", ...t };
   });
   return {
     rateCardId: "fixture-card",
@@ -60,11 +61,13 @@ export function loadFixtureRateCard(opts: { effectiveDate?: string; expirationDa
 }
 
 export function loadFixtureRules(): SurchargeRule[] {
-  return JSON.parse(readFileSync(path.join(dir, "fixture-rules.json"), "utf8")) as SurchargeRule[];
+  const raw = JSON.parse(readFileSync(path.join(dir, "fixture-rules.json"), "utf8")) as Partial<SurchargeRule>[];
+  return raw.map((r) => ({ brandId: null, billableWeightFloorLb: null, ...r, perUnit: r.perUnit ? { minimumCharge: null, ...(r.perUnit as object) } : null }) as SurchargeRule);
 }
 
 export function loadFixtureZipLists(): ZipList[] {
-  return JSON.parse(readFileSync(path.join(dir, "fixture-zip-lists.json"), "utf8")) as ZipList[];
+  const raw = JSON.parse(readFileSync(path.join(dir, "fixture-zip-lists.json"), "utf8")) as Partial<ZipList>[];
+  return raw.map((l) => ({ effectiveDate: "2026-01-01", expirationDate: null, ...l }) as ZipList);
 }
 
 export function loadFixtureOverrides(): SurchargeOverride[] {
