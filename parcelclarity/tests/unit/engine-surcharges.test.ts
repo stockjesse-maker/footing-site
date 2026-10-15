@@ -966,3 +966,28 @@ describe("totals", () => {
     expect(r.lines.every((l) => /^\d+\.\d{2}$/.test(l.amount.amount))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Exceptions that do not fit the rule's method
+// ---------------------------------------------------------------------------
+
+describe("customer exceptions that cannot change the figure", () => {
+  it("a percentage exception on a flat rule is ignored with a warning, and is not claimed as applied", () => {
+    const r = calc(shipment([ONE_LB]), context({ rules: [rule("res", { amount: "5.55" })], overrides: [override("res", "add_percent_points", { percent: "2" })] }));
+    const line = lineFor(r, "res");
+    expect(line.amount.amount).toBe("5.55");
+    expect(line.explanation).not.toContain("Customer-specific rate applied");
+    expect(r.references.overrides).toEqual([]);
+    expect(r.warnings).toContainEqual(expect.objectContaining({ code: "override_not_applicable", ruleKey: "res" }));
+  });
+
+  it("an amount exception on a percent rule is ignored; a markup or waiver fits any method", () => {
+    const pct = calc(shipment([ONE_LB]), context({ rules: [fuel("20", { kind: "base_rate" })], overrides: [override("fuel", "override_amount", { amount: "1.00" })] }));
+    expect(lineFor(pct, "fuel").amount.amount).toBe("2.00"); // 20% × 10.00, the published figure
+    expect(pct.warnings.map((w) => w.code)).toContain("override_not_applicable");
+    const marked = calc(shipment([ONE_LB]), context({ rules: [fuel("20", { kind: "base_rate" })], overrides: [override("fuel", "markup_percent", { percent: "50" })] }));
+    expect(lineFor(marked, "fuel").amount.amount).toBe("3.00"); // 30% × 10.00
+    expect(marked.references.overrides).toEqual([expect.objectContaining({ ruleKey: "fuel", mode: "markup_percent" })]);
+    expect(marked.warnings.map((w) => w.code)).not.toContain("override_not_applicable");
+  });
+});

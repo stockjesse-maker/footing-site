@@ -203,8 +203,14 @@ export async function archiveSurchargeRule(ruleId: string): Promise<{ ok: boolea
   const ctx = await requireTenantContext("ratecard.manage");
   if (!uuidSchema.safeParse(ruleId).success) return { ok: false, message: GENERIC_FAILURE };
   const supabase = await createClient();
+  const { data: rule } = await supabase.from("surcharge_rules").select("id, tenant_id, scope, archived_at").eq("id", ruleId).maybeSingle();
+  if (!rule || rule.tenant_id !== ctx.active.tenantId || rule.scope !== "tenant") return { ok: false, message: "Rule not found." };
+  if (rule.archived_at) return { ok: false, message: "This rule is already archived." };
   const { data: published } = await supabase.from("surcharge_rule_versions").select("id").eq("rule_id", ruleId).eq("status", "published");
-  for (const v of published ?? []) await supabase.rpc("retire_surcharge_rule_version", { p_version: v.id, p_last_effective: new Date().toISOString().slice(0, 10) });
+  for (const v of published ?? []) {
+    const { error: retireError } = await supabase.rpc("retire_surcharge_rule_version", { p_version: v.id, p_last_effective: new Date().toISOString().slice(0, 10) });
+    if (retireError) return { ok: false, message: retireError.message.includes("precedes") ? "A published version starts after today; retire it on its own first." : GENERIC_FAILURE };
+  }
   const { data, error } = await supabase.from("surcharge_rules").update({ archived_at: new Date().toISOString() }).eq("id", ruleId).eq("tenant_id", ctx.active.tenantId).select("id");
   if (error || !data?.length) return { ok: false, message: "Rule not found." };
   revalidatePath("/app/surcharges", "layout");
@@ -245,6 +251,17 @@ export async function createOverride(_prev: ActionState, formData: FormData): Pr
   if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
   const v = parsed.data;
   const supabase = await createClient();
+  // The exception must fit the rule: a percentage exception on a flat fee (or an amount on a
+  // percentage) could never change the figure and would only mislead the quote.
+  const { data: rule } = await supabase.from("surcharge_rules").select("id, brand_id, surcharge_rule_versions(method, status, version_number)").eq("id", v.ruleId).maybeSingle();
+  if (!rule) return { ok: false, message: "That rule cannot be overridden for this customer." };
+  if (rule.brand_id && rule.brand_id !== v.brandId) return { ok: false, message: "That rule is scoped to a different customer." };
+  const versions = ((rule.surcharge_rule_versions ?? []) as { method: string; status: string; version_number: number }[]).filter((x) => x.status === "published" || x.status === "retired").sort((a, b) => b.version_number - a.version_number);
+  const method = versions[0]?.method ?? null;
+  if (method !== null) {
+    const fits = v.mode === "exclude" || v.mode === "markup_percent" || (v.mode === "override_amount" ? method !== "percent" : method === "percent");
+    if (!fits) return { ok: false, errors: { mode: method === "percent" ? "This rule is a percentage: use override percent, add percentage points, markup or waive." : "This rule is a fixed amount: use override amount, markup or waive." } };
+  }
   const { error } = await supabase.from("customer_surcharge_overrides").insert({
     tenant_id: ctx.active.tenantId,
     brand_id: v.brandId,
@@ -302,6 +319,8 @@ export async function uploadZipList(_prev: ActionState, formData: FormData): Pro
   if (!(file instanceof File) || file.size === 0) return { ok: false, errors: { file: "Choose a .csv or .xlsx file with one ZIP code or prefix per row." } };
   if (file.size > LIMITS.maxBytes) return { ok: false, errors: { file: "Files must be 5 MB or smaller." } };
 
+  const supabase = await createClient();
+  if (!(await withinRateLimit(supabase, "ziplist.upload", 20, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
   let entries: string[];
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -317,8 +336,6 @@ export async function uploadZipList(_prev: ActionState, formData: FormData): Pro
   }
   if (!entries.length) return { ok: false, errors: { file: "No ZIP codes or 3–5 digit prefixes were found in the first column." } };
 
-  const supabase = await createClient();
-  if (!(await withinRateLimit(supabase, "ziplist.upload", 20, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
   const { data: prev } = await supabase.from("zip_lists").select("version").eq("tenant_id", ctx.active.tenantId).eq("key", parsed.data.key).order("version", { ascending: false }).limit(1).maybeSingle();
   const { data: list, error } = await supabase
     .from("zip_lists")

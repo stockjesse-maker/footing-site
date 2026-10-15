@@ -164,14 +164,18 @@ create table public.rate_card_rows (
   service_id    uuid not null references public.shipping_services (id),
   origin_prefix text check (origin_prefix is null or origin_prefix ~ '^[0-9]{3}$|^[0-9]{5}$'),
   zone          text not null check (zone ~ '^[A-Za-z0-9]{1,12}$'),
-  weight_min    numeric(10,4) not null check (weight_min >= 0),
-  weight_max    numeric(10,4) not null check (weight_max > weight_min),
+  -- Six decimals carry every bracket edge the importer accepts (it refuses finer ones): a pound
+  -- bracket starting where "15.999 oz" ends is 0.9999375 lb, which four decimals would round into
+  -- an overlap with the ounce bracket.
+  weight_min    numeric(12,6) not null check (weight_min >= 0),
+  weight_max    numeric(12,6) not null check (weight_max > weight_min),
   weight_unit   text not null check (weight_unit in ('lb', 'oz')),
   price         numeric(12,4) not null check (price >= 0),
   min_charge    numeric(12,4) check (min_charge is null or min_charge >= 0),
   -- Pound-normalised bracket edges so brackets in different units can be compared.
-  weight_min_lb numeric(14,8) generated always as (case when weight_unit = 'oz' then weight_min / 16 else weight_min end) stored,
-  weight_max_lb numeric(14,8) generated always as (case when weight_unit = 'oz' then weight_max / 16 else weight_max end) stored,
+  -- Pound-normalised edges keep ten decimals so an ounce value divided by 16 is exact for the overlap check.
+  weight_min_lb numeric(18,10) generated always as (case when weight_unit = 'oz' then weight_min / 16 else weight_min end) stored,
+  weight_max_lb numeric(18,10) generated always as (case when weight_unit = 'oz' then weight_max / 16 else weight_max end) stored,
   -- No two brackets of one cell may overlap: the lookup must have exactly one answer.
   constraint rate_card_rows_no_overlap exclude using gist (
     version_id with =, service_id with =, coalesce(origin_prefix, '') with =, zone with =,
@@ -618,7 +622,8 @@ create policy rate_cards_update on public.rate_cards for update to authenticated
 create policy versions_read on public.rate_card_versions for select to authenticated
   using (app.can_view_rate_card_version(rate_card_id, tenant_id, status));
 create policy versions_insert on public.rate_card_versions for insert to authenticated
-  with check (app.can_manage_pricing(tenant_id) and status = 'draft');
+  with check (app.can_manage_pricing(tenant_id) and status = 'draft'
+              and exists (select 1 from public.rate_cards c where c.id = rate_card_id and c.status = 'active'));
 -- Status transitions go through RPCs; direct updates may only touch notes/mapping on drafts.
 create policy versions_update on public.rate_card_versions for update to authenticated
   using (app.can_manage_pricing(tenant_id) and status = 'draft')
@@ -646,7 +651,8 @@ create policy zones_write on public.rate_card_zones for all to authenticated
 create policy brca_read on public.brand_rate_card_assignments for select to authenticated
   using (app.has_tenant_permission(tenant_id, 'brand.view') or app.has_brand_permission(brand_id, 'brand.view'));
 create policy brca_insert on public.brand_rate_card_assignments for insert to authenticated
-  with check (app.can_manage_pricing(tenant_id) and unassigned_at is null);
+  with check (app.can_manage_pricing(tenant_id) and unassigned_at is null
+              and exists (select 1 from public.rate_cards c where c.id = rate_card_id and c.status = 'active'));
 create policy brca_update on public.brand_rate_card_assignments for update to authenticated
   using (app.can_manage_pricing(tenant_id)) with check (app.can_manage_pricing(tenant_id));
 
@@ -683,9 +689,12 @@ create policy srv_update on public.surcharge_rule_versions for update to authent
   with check (tenant_id is not null and app.can_manage_pricing(tenant_id) and status = 'draft');
 
 create policy cso_read on public.customer_surcharge_overrides for select to authenticated using (app.can_view_override(tenant_id, brand_id));
+-- An exception may target a platform rule, a tenant-wide rule of the same tenant, or a rule scoped to this very brand.
 create policy cso_insert on public.customer_surcharge_overrides for insert to authenticated
   with check (app.can_manage_pricing(tenant_id) and ended_at is null
-              and exists (select 1 from public.surcharge_rules r where r.id = rule_id and (r.tenant_id is null or r.tenant_id = customer_surcharge_overrides.tenant_id)));
+              and exists (select 1 from public.surcharge_rules r
+                          where r.id = rule_id and (r.tenant_id is null or r.tenant_id = customer_surcharge_overrides.tenant_id)
+                            and (r.brand_id is null or r.brand_id = customer_surcharge_overrides.brand_id)));
 create policy cso_update on public.customer_surcharge_overrides for update to authenticated
   using (app.can_manage_pricing(tenant_id)) with check (app.can_manage_pricing(tenant_id));
 
@@ -847,6 +856,7 @@ declare
   v_brand uuid := p_brand;
   v_rules jsonb;
   v_lists jsonb;
+  v_overrides jsonb := '[]'::jsonb;
 begin
   select tenant_id into v_tenant from public.rate_cards where id = p_rate_card;
   if v_tenant is null then raise exception 'rate card not found' using errcode = 'P0003'; end if;
@@ -877,7 +887,10 @@ begin
       'exclusivityGroup', v.exclusivity_group, 'exclusivityPriority', v.exclusivity_priority,
       'excludesRuleKeys', to_jsonb(v.excludes_rule_keys), 'perPackage', v.per_package,
       'effectiveDate', v.effective_date::text, 'expirationDate', v.expiration_date::text,
-      'sourceReference', v.source_reference, 'sourceUrl', v.source_url, 'verificationStatus', v.verification_status
+      -- A tenant's own notes on where a rule came from are internal; brands see a fixed label.
+      'sourceReference', case when v_staff or r.scope = 'platform' then v.source_reference else 'Your 3PL''s approved pricing configuration' end,
+      'sourceUrl', case when v_staff or r.scope = 'platform' then v.source_url else null end,
+      'verificationStatus', v.verification_status
     ) order by r.rule_key, v.version_number), '[]'::jsonb)
   into v_rules
   from public.surcharge_rule_versions v
@@ -891,8 +904,10 @@ begin
                             join public.rate_card_versions rv on rv.id = t.version_id and rv.rate_card_id = p_rate_card
                             join public.shipping_services s on s.id = t.service_id);
 
+  -- ZIP lists referenced anywhere in the conditions, including inside any_of groups.
   select coalesce(jsonb_agg(jsonb_build_object(
-      'key', l.key, 'version', l.version, 'sourceReference', l.source_reference,
+      'key', l.key, 'version', l.version,
+      'sourceReference', case when v_staff or l.tenant_id is null then l.source_reference else 'Your 3PL''s approved pricing configuration' end,
       'effectiveDate', l.effective_date::text, 'expirationDate', l.expiration_date::text,
       'entries', (select coalesce(jsonb_agg(e.entry order by e.entry), '[]'::jsonb) from public.zip_list_entries e where e.list_id = l.id)
     )), '[]'::jsonb)
@@ -901,19 +916,53 @@ begin
   where l.status in ('published', 'retired')
     and l.effective_date <= p_ship_date and (l.expiration_date is null or l.expiration_date >= p_ship_date)
     and (l.tenant_id is null or l.tenant_id = v_tenant)
-    and l.key in (select distinct c ->> 'listKey'
-                  from jsonb_array_elements(v_rules) rule, jsonb_array_elements(rule -> 'conditions') c
-                  where c ->> 'type' = 'destination_zip_in_list');
+    and l.key in (select distinct k #>> '{}'
+                  from jsonb_array_elements(v_rules) rule,
+                       jsonb_path_query(rule -> 'conditions', 'strict $.**.listKey') k);
 
-  return jsonb_build_object('rules', v_rules, 'zipLists', v_lists, 'brandId', v_brand);
+  -- The brand's live exceptions, joined to the rule key here because brands cannot read tenant rules.
+  if v_brand is not null then
+    select coalesce(jsonb_agg(jsonb_build_object(
+        'ruleKey', r.rule_key, 'mode', o.mode, 'amount', o.amount::text, 'percent', o.percent::text,
+        'effectiveDate', o.effective_date::text, 'expirationDate', o.expiration_date::text, 'reference', o.reference
+      ) order by r.rule_key, o.effective_date), '[]'::jsonb)
+    into v_overrides
+    from public.customer_surcharge_overrides o
+    join public.surcharge_rules r on r.id = o.rule_id
+    where o.brand_id = v_brand and o.tenant_id = v_tenant and o.ended_at is null
+      and o.effective_date <= p_ship_date and (o.expiration_date is null or o.expiration_date >= p_ship_date);
+  end if;
+
+  return jsonb_build_object('rules', v_rules, 'zipLists', v_lists, 'overrides', v_overrides, 'brandId', v_brand);
+end $$;
+
+-- Replaces a draft version's zone chart in one transaction so a rejected row leaves the old chart intact.
+-- SECURITY INVOKER: the caller's RLS (zones_write) decides whether the version may be changed.
+create function public.replace_rate_card_zones(p_version uuid, p_rows jsonb) returns integer
+language plpgsql security invoker set search_path = '' as $$
+declare
+  v_count integer;
+begin
+  if jsonb_typeof(p_rows) <> 'array' or jsonb_array_length(p_rows) > 50000 then
+    raise exception 'zone chart rows must be an array of at most 50000 rows' using errcode = 'P0001';
+  end if;
+  if not exists (select 1 from public.rate_card_versions v where v.id = p_version and v.status = 'draft' and app.can_manage_pricing(v.tenant_id)) then
+    raise exception 'version not found or not a draft' using errcode = 'P0002';
+  end if;
+  delete from public.rate_card_zones where version_id = p_version;
+  insert into public.rate_card_zones (version_id, carrier_code, origin_prefix, dest_prefix_from, dest_prefix_to, zone, zone_chart_key)
+  select p_version, r.carrier_code, r.origin_prefix, r.dest_prefix_from, r.dest_prefix_to, r.zone, coalesce(r.zone_chart_key, 'default')
+  from jsonb_to_recordset(p_rows) as r(carrier_code text, origin_prefix text, dest_prefix_from text, dest_prefix_to text, zone text, zone_chart_key text);
+  get diagnostics v_count = row_count;
+  return v_count;
 end $$;
 
 revoke all on function public.activate_rate_card_version(uuid, date, date), public.end_rate_card_version(uuid, date), public.archive_rate_card_version(uuid),
   public.publish_surcharge_rule_version(uuid), public.retire_surcharge_rule_version(uuid, date), public.publish_zip_list(uuid),
-  public.pricing_rules_for_card(uuid, date, uuid) from public, anon;
+  public.pricing_rules_for_card(uuid, date, uuid), public.replace_rate_card_zones(uuid, jsonb) from public, anon;
 grant execute on function public.activate_rate_card_version(uuid, date, date), public.end_rate_card_version(uuid, date), public.archive_rate_card_version(uuid),
   public.publish_surcharge_rule_version(uuid), public.retire_surcharge_rule_version(uuid, date), public.publish_zip_list(uuid),
-  public.pricing_rules_for_card(uuid, date, uuid) to authenticated;
+  public.pricing_rules_for_card(uuid, date, uuid), public.replace_rate_card_zones(uuid, jsonb) to authenticated;
 
 revoke all on all functions in schema app from public, anon;
 grant execute on function app.can_manage_pricing(uuid), app.brand_has_rate_card(uuid), app.can_view_rate_card(uuid, uuid),

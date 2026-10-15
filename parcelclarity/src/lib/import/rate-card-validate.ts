@@ -16,6 +16,8 @@ export interface ParsedRateRow {
   weightUnit: WeightUnit;
   price: string;
   minCharge: string | null;
+  /** The lower bound came from a range written in one cell ("1-4 oz"), whose first number is inclusive. */
+  rangeCell?: boolean;
   source: { sheet: string; row: number }; // 1-based row number in the file
 }
 
@@ -57,11 +59,21 @@ export interface ImportResult {
 
 const MAX_ISSUES = 300;
 
+/** Money with at most four decimals (the storage precision); more decimals are rejected rather than silently altered. */
 export function parseMoney(raw: string): string | null {
   const cleaned = raw.trim().replace(/^\$|usd/gi, "").replace(/,/g, "").trim();
-  if (!/^\d+(\.\d+)?$/.test(cleaned)) return null;
+  if (!/^\d+(\.\d{1,4})?$/.test(cleaned)) return null;
   const [int, frac = ""] = cleaned.split(".");
   return `${int}.${(frac + "0000").slice(0, 4)}`;
+}
+
+/** Weight-unit cell → unit, or "invalid" for a non-empty value that is neither pounds nor ounces. */
+export function parseWeightUnit(raw: string): WeightUnit | null | "invalid" {
+  const t = raw.trim().toLowerCase().replace(/\.$/, "");
+  if (!t) return null;
+  if (/^(oz|ozs|ounce|ounces)$/.test(t)) return "oz";
+  if (/^(lb|lbs|pound|pounds)$/.test(t)) return "lb";
+  return "invalid";
 }
 
 export function parseDecimal(raw: string): string | null {
@@ -97,6 +109,11 @@ export function parseOrigin(raw: string): string | null | "invalid" {
 function toLb(value: string, unit: WeightUnit): number {
   return unit === "oz" ? Number(value) / 16 : Number(value);
 }
+
+/** Storage precision of rate_card_rows.weight_min/weight_max; finer edges would be rounded and could overlap. */
+const MAX_WEIGHT_DECIMALS = 6;
+const decimalsOf = (value: string) => (value.split(".")[1] ?? "").replace(/0+$/, "").length;
+const toStoredPrecision = (value: number) => value.toFixed(MAX_WEIGHT_DECIMALS).replace(/0+$/, "").replace(/\.$/, "");
 
 export function applyMapping(tables: Table[], mapping: RateCardMapping, catalog: ServiceCatalogEntry[]): ImportResult {
   const errors: Issue[] = [];
@@ -168,8 +185,12 @@ export function applyMapping(tables: Table[], mapping: RateCardMapping, catalog:
           }
           min = wmin;
         }
-        const unitCell = cell(c.weightUnit).toLowerCase();
-        const unit: WeightUnit = wmax.unit ?? (unitCell.startsWith("oz") ? "oz" : unitCell.startsWith("lb") || unitCell.startsWith("pound") ? "lb" : mapping.defaults.weightUnit);
+        const unitCell = parseWeightUnit(cell(c.weightUnit));
+        if (unitCell === "invalid") {
+          push({ severity: "error", code: "weight_unit_invalid", message: `Weight unit "${cell(c.weightUnit)}" is not recognised; use lb or oz.`, sheet: table.name, row: rowNo });
+          continue;
+        }
+        const unit: WeightUnit = wmax.unit ?? unitCell ?? mapping.defaults.weightUnit;
         const price = parseMoney(cell(c.price));
         if (price === null) {
           push({ severity: "error", code: "price_invalid", message: `Price "${cell(c.price)}" is not a number.`, sheet: table.name, row: rowNo });
@@ -184,7 +205,7 @@ export function applyMapping(tables: Table[], mapping: RateCardMapping, catalog:
           }
         }
         noteDivisor(serviceId, c.dimDivisor === null ? mapping.defaults.dimDivisor : cell(c.dimDivisor) || mapping.defaults.dimDivisor, table.name, rowNo);
-        rows.push({ serviceId, originPrefix: origin, zone, weightMin: min ?? "", weightMax: wmax.max, weightUnit: unit, price, minCharge, source: { sheet: table.name, row: rowNo } });
+        rows.push({ serviceId, originPrefix: origin, zone, weightMin: min ?? "", weightMax: wmax.max, weightUnit: unit, price, minCharge, rangeCell: wmax.min !== null && (c.weightMin === null || cell(c.weightMin) === ""), source: { sheet: table.name, row: rowNo } });
       }
     }
   } else {
@@ -236,22 +257,27 @@ export function applyMapping(tables: Table[], mapping: RateCardMapping, catalog:
             push({ severity: "error", code: "zone_invalid", message: `Zone header "${zc.zone}" is not valid.`, sheet: table.name });
             continue;
           }
-          rows.push({ serviceId: sheetMap.serviceId, originPrefix: origin, zone, weightMin: w.min ?? "", weightMax: w.max, weightUnit: unit, price, minCharge: null, source: { sheet: table.name, row: rowNo } });
+          rows.push({ serviceId: sheetMap.serviceId, originPrefix: origin, zone, weightMin: w.min ?? "", weightMax: w.max, weightUnit: unit, price, minCharge: null, rangeCell: w.min !== null, source: { sheet: table.name, row: rowNo } });
         }
       }
     }
   }
 
   // Bracket integrity per (service, origin, zone): derive missing minimums, detect overlaps and gaps.
+  // Brackets are stored with an exclusive lower bound (weight_min < billable <= weight_max). A range
+  // written as "1-4 oz" or as min 1 / max 4 followed by 5 / 8 is the inclusive-integer convention of
+  // printed rate sheets: it is read as contiguous brackets (0,4], (4,8], never as holes at 1 and 5.
   const groups = new Map<string, ParsedRateRow[]>();
   for (const row of rows) {
     const key = `${row.serviceId}|${row.originPrefix ?? ""}|${row.zone}`;
     groups.set(key, [...(groups.get(key) ?? []), row]);
   }
+  const contiguityNoted = new Set<string>();
   for (const group of groups.values()) {
     group.sort((a, b) => toLb(a.weightMax, a.weightUnit) - toLb(b.weightMax, b.weightUnit));
     let prevMaxLb = 0;
     let prevPrice = -1;
+    const prevMaxIn = (i: number, unit: WeightUnit) => (group[i - 1]!.weightUnit === unit ? group[i - 1]!.weightMax : toStoredPrecision(toLb(group[i - 1]!.weightMax, group[i - 1]!.weightUnit) * (unit === "oz" ? 16 : 1)));
     for (let i = 0; i < group.length; i++) {
       const row = group[i]!;
       const maxLb = toLb(row.weightMax, row.weightUnit);
@@ -259,9 +285,27 @@ export function applyMapping(tables: Table[], mapping: RateCardMapping, catalog:
         push({ severity: "error", code: "bracket_duplicate", message: `Duplicate bracket up to ${row.weightMax} ${row.weightUnit} for zone ${row.zone}.`, sheet: row.source.sheet, row: row.source.row });
         continue;
       }
+      if (decimalsOf(row.weightMax) > MAX_WEIGHT_DECIMALS || (row.weightMin !== "" && decimalsOf(row.weightMin) > MAX_WEIGHT_DECIMALS)) {
+        push({ severity: "error", code: "weight_precision", message: `Weight bracket ${row.weightMin || "…"}–${row.weightMax} ${row.weightUnit} for zone ${row.zone} has more than ${MAX_WEIGHT_DECIMALS} decimal places; brackets are stored to ${MAX_WEIGHT_DECIMALS}.`, sheet: row.source.sheet, row: row.source.row });
+        continue;
+      }
+      if (row.weightMin !== "" && (row.rangeCell || /^\d+$/.test(row.weightMin))) {
+        // Inclusive-integer convention: "1-4" after "0-?"/nothing, or min exactly one unit above the previous max.
+        const minLb = toLb(row.weightMin, row.weightUnit);
+        const step = row.weightUnit === "oz" ? 1 / 16 : 1;
+        const inclusiveStart = i === 0 ? row.rangeCell || row.weightMin === "1" : Math.abs(minLb - (prevMaxLb + step)) < 1e-9;
+        if (inclusiveStart && minLb < maxLb) {
+          row.weightMin = i === 0 ? "0" : prevMaxIn(i, row.weightUnit);
+          const noteKey = `${row.serviceId}|${row.zone}`;
+          if (!contiguityNoted.has(noteKey)) {
+            contiguityNoted.add(noteKey);
+            push({ severity: "warning", code: "bracket_contiguous", message: `Ranges such as "${row.source.row === group[0]!.source.row ? `${row.weightMin || 0}–${row.weightMax}` : `${row.weightMin}–${row.weightMax}`} ${row.weightUnit}" were read as contiguous brackets (a weight exactly on a boundary belongs to the lighter bracket) for zone ${row.zone}.`, sheet: row.source.sheet, row: row.source.row });
+          }
+        }
+      }
       if (row.weightMin === "") {
         // Derive from the previous bracket in the same unit when possible.
-        row.weightMin = i === 0 ? "0" : group[i - 1]!.weightUnit === row.weightUnit ? group[i - 1]!.weightMax : String(toLb(group[i - 1]!.weightMax, group[i - 1]!.weightUnit) * (row.weightUnit === "oz" ? 16 : 1));
+        row.weightMin = i === 0 ? "0" : prevMaxIn(i, row.weightUnit);
       } else {
         const minLb = toLb(row.weightMin, row.weightUnit);
         if (minLb >= maxLb) push({ severity: "error", code: "bracket_inverted", message: `Weight from ${row.weightMin} must be below weight to ${row.weightMax} (${row.weightUnit}).`, sheet: row.source.sheet, row: row.source.row });

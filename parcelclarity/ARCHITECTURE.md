@@ -19,10 +19,10 @@ Supabase (user's JWT on every request)
 ## Principles
 
 1. **Defense in depth, with the database last and strongest.** UI hides what a role cannot do (convenience). Server code re-checks permissions (`requireTenantContext(permission)`, per-action checks). PostgreSQL RLS refuses anything else. Each layer is tested separately.
-2. **The user's JWT, always.** `createClient()` in `src/lib/supabase/server.ts` uses the anon key plus the user's session, so RLS applies to every query. There is **no service-role client** in the application today. Operations that need elevation are `SECURITY DEFINER` SQL functions with explicit checks (`create_tenant`, `accept_invitation`, `revoke_invitation`, `platform_set_tenant_status`, `log_audit_event`, `check_rate_limit`).
+2. **The user's JWT, always.** `createClient()` in `src/lib/supabase/server.ts` uses the anon key plus the user's session, so RLS applies to every query. There is **no service-role client** in the application today. Operations that need elevation are `SECURITY DEFINER` SQL functions with explicit checks (`create_tenant`, `accept_invitation`, `revoke_invitation`, `platform_set_tenant_status`, `log_audit_event`, `check_rate_limit`, and the pricing lifecycle RPCs `activate_rate_card_version`, `end_rate_card_version`, `archive_rate_card_version`, `publish_surcharge_rule_version`, `retire_surcharge_rule_version`, `publish_zip_list`, `pricing_rules_for_card`).
 3. **The proxy is not a security boundary.** `src/proxy.ts` only keeps the session fresh and redirects signed-out visitors. Next.js docs are explicit that proxies run separately from rendering; authorization lives in server code and RLS.
-4. **Pricing engine independence.** Pricing logic will live in `src/engine/`, a pure TypeScript module with no imports from React, Next.js, Supabase or UI code. An ESLint `no-restricted-imports` rule enforces this today (the folder is created in Milestone 2). Goal: reuse from an iOS app or external API.
-5. **Reproducible calculations.** (Design for Milestone 2+) every result stores the rate-card version, surcharge rule versions and inputs used, with explicit effective dates and UTC timestamps.
+4. **Pricing engine independence.** Pricing logic lives in `src/engine/`, a pure TypeScript module with no imports from React, Next.js, Supabase or UI code (an ESLint `no-restricted-imports` rule enforces it). `src/lib/pricing/snapshot.ts` is the only bridge: it loads a `PricingContext` under the caller's RLS and hands it to `calculateShipment`. Goal: reuse from an iOS app or external API.
+5. **Reproducible calculations.** Every result carries the engine version, rate-card version, terms version, every surcharge rule key@version, ZIP-list versions and overrides it used, and the validated input; rate-card rows, terms and zones are immutable once a version leaves draft, and published rule versions are immutable, so a result can be re-derived later. Results themselves are not stored until the Milestone 3 simulators.
 6. **Keep the PWA/native door open.** No server-only assumptions in UI components, no reliance on cookies readable by client JS, standard web APIs only; Capacitor packaging remains possible.
 
 ## Request flow (authenticated page)
@@ -45,7 +45,7 @@ A user can hold several memberships (e.g. a consultant for two 3PLs). RLS grants
 
 ## Directory map
 
-See the README. Notable boundaries: `src/lib/auth` (identity + authorization), `src/components/ui` (design system, no business logic), `src/app/actions` (all writes), `supabase/migrations` (all schema).
+See the README. Notable boundaries: `src/lib/auth` (identity + authorization), `src/components/ui` (design system, no business logic), `src/app/actions` (all writes), `supabase/migrations` (all schema), `src/engine` (pure pricing), `src/lib/import` (spreadsheet parsing/mapping/validation, pure), `src/lib/pricing` (database → engine context), `src/components/pricing` (rate-card, rule and calculator UI).
 
 ## Decisions and trade-offs
 

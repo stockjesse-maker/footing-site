@@ -36,7 +36,7 @@ PostgreSQL via Supabase. All schema changes are SQL migrations in `supabase/migr
 ### Visibility rules for pricing data
 
 * 3PL staff with `ratecard.view` see every card, version (any status), row, zone, term, rule and override of their tenant; `ratecard.manage` is required for every write and for reading files/imports.
-* Brand members see **only** rate cards actively assigned to their (active) brand, **only active versions** of those cards, and only the rows and terms of the **services allowed** by the assignment (`app.can_view_version_service`). They never read tenant-scope rules, rule versions or ZIP lists directly: `pricing_rules_for_card()` authorizes once and returns only what applies to them (tenant-wide rules plus rules scoped to their brand). They see overrides for their own brand only. They can never write pricing data or read files, imports or drafts.
+* Brand members see **only** rate cards actively assigned to their (active) brand, **only active versions** of those cards, and only the rows and terms of the **services allowed** by the assignment (`app.can_view_version_service`). They never read tenant-scope rules, rule versions or ZIP lists directly: `pricing_rules_for_card()` authorizes once and returns only what applies to them (tenant-wide rules plus rules scoped to their brand) together with their own live exceptions joined to rule keys, and replaces the 3PL's internal source notes on tenant rules and lists with a fixed label. They see overrides for their own brand only. They can never write pricing data or read files, imports or drafts. New versions and assignments can only be created for `active` rate cards (policy-enforced, not just hidden in the UI).
 * Platform-scope rules and lists (`tenant_id is null`, not draft) are readable by all signed-in users and can only be written by the service role until Milestone 8's review workflow exists.
 * Zones and ZIP entries are visible exactly when their parent version/list is visible (correlated `exists` on the parent, whose RLS decides).
 
@@ -46,7 +46,7 @@ PostgreSQL via Supabase. All schema changes are SQL migrations in `supabase/migr
 
 ### Bulk readers
 
-`rate_card_rows_json(version, service_ids?)`, `rate_card_zones_json(version)`, `zip_list_entries_array(list)` return a whole set in one call (the Data API pages at 1,000 rows). They are `SECURITY INVOKER`, so the caller's RLS applies. `pricing_rules_for_card(rate_card, ship_date, brand?)` is `SECURITY DEFINER` with its own authorization (see above) and returns the rule versions and ZIP-list versions in force on the date.
+`rate_card_rows_json(version, service_ids?)`, `rate_card_zones_json(version)`, `zip_list_entries_array(list)` return a whole set in one call (the Data API pages at 1,000 rows). They are `SECURITY INVOKER`, so the caller's RLS applies. `pricing_rules_for_card(rate_card, ship_date, brand?)` is `SECURITY DEFINER` with its own authorization (see above) and returns the rule versions, the ZIP-list versions they reference (including inside `any_of` groups) and the brand's live overrides in force on the date. `replace_rate_card_zones(version, rows)` swaps a draft's zone chart in one transaction (`SECURITY INVOKER`, so the draft-only write policy applies), so a rejected row leaves the previous chart intact. Rate-row weight brackets are `numeric(12,6)` with pound-normalised generated edges at ten decimals, enough for an ounce bracket to abut a pound bracket exactly.
 
 ### Audit
 

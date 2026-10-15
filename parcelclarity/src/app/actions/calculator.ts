@@ -19,6 +19,8 @@ export interface CalculatorResponse {
   message?: string;
   results?: ShipmentCalculation[];
   version?: { id: string; versionNumber: number; effectiveDate: string; expirationDate: string | null; status: string };
+  /** Configuration problems found while loading (e.g. a rule version whose stored conditions no longer validate). Shown with the result. */
+  issues?: string[];
 }
 
 /**
@@ -52,6 +54,9 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
     return { ok: false, message: messages[loaded.error] };
   }
   const { snapshot } = loaded;
+  // Pin the calculation to the active workspace: a user with several memberships can only price
+  // what the workspace they are in may see (the database already limits brands to assigned cards).
+  if (snapshot.tenantId !== ctx.active.tenantId) return { ok: false, message: "That rate card is not available to you." };
 
   const services = req.service === "*" ? snapshot.services : snapshot.services.filter((s) => `${s.carrierCode}/${s.serviceCode}` === req.service);
   if (!services.length) return { ok: false, message: "That service is not on this rate card." };
@@ -89,5 +94,5 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
     p_metadata: { services: services.length, packages: req.packages.length, statuses: results.map((r) => r.status) },
   });
   await activity;
-  return { ok: true, results, version: snapshot.version };
+  return { ok: true, results, version: snapshot.version, issues: snapshot.issues };
 }

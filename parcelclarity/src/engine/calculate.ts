@@ -51,6 +51,20 @@ interface Candidate {
 }
 
 const isWaived = (c: Candidate) => c.override?.mode === "exclude";
+
+/** An override can only change a figure the rule's method actually uses; anything else is ignored with a warning. */
+function overrideApplies(rule: SurchargeRule, o: SurchargeOverride): boolean {
+  switch (o.mode) {
+    case "exclude":
+    case "markup_percent":
+      return true;
+    case "override_amount":
+      return rule.method !== "percent";
+    case "override_percent":
+    case "add_percent_points":
+      return rule.method === "percent";
+  }
+}
 const suppressed = (c: Candidate) => c.excludedBy !== null || c.bundledBy !== null;
 const live = (c: Candidate) => c.outcome === "applies" && !isWaived(c) && !suppressed(c);
 
@@ -267,7 +281,9 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
 
   const candidates: Candidate[] = [];
   const collect = (rule: SurchargeRule) => {
-    const override = overrideFor(rule);
+    const configured = overrideFor(rule);
+    const override = configured && overrideApplies(rule, configured) ? configured : null;
+    if (configured && !override) warn({ code: "override_not_applicable", ruleKey: rule.key, message: `The customer exception for ${rule.name} (${configured.reference}, ${configured.mode.replace(/_/g, " ")}) does not fit a ${rule.method.replace("_", "-")} rule and was not applied; the published figure was used.` });
     const scopes: (PackageContext | null)[] = rule.perPackage ? packages : [null];
     for (const scope of scopes) {
       const outcome = evaluateRule(rule, evalCtx, scope);

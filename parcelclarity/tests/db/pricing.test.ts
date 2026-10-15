@@ -439,3 +439,89 @@ describe("bulk read helpers respect RLS", () => {
     expect(noEntries!.e).toEqual([]);
   });
 });
+
+describe("review fixes: brand exceptions, hidden notes, archived cards, atomic zone charts", () => {
+  it("a brand's live exceptions reach the calculation through the RPC, joined to the rule key", async () => {
+    // brandA holds a markup_percent exception on northwind.residential from 2026-06-01 (created above).
+    type Payload = { overrides: { ruleKey: string; mode: string; percent: string | null }[] };
+    const [a] = await asUser<{ r: Payload }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    expect(a!.r.overrides).toEqual([{ ruleKey: "northwind.residential", mode: "markup_percent", percent: "10.0000", amount: null, effectiveDate: "2026-06-01", expirationDate: null, reference: "Addendum" }]);
+    const [early] = await asUser<{ r: Payload }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-03-01') as r", [cardId]);
+    expect(early!.r.overrides).toEqual([]);
+    // Staff modelling on behalf of the brand get the same; staff pricing for nobody get none.
+    const [staff] = await asUser<{ r: Payload }>(w.t1.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01', $2) as r", [cardId, w.brandA.id]);
+    expect(staff!.r.overrides).toHaveLength(1);
+    const [nobody] = await asUser<{ r: Payload }>(w.t1.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    expect(nobody!.r.overrides).toEqual([]);
+  });
+
+  it("a brand sees a fixed label instead of the 3PL's own source notes; staff see the notes", async () => {
+    type Payload = { rules: { key: string; scope: string; sourceReference: string; sourceUrl: string | null }[]; zipLists: { key: string; sourceReference: string }[] };
+    const [brand] = await asUser<{ r: Payload }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    const tenantRules = brand!.r.rules.filter((r) => r.scope === "tenant");
+    expect(tenantRules.length).toBeGreaterThan(0);
+    for (const r of tenantRules) {
+      expect(r.sourceReference).toBe("Your 3PL's approved pricing configuration");
+      expect(r.sourceUrl).toBeNull();
+    }
+    expect(brand!.r.zipLists.map((l) => l.sourceReference)).toEqual(["Your 3PL's approved pricing configuration"]);
+    const [staff] = await asUser<{ r: Payload }>(w.t1.employee.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+    expect(staff!.r.rules.find((r) => r.key === "northwind.residential")?.sourceReference).toBe("Customer agreement 2026 rev 2");
+    expect(staff!.r.zipLists.map((l) => l.sourceReference)).toEqual(["Uploaded from carrier bulletin"]);
+  });
+
+  it("ZIP lists referenced inside any_of groups are delivered too", async () => {
+    const [r] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.surcharge_rules (scope, tenant_id, carrier_code, rule_key, category, name) values ('tenant', $1, 'ups', 'northwind.das_any', 'das_extended', 'DAS either list') returning id", [w.t1.id]);
+    const [v] = await asUser<{ id: string }>(
+      w.t1.admin.id,
+      `insert into public.surcharge_rule_versions (rule_id, tenant_id, version_number, charge_class, method, amount, conditions, effective_date, source_reference, verification_status)
+       values ($1, $2, 1, 'definite', 'flat', 6.00, '[{"type":"any_of","conditions":[{"type":"destination_zip_in_list","listKey":"northwind.das"},{"type":"destination_zip_in_list","listKey":"northwind.nowhere"}]}]', '2026-01-01', 'Customer agreement', 'approved_3pl_config') returning id`,
+      [r!.id, w.t1.id],
+    );
+    await asUser(w.t1.admin.id, "select public.publish_surcharge_rule_version($1)", [v!.id]);
+    // Temporarily hide the top-level reference (northwind.das rule) so only the nested one remains.
+    const [top] = await sql<{ id: string }>("select id from public.surcharge_rules where rule_key = 'northwind.das'");
+    await sql("update public.surcharge_rules set archived_at = now() where id = $1", [top!.id]);
+    try {
+      const [ctx] = await asUser<{ r: { zipLists: { key: string }[] } }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
+      expect(ctx!.r.zipLists.map((l) => l.key)).toEqual(["northwind.das"]);
+    } finally {
+      await sql("update public.surcharge_rules set archived_at = null where id = $1", [top!.id]);
+      await sql("update public.surcharge_rules set archived_at = now() where id = $1", [r!.id]);
+    }
+  });
+
+  it("an exception cannot target a rule scoped to another brand", async () => {
+    const [scoped] = await sql<{ id: string }>("select id from public.surcharge_rules where rule_key = 'northwind.alpha_handling'");
+    await expectDenied(
+      asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'wrong brand')", [w.t1.id, w.brandB.id, scoped!.id]),
+      /row-level security/,
+    );
+    const [ok] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'right brand') returning id", [w.t1.id, w.brandA.id, scoped!.id]);
+    await asUser(w.t1.admin.id, "update public.customer_surcharge_overrides set ended_at = now() where id = $1", [ok!.id]);
+  });
+
+  it("an archived rate card accepts no new versions or assignments, even by direct insert", async () => {
+    const [card] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.rate_cards (tenant_id, name) values ($1, 'Retired card') returning id", [w.t1.id]);
+    await asUser(w.t1.admin.id, "update public.rate_cards set status = 'archived' where id = $1", [card!.id]);
+    await expectDenied(asUser(w.t1.admin.id, "insert into public.rate_card_versions (rate_card_id, tenant_id, version_number) values ($1, $2, 1)", [card!.id, w.t1.id]), /row-level security/);
+    await expectDenied(asUser(w.t1.admin.id, "insert into public.brand_rate_card_assignments (tenant_id, brand_id, rate_card_id) values ($1, $2, $3)", [w.t1.id, w.brandA.id, card!.id]), /row-level security/);
+  });
+
+  it("replacing a zone chart is all-or-nothing and only for drafts the caller manages", async () => {
+    const draft = await createDraft(w.t1.admin.id, w.t1.id, cardId, 60);
+    await asUser(w.t1.admin.id, "insert into public.rate_card_zones (version_id, carrier_code, origin_prefix, dest_prefix_from, dest_prefix_to, zone) values ($1, 'ups', '900', '100', '199', '8')", [draft]);
+    const good = [{ carrier_code: "ups", origin_prefix: "900", dest_prefix_from: "200", dest_prefix_to: "299", zone: "7", zone_chart_key: "default" }];
+    const overlapping = [...good, { carrier_code: "ups", origin_prefix: "900", dest_prefix_from: "250", dest_prefix_to: "350", zone: "6", zone_chart_key: "default" }];
+    await expectDenied(asUser(w.t1.admin.id, "select public.replace_rate_card_zones($1, $2::jsonb)", [draft, JSON.stringify(overlapping)]), /rate_card_zones_no_overlap/);
+    // The failed call changed nothing: the original row is still there.
+    expect(await asUser<{ zone: string }>(w.t1.admin.id, "select zone from public.rate_card_zones where version_id = $1", [draft])).toEqual([{ zone: "8" }]);
+    const [n] = await asUser<{ n: number }>(w.t1.admin.id, "select public.replace_rate_card_zones($1, $2::jsonb) as n", [draft, JSON.stringify(good)]);
+    expect(n!.n).toBe(1);
+    expect(await asUser<{ zone: string }>(w.t1.admin.id, "select zone from public.rate_card_zones where version_id = $1", [draft])).toEqual([{ zone: "7" }]);
+    await expectDenied(asUser(w.t1.employee.id, "select public.replace_rate_card_zones($1, $2::jsonb)", [draft, JSON.stringify(good)]), /not found/);
+    await expectDenied(asUser(w.t2.admin.id, "select public.replace_rate_card_zones($1, $2::jsonb)", [draft, JSON.stringify(good)]), /not found/);
+    await asUser(w.t1.admin.id, "select public.archive_rate_card_version($1)", [draft]);
+    await expectDenied(asUser(w.t1.admin.id, "select public.replace_rate_card_zones($1, $2::jsonb)", [draft, JSON.stringify(good)]), /not a draft/);
+  });
+});

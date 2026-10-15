@@ -308,6 +308,7 @@ function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
 interface PricedRun {
   results: ShipmentCalculation[];
   version: NonNullable<CalculatorResponse["version"]> | null;
+  issues: string[];
   cardName: string;
   shipDate: string;
 }
@@ -453,7 +454,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
         setMessage(response.message ?? "Something went wrong. Please try again.");
         return;
       }
-      setRun({ results: response.results, version: response.version ?? null, cardName, shipDate: requestShipDate });
+      setRun({ results: response.results, version: response.version ?? null, cardName, shipDate: requestShipDate, issues: response.issues ?? [] });
     });
   };
 
@@ -610,6 +611,17 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
               <span>Ship date {formatDate(run.shipDate)}</span>
             </p>
           </div>
+          {run.issues.length ? (
+            <Alert tone="warning">
+              <p className="font-medium">Some surcharge rules could not be applied</p>
+              <ul className="mt-1 list-disc pl-5">
+                {run.issues.map((issue) => (
+                  <li key={issue}>{issue}</li>
+                ))}
+              </ul>
+              <p className="mt-1">The quote below omits them; fix the rules before relying on it.</p>
+            </Alert>
+          ) : null}
           {run.results.length === 1 && run.results[0] ? <CalculationResult result={run.results[0]} /> : <ComparisonList results={run.results} />}
         </section>
       ) : null}

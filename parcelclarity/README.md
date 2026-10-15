@@ -4,7 +4,7 @@
 
 ParcelClarity is a two-sided SaaS for third-party logistics providers (3PLs) and their ecommerce brand customers. A 3PL uploads its own **customer-facing** rate cards and fulfillment pricing; its brands get secure logins to model shipping and fulfillment cost per order. It never uses carrier buy rates.
 
-**Status: Milestone 1 of 9 is complete** (foundation, authentication, multi-tenant authorization, app shell). The pricing engine, rate cards, simulators, billing and reports are **not built yet**. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for the honest, current picture.
+**Status: Milestones 1–2 of 9 are complete** (foundation, authentication, multi-tenant authorization, app shell; rate-card import, versioning, surcharge rules, customer exceptions and a deterministic pricing engine with a 3PL-side calculator). The brand-side simulators, fulfillment fees, adjustment risk, reports, billing and carrier intelligence are **not built yet**, and the engine has only been validated on fictional data. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for the honest, current picture.
 
 > This app lives in the `parcelclarity/` folder of the repository. The repository root still holds an unrelated static website (GitHub Pages); nothing here touches it.
 
@@ -16,7 +16,7 @@ ParcelClarity is a two-sided SaaS for third-party logistics providers (3PLs) and
 | [PRODUCT_SPEC.md](PRODUCT_SPEC.md) | Functional requirements and non-negotiable rules |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, module boundaries, request flow |
 | [DATABASE.md](DATABASE.md) | Schema, roles, permissions, RLS policies |
-| [PRICING_ENGINE.md](PRICING_ENGINE.md) | Calculation design (formulas, precedence); engine not yet implemented |
+| [PRICING_ENGINE.md](PRICING_ENGINE.md) | Calculation pipeline, precedence rules, import pipeline, what the engine does not do |
 | [SECURITY.md](SECURITY.md) | Tenant isolation model, controls, known gaps |
 | [TESTING.md](TESTING.md) | Test strategy and how to run everything |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Supabase + Vercel setup, email templates, production checklist |
@@ -68,7 +68,8 @@ Local mail lands in `<stack dir>/mail/*.eml` (no real email is ever sent).
 |---|---|
 | `npm run dev` / `build` / `start` | Next.js development / production build / serve |
 | `npm run lint` / `typecheck` | ESLint / `tsc --noEmit` (strict) |
-| `npm test` | Unit tests (no services needed) |
+| `npm test` | Unit tests incl. the pricing-engine golden dataset (no services needed) |
+| `npx tsx tests/fixtures/pricing/generate.mts` | Regenerates the fictional fixture rate card used by the golden tests |
 | `npm run test:db` | Authorization/RLS tests against real PostgreSQL + Supabase Auth schema (needs `stack:up`) |
 | `npm run test:e2e` | Playwright against the built app (needs `stack:up`) |
 | `npm run audit` | `npm audit` for production dependencies |
@@ -88,11 +89,14 @@ insert into public.platform_admins (user_id) select id from auth.users where ema
 ```
 src/app/            routes: (auth) pages, (tenant)/app = 3PL portal, (brand)/portal = customer portal, platform
 src/app/actions/    Server Actions (validated with Zod, authorized server-side, RLS-backed)
-src/components/     ui/ design system, forms/, shell/, team/
+src/components/     ui/ design system, forms/, shell/, team/, pricing/ (rate cards, rules, calculator)
+src/engine/         pure pricing engine (no framework imports; see PRICING_ENGINE.md)
 src/lib/auth/       roles/permissions, session + data-access layer, validation
+src/lib/import/     spreadsheet parsing, rate-card mapping detection and validation (pure)
+src/lib/pricing/    loads a rate card + rules from the database into the engine's context
 src/lib/supabase/   server client (user JWT only), session proxy helper
 src/proxy.ts        session refresh + optimistic redirect (NOT an authorization boundary)
 supabase/migrations SQL migrations (schema, RLS, functions)
-tests/              unit/, db/ (RLS), e2e/ (Playwright)
+tests/              unit/, db/ (RLS), e2e/ (Playwright), fixtures/pricing (fictional golden dataset)
 scripts/local-stack Docker-free Supabase-compatible stack
 ```

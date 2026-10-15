@@ -31,6 +31,12 @@ export interface ServiceTermsRecord {
   minCharge: string | null;
   includedSurchargeKeys: string[];
   excludedSurchargeKeys: string[];
+  /** Which uploaded zone chart this service uses ("default" when the card has one chart per carrier). */
+  zoneChartKey: string;
+  /** Priced without zones (rows carry zone "ALL"). */
+  zoneIndependent: boolean;
+  /** "Carrier published + X%": scales every charged surcharge. Customer-visible (it is a term of the customer's rate card). */
+  surchargeMarkupPercent: string | null;
 }
 
 /** What the import found for the service: used only as context in the card header. */
@@ -224,6 +230,17 @@ export function ServiceTermsForm({ versionId, terms, coverage, editable, carrier
               <PlainTextField id={`${p}-includedSurchargeKeys`} name="includedSurchargeKeys" label="Included surcharges" defaultValue={terms.includedSurchargeKeys.join(", ")} placeholder="None" hint={`Bundled into the base price: listed on quotes but not charged. ${keysHint}`} />
               <PlainTextField id={`${p}-excludedSurchargeKeys`} name="excludedSurchargeKeys" label="Waived surcharges" defaultValue={terms.excludedSurchargeKeys.join(", ")} placeholder="None" hint="Never listed or charged for this service under the customer agreement." />
             </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <DecimalField id={`${p}-surchargeMarkupPercent`} name="surchargeMarkupPercent" label="Surcharge markup (%)" defaultValue={terms.surchargeMarkupPercent} placeholder="None" hint="“Carrier published + X%” from the customer agreement; scales every charged surcharge. Customers see this percentage in their quote explanations." />
+            </div>
+          </fieldset>
+
+          <fieldset className="space-y-4">
+            <legend className="text-sm font-semibold">Zones</legend>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <PlainTextField id={`${p}-zoneChartKey`} name="zoneChartKey" label="Zone chart key" defaultValue={terms.zoneChartKey} placeholder="default" hint="Matches the chart_key column of the uploaded zone chart. Leave as “default” unless the carrier has a service-specific chart." />
+              <CheckboxField id={`${p}-zoneIndependent`} name="zoneIndependent" label="Priced without zones" defaultChecked={terms.zoneIndependent} hint="For services whose rate rows carry zone ALL; no zone chart is consulted." />
+            </div>
           </fieldset>
 
           <SubmitButton pendingLabel="Saving…">Save terms</SubmitButton>
@@ -246,6 +263,8 @@ function TermsSummary({ terms }: { terms: ServiceTermsRecord }) {
     ["Minimum charge", terms.minCharge ? money(terms.minCharge) : "None"],
     ["Included surcharges", terms.includedSurchargeKeys.join(", ") || "None"],
     ["Waived surcharges", terms.excludedSurchargeKeys.join(", ") || "None"],
+    ["Surcharge markup", terms.surchargeMarkupPercent ? `${terms.surchargeMarkupPercent}%` : "None"],
+    ["Zone chart", terms.zoneIndependent ? "Not used (priced without zones)" : terms.zoneChartKey],
   ];
   return (
     <dl className="mt-5 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">

@@ -19,7 +19,7 @@ export default defineConfig({
     launchOptions: { executablePath },
   },
   projects: [
-    { name: "desktop", use: { ...devices["Desktop Chrome"] }, testMatch: /(flows|a11y|confirm)\.spec\.ts/ },
+    { name: "desktop", use: { ...devices["Desktop Chrome"] }, testMatch: /(flows|a11y|confirm|pricing)\.spec\.ts/ },
     // iPhone 14 viewport, touch and user agent on Chromium. Real iOS Safari still needs a device check.
     { name: "iphone", use: { ...iPhone }, testMatch: /mobile\.spec\.ts/ },
   ],

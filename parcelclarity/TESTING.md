@@ -6,9 +6,9 @@ Principle: a feature is not "done" until a test that could fail has passed. Auth
 
 | Layer | Location | Needs | What it proves |
 |---|---|---|---|
-| Unit (34 tests) | `tests/unit` | nothing | Permission model, `safeNext` open-redirect protection, validation schemas |
-| Database / authorization (83 tests) | `tests/db` | local stack Postgres + GoTrue binary | RLS and grants for every role, privilege escalation attempts, invitation lifecycle, status lifecycle, audit integrity, integrity constraints, rate limiting, TS↔SQL permission parity |
-| End to end (15 tests) | `tests/e2e` | local stack + built app + Chromium | Sign-up/confirm/reset by real emails, onboarding, customer + invitation flows, URL-manipulation isolation, suspension, platform console, token-hash links, axe accessibility, iPhone-emulated layout/PWA |
+| Unit (271 tests) | `tests/unit` | nothing | Pricing engine: 32-scenario golden dataset (`engine-golden`), dimensional weight and rounding (`engine-dim`), zones/brackets/unavailable paths (`engine-rates-zones`), surcharge semantics (`engine-surcharges`), money and validation (`engine-money`), adversarial review suites (`engine-numerics-review`, `engine-semantics-review`); import pipeline; permission model, `safeNext`, validation schemas |
+| Database / authorization (108 tests) | `tests/db` | local stack Postgres + GoTrue binary | RLS and grants for every role, privilege escalation attempts, invitation lifecycle, status lifecycle, audit integrity, integrity constraints, rate limiting, TS↔SQL permission parity; pricing: card/version/rule/ZIP-list lifecycles, brand visibility (assignment, active version, allowed services, suspension), cross-tenant and cross-brand denial, overlap constraints, file access, audit of pricing events |
+| End to end (__E2E_COUNT__ tests) | `tests/e2e` | local stack + built app + Chromium | Sign-up/confirm/reset by real emails, onboarding, customer + invitation flows, URL-manipulation isolation, suspension, platform console, token-hash links, axe accessibility, iPhone-emulated layout/PWA; rate-card import → terms → zone chart → activation → rule → calculator, assignment, cross-tenant URL denial, honest import failure (`pricing.spec.ts`) |
 
 ## Running
 
@@ -31,15 +31,16 @@ Every denial is asserted by its reason (`permission denied`, `row-level security
 
 ## Coverage map for the spec's authorization requirements
 
-* Cross-tenant / cross-brand by ID, API parameter and URL manipulation: `isolation.test.ts`, `flows.spec.ts`
-* Storage-path manipulation: **not yet** (no storage until Milestone 2)
+* Cross-tenant / cross-brand by ID, API parameter and URL manipulation: `isolation.test.ts`, `pricing.test.ts`, `flows.spec.ts`, `pricing.spec.ts`
+* Brand visibility of pricing (assigned cards only, active version only, allowed services only, own overrides only): `pricing.test.ts`
+* Uploaded-file access (database-stored, manager-only): `pricing.test.ts`; storage-path manipulation: not applicable yet (no object storage until Milestone 3)
 * Role escalation, invitation abuse: `privileges.test.ts`, `invitations.test.ts`
 * Platform admin confidentiality: `isolation.test.ts`, `privileges.test.ts`, `flows.spec.ts`
 * Audit append-only and unforgeable: `audit.test.ts`
 
 ## Not yet covered (see IMPLEMENTATION_STATUS.md)
 
-Pricing engine golden tests and all engine unit tests (Milestone 2+), Stripe webhook/entitlement tests (7), load/performance tests (9), real-iPhone Safari testing, manual accessibility review, restore-from-backup drill.
+Validation against real (non-fictional) rate cards and carrier documents, order-file simulation tests (Milestone 3), Stripe webhook/entitlement tests (7), load/performance tests (9), real-iPhone Safari testing, manual accessibility review, restore-from-backup drill.
 
 ## CI recommendation
 
@@ -50,3 +51,4 @@ On every PR: `npm ci`, typecheck, lint, `npm test`, `npm run audit`. On main/nig
 * New table → add isolation tests for every role in `world.ts` **in the same change** as the migration.
 * New permission → update `src/lib/auth/permissions.ts` and the migration; the parity test fails otherwise.
 * Never assert a denial without asserting why.
+* Engine behaviour → add a scenario to `tests/fixtures/pricing/scenarios.json` and derive its expectation by hand (or independently of the engine) into `expected.json`; never paste engine output into `expected.json`.

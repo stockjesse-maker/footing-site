@@ -58,6 +58,9 @@ interface TermsRow {
   min_charge: string | number | null;
   included_surcharge_keys: string[] | null;
   excluded_surcharge_keys: string[] | null;
+  zone_chart_key: string | null;
+  zone_independent: boolean | null;
+  surcharge_markup_percent: string | number | null;
   shipping_services: { id: string; carrier_code: string; code: string; name: string } | null;
 }
 
@@ -100,7 +103,7 @@ export default async function VersionPage({ params, searchParams }: { params: Pr
   const [termsRes, rowsRes, zonesRes, rulesRes] = await Promise.all([
     supabase
       .from("rate_card_service_terms")
-      .select("service_id, dim_divisor, dim_threshold_cubic_in, dimension_rounding, weight_rounding, min_billable_lb, dim_exempt, min_charge, included_surcharge_keys, excluded_surcharge_keys, shipping_services(id, carrier_code, code, name)")
+      .select("service_id, dim_divisor, dim_threshold_cubic_in, dimension_rounding, weight_rounding, min_billable_lb, dim_exempt, min_charge, included_surcharge_keys, excluded_surcharge_keys, zone_chart_key, zone_independent, surcharge_markup_percent, shipping_services(id, carrier_code, code, name)")
       .eq("version_id", version.id)
       .overrideTypes<TermsRow[], { merge: false }>(),
     rowsQuery
@@ -139,6 +142,9 @@ export default async function VersionPage({ params, searchParams }: { params: Pr
         minCharge: decimalOrNull(t.min_charge),
         includedSurchargeKeys: t.included_surcharge_keys ?? [],
         excludedSurchargeKeys: t.excluded_surcharge_keys ?? [],
+        zoneChartKey: t.zone_chart_key ?? "default",
+        zoneIndependent: t.zone_independent ?? false,
+        surchargeMarkupPercent: decimalOrNull(t.surcharge_markup_percent),
       };
       return [record];
     })

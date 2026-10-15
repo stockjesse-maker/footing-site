@@ -381,6 +381,7 @@ export type WarningCode =
   | "zone_chart_missing"
   | "rate_card_not_effective"
   | "rule_overridden"
+  | "override_not_applicable"
   | "rule_reference_cycle";
 
 export interface CalculationWarning {

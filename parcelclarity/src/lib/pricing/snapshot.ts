@@ -8,7 +8,9 @@ import type { DimRules, PricingContext, RateCardSnapshot, RateRow, RuleCondition
  * Rate-card data is read through the caller's Row Level Security (a brand user only sees active
  * versions of assigned cards and only the services allowed for them). Surcharge rules and ZIP lists
  * come from `pricing_rules_for_card()`, which authorizes once and returns only what applies to the
- * caller (tenant-wide rules plus rules scoped to the brand being priced). Nothing here widens access.
+ * caller (tenant-wide rules plus rules scoped to the brand being priced) together with that brand's
+ * live exceptions. Nothing here widens access, and nothing is joined client-side that a brand could
+ * not read (brands cannot read tenant rules, so the rule key is resolved inside the function).
  */
 
 export interface ServiceOption {
@@ -78,6 +80,8 @@ interface RulesPayload {
     verificationStatus: SurchargeRule["verificationStatus"];
   }>;
   zipLists: Array<{ key: string; version: number; sourceReference: string; effectiveDate: string; expirationDate: string | null; entries: string[] }>;
+  /** The priced brand's live exceptions, already joined to rule keys inside the authorizing function. */
+  overrides: Array<{ ruleKey: string; mode: SurchargeOverride["mode"]; amount: string | null; percent: string | null; effectiveDate: string; expirationDate: string | null; reference: string }>;
   brandId: string | null;
 }
 
@@ -180,16 +184,19 @@ export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOpt
     }
   }
 
-  const [{ data: rowsJson }, { data: zonesJson }, rulesResult] = await Promise.all([
+  const [rowsResult, zonesResult, rulesResult] = await Promise.all([
     supabase.rpc("rate_card_rows_json", { p_version: version.id, p_service_ids: opts.serviceIds ?? null }),
     supabase.rpc("rate_card_zones_json", { p_version: version.id }),
     supabase.rpc("pricing_rules_for_card", { p_rate_card: card.id, p_ship_date: opts.shipDate, p_brand: opts.brandId ?? null }),
   ]);
-  const rows = (rowsJson ?? []) as RateRow[];
-  const zones = ((zonesJson ?? []) as ZoneRow[]).map((z) => ({ ...z, zoneChartKey: z.zoneChartKey ?? "default" }));
+  // A failed load is never priced as "no rules": the database refuses the call when the caller (or
+  // the brand being priced) has no right to this card, and anything else is an outage, not a quote.
+  if (rowsResult.error || zonesResult.error || rulesResult.error || !rulesResult.data) return { ok: false, error: "rate_card_not_found" };
+  const rows = (rowsResult.data ?? []) as RateRow[];
+  const zones = ((zonesResult.data ?? []) as ZoneRow[]).map((z) => ({ ...z, zoneChartKey: z.zoneChartKey ?? "default" }));
 
   const issues: string[] = [];
-  const payload = (rulesResult.data ?? { rules: [], zipLists: [], brandId: null }) as RulesPayload;
+  const payload = rulesResult.data as RulesPayload;
   const serviceCodeById = new Map(terms.map((t) => [t.serviceId, t.serviceCode]));
   const rules = mapRules(payload, serviceCodeById, issues);
   const zipLists: ZipList[] = (payload.zipLists ?? []).map((l) => ({
@@ -200,7 +207,15 @@ export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOpt
     expirationDate: l.expirationDate,
     entries: l.entries ?? [],
   }));
-  const overrides = opts.brandId ? await loadOverrides(supabase, opts.brandId, opts.shipDate) : [];
+  const overrides: SurchargeOverride[] = (payload.overrides ?? []).map((o) => ({
+    ruleKey: o.ruleKey,
+    mode: o.mode,
+    amount: num(o.amount),
+    percent: num(o.percent),
+    effectiveDate: o.effectiveDate,
+    expirationDate: o.expirationDate,
+    reference: o.reference,
+  }));
 
   const rateCard: RateCardSnapshot = {
     rateCardId: card.id,
@@ -274,18 +289,4 @@ function mapRules(payload: RulesPayload, serviceCodeById: Map<string, string>, i
     });
   }
   return rules;
-}
-
-async function loadOverrides(supabase: SupabaseClient, brandId: string, shipDate: string): Promise<SurchargeOverride[]> {
-  const { data } = await supabase
-    .from("customer_surcharge_overrides")
-    .select("mode, amount, percent, effective_date, expiration_date, reference, surcharge_rules!inner(rule_key)")
-    .eq("brand_id", brandId)
-    .is("ended_at", null)
-    .lte("effective_date", shipDate)
-    .or(`expiration_date.is.null,expiration_date.gte.${shipDate}`)
-    .overrideTypes<{ mode: SurchargeOverride["mode"]; amount: string | number | null; percent: string | number | null; effective_date: string; expiration_date: string | null; reference: string; surcharge_rules: { rule_key: string } | null }[], { merge: false }>();
-  return (data ?? [])
-    .filter((o) => o.surcharge_rules)
-    .map((o) => ({ ruleKey: o.surcharge_rules!.rule_key, mode: o.mode, amount: num(o.amount), percent: num(o.percent), effectiveDate: o.effective_date, expirationDate: o.expiration_date, reference: o.reference }));
 }

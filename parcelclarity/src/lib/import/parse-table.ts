@@ -3,8 +3,9 @@ import readXlsx from "read-excel-file/node";
 
 /**
  * Turns an uploaded CSV or XLSX into plain string tables. Pure: no I/O besides the buffer given.
- * Limits guard against hostile files (zip bombs, enormous sheets); the caller has already
- * enforced the byte-size limit.
+ * Limits guard against hostile files: the byte-size cap (also enforced by callers), a zip
+ * central-directory check that refuses workbooks that would inflate beyond a budget before any
+ * inflation happens, and row/cell/sheet caps that reject (never silently truncate) oversized sheets.
  */
 export const LIMITS = {
   maxBytes: 5 * 1024 * 1024,
@@ -13,6 +14,10 @@ export const LIMITS = {
   maxSheets: 20,
   maxColumns: 200,
 } as const;
+
+/** Upper bound on what a workbook may inflate to before it is parsed (sheet XML is verbose: ~100 bytes per cell). */
+const MAX_XLSX_INFLATED_BYTES = 120 * 1024 * 1024;
+const MAX_XLSX_ENTRIES = 200;
 
 export interface Table {
   name: string;
@@ -50,11 +55,43 @@ function cellToString(value: unknown): string {
 }
 
 function capRows(name: string, rows: string[][]): Table {
-  const truncated = rows.length > LIMITS.maxRowsPerSheet;
-  const kept = rows.slice(0, LIMITS.maxRowsPerSheet).map((r) => r.slice(0, LIMITS.maxColumns).map(cellToString));
+  if (rows.length > LIMITS.maxRowsPerSheet) throw new ParseError(`Sheet "${name}" has more than ${LIMITS.maxRowsPerSheet.toLocaleString("en-US")} rows; split the file.`, "too_large");
+  const kept = rows.map((r) => r.slice(0, LIMITS.maxColumns).map(cellToString));
   // Drop fully empty trailing rows.
   while (kept.length && kept[kept.length - 1]!.every((c) => c === "")) kept.pop();
-  return { name, rows: kept, truncated };
+  return { name, rows: kept, truncated: false };
+}
+
+/**
+ * Reads the zip central directory of an .xlsx and refuses archives whose declared uncompressed size
+ * or entry count is unreasonable, before anything is inflated (decompression-bomb guard). The
+ * directory is at the end of the file: End-Of-Central-Directory record → central directory entries.
+ */
+export function checkXlsxInflation(bytes: Uint8Array): void {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 65_535); i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) throw new ParseError("The workbook's zip directory could not be read.", "unreadable");
+  const entryCount = view.getUint16(eocd + 10, true);
+  const dirSize = view.getUint32(eocd + 12, true);
+  const dirOffset = view.getUint32(eocd + 16, true);
+  if (entryCount > MAX_XLSX_ENTRIES) throw new ParseError(`The workbook has too many parts (${entryCount}).`, "too_large");
+  if (dirOffset + dirSize > bytes.length) throw new ParseError("The workbook's zip directory could not be read.", "unreadable");
+  let pos = dirOffset;
+  let total = 0;
+  for (let n = 0; n < entryCount; n++) {
+    if (pos + 46 > bytes.length || view.getUint32(pos, true) !== 0x02014b50) throw new ParseError("The workbook's zip directory could not be read.", "unreadable");
+    const uncompressed = view.getUint32(pos + 24, true);
+    if (uncompressed === 0xffffffff) throw new ParseError("ZIP64 workbooks are not supported.", "too_large");
+    total += uncompressed;
+    if (total > MAX_XLSX_INFLATED_BYTES) throw new ParseError("The workbook would expand to more than 120 MB; export a smaller sheet.", "too_large");
+    pos += 46 + view.getUint16(pos + 28, true) + view.getUint16(pos + 30, true) + view.getUint16(pos + 32, true);
+  }
 }
 
 export async function parseTables(bytes: Uint8Array, kind: FileKind): Promise<Table[]> {
@@ -72,13 +109,15 @@ export async function parseTables(bytes: Uint8Array, kind: FileKind): Promise<Ta
     return [table];
   }
 
+  checkXlsxInflation(bytes);
   let sheets: { sheet: string; data: unknown[][] }[];
   try {
     sheets = (await readXlsx(Buffer.from(bytes))) as { sheet: string; data: unknown[][] }[];
   } catch (err) {
     throw new ParseError(`The workbook could not be read: ${err instanceof Error ? err.message : "unknown error"}.`, "unreadable");
   }
-  const tables = sheets.slice(0, LIMITS.maxSheets).map((s) => capRows(s.sheet, s.data as string[][])).filter((t) => t.rows.length > 0);
+  if (sheets.length > LIMITS.maxSheets) throw new ParseError(`The workbook has more than ${LIMITS.maxSheets} sheets.`, "too_large");
+  const tables = sheets.map((s) => capRows(s.sheet, s.data as string[][])).filter((t) => t.rows.length > 0);
   if (!tables.length) throw new ParseError("The workbook has no data.", "empty");
   for (const t of tables) {
     const cells = t.rows.reduce((n, r) => n + r.length, 0);
