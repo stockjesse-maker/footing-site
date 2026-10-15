@@ -142,6 +142,19 @@ export function createBatchCaches(): BatchCaches {
 
 const ZERO = "0.00";
 
+/** Validation findings that make a shipment unpriceable whatever the run settings (a run can supply an origin, a service or a residential default, but not a weight the file contradicts). */
+const BLOCKING_ISSUES: Record<string, ExclusionReason> = {
+  order_inconsistent: "order_inconsistent",
+  package_inconsistent: "package_inconsistent",
+  destination_invalid: "destination_invalid",
+  destination_short: "destination_invalid",
+  destination_not_us: "destination_not_us",
+  weight_invalid: "weight_invalid",
+  weight_unit_invalid: "weight_invalid",
+  nothing_to_ship: "nothing_to_ship",
+  sku_unknown: "sku_unknown",
+};
+
 function unavailableResult(reason: CompactResult["unavailableReason"], shipDate: string | null, serviceId: string | null): CompactResult {
   return { status: "unavailable", unavailableReason: reason, rateCardVersionId: null, shipDate, zone: null, serviceId, billableLb: [], definite: ZERO, estimated: ZERO, expected: ZERO, conditionalExposure: ZERO, unresolved: ZERO, lines: [], warningCodes: [] };
 }
@@ -204,7 +217,9 @@ export async function priceBatchCore(
       // Service: the file's mapping, the run's override for unmapped (or all) shipments, else excluded.
       let serviceId = s.serviceId;
       if (run.service_override_id && (assumptions.overrideAllServices || (!serviceId && run.unmapped_policy === "use_override"))) serviceId = run.service_override_id;
+      const blocking = [...(s.orderIssues ?? []), ...(s.shipmentIssues ?? [])].map((i) => BLOCKING_ISSUES[i]).find((r): r is ExclusionReason => r !== undefined);
       if (s.cancelled) excludedReason = "order_cancelled";
+      else if (blocking) excludedReason = blocking;
       else if (!shipDate) excludedReason = "date_missing";
       else if (!serviceId) excludedReason = "service_unmapped";
       else if (!s.destinationZip) excludedReason = "destination_missing";

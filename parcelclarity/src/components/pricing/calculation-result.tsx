@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { VerificationBadge } from "@/components/pricing/rule-form";
+import { formatDate } from "@/lib/format/date";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
@@ -114,7 +115,13 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function RuleLine({ rule }: { rule: RuleReference }) {
+export type ResultAudience = "staff" | "brand";
+
+/** Customers see where a rule comes from in plain words, never its key, notes or verification state. */
+function RuleLine({ rule, audience }: { rule: RuleReference; audience: ResultAudience }) {
+  if (audience === "brand") {
+    return <span className="text-xs text-muted">{rule.scope === "platform" ? "Published carrier surcharge" : "Your 3PL's pricing"}</span>;
+  }
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
       <span className="font-mono">
@@ -197,7 +204,7 @@ function ZoneLine({ zone }: { zone: NonNullable<ShipmentCalculation["zone"]> }) 
   );
 }
 
-function ChargeLineRow({ line }: { line: ChargeLine }) {
+function ChargeLineRow({ line, audience }: { line: ChargeLine; audience: ResultAudience }) {
   const cls = CHARGE_CLASS[line.chargeClass];
   const struck = !line.counted && (line.status === "included" || line.status === "waived");
   return (
@@ -209,7 +216,7 @@ function ChargeLineRow({ line }: { line: ChargeLine }) {
           {!line.counted ? <Badge tone="neutral">{NOT_COUNTED[line.status]}</Badge> : null}
         </div>
         <p className="text-sm text-muted">{line.explanation}</p>
-        {line.rule ? <RuleLine rule={line.rule} /> : null}
+        {line.rule ? <RuleLine rule={line.rule} audience={audience} /> : null}
       </div>
       <span className={`tabular shrink-0 pt-0.5 font-medium ${struck ? "text-muted line-through" : line.counted ? "" : "text-muted"}`}>
         {formatMoney(line.amount)}
@@ -219,7 +226,7 @@ function ChargeLineRow({ line }: { line: ChargeLine }) {
   );
 }
 
-function ItemizedCharges({ result }: { result: ShipmentCalculation }) {
+function ItemizedCharges({ result, audience }: { result: ShipmentCalculation; audience: ResultAudience }) {
   const packageCount = Math.max(result.packages.length, result.input.packages.length);
   const groups: { index: number | null; lines: ChargeLine[] }[] = [];
   for (let i = 0; i < packageCount; i++) {
@@ -238,7 +245,7 @@ function ItemizedCharges({ result }: { result: ShipmentCalculation }) {
             <h4 className="font-medium">{packageLabel(g.index)}</h4>
             <ul className="mt-1 divide-y divide-line">
               {g.lines.map((line, i) => (
-                <ChargeLineRow key={`${g.index ?? "s"}-${i}-${line.basis}`} line={line} />
+                <ChargeLineRow key={`${g.index ?? "s"}-${i}-${line.basis}`} line={line} audience={audience} />
               ))}
             </ul>
           </div>
@@ -269,6 +276,16 @@ function Warnings({ warnings }: { warnings: ShipmentCalculation["warnings"] }) {
   );
 }
 
+/** For customers: the plain provenance line (rate card name and version come from the caller, never ids). */
+function BrandReferences({ cardName, effectiveDate }: { cardName: string; effectiveDate: string | null }) {
+  return (
+    <p className="text-sm text-muted">
+      Priced on your rate card <span className="font-medium text-fg">{cardName}</span>
+      {effectiveDate ? ` (rates effective ${formatDate(effectiveDate)})` : ""}.
+    </p>
+  );
+}
+
 function References({ references }: { references: ShipmentCalculation["references"] }) {
   return (
     <section aria-labelledby="calc-refs-heading" className="space-y-3">
@@ -291,7 +308,7 @@ function References({ references }: { references: ShipmentCalculation["reference
             <ul className="mt-1 space-y-1.5">
               {references.rules.map((r) => (
                 <li key={`${r.key}@${r.version}`}>
-                  <RuleLine rule={r} />
+                  <RuleLine rule={r} audience="staff" />
                 </li>
               ))}
             </ul>
@@ -335,7 +352,7 @@ function References({ references }: { references: ShipmentCalculation["reference
 // Result
 // ---------------------------------------------------------------------------
 
-export function CalculationResult({ result }: { result: ShipmentCalculation }) {
+export function CalculationResult({ result, audience = "staff", cardName, effectiveDate }: { result: ShipmentCalculation; audience?: ResultAudience; cardName?: string; effectiveDate?: string | null }) {
   const unavailable = result.status === "unavailable";
   return (
     <div className="space-y-6">
@@ -344,7 +361,8 @@ export function CalculationResult({ result }: { result: ShipmentCalculation }) {
           {result.unavailableMessage ?? "The engine could not price this shipment from the rate card."}
           {result.unavailableReason ? (
             <span className="mt-1 block text-xs text-muted">
-              {UNAVAILABLE[result.unavailableReason]} · {result.unavailableReason}
+              {UNAVAILABLE[result.unavailableReason]}
+              {audience === "staff" ? ` · ${result.unavailableReason}` : ""}
             </span>
           ) : null}
         </Alert>
@@ -360,9 +378,9 @@ export function CalculationResult({ result }: { result: ShipmentCalculation }) {
 
       {result.packages.length ? <BillableWeights result={result} /> : null}
       {result.zone ? <ZoneLine zone={result.zone} /> : null}
-      {result.lines.length ? <ItemizedCharges result={result} /> : null}
+      {result.lines.length ? <ItemizedCharges result={result} audience={audience} /> : null}
       {result.warnings.length ? <Warnings warnings={result.warnings} /> : null}
-      <References references={result.references} />
+      {audience === "brand" ? <BrandReferences cardName={cardName ?? "your rate card"} effectiveDate={effectiveDate ?? null} /> : <References references={result.references} />}
     </div>
   );
 }

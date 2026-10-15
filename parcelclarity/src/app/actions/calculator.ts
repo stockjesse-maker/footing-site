@@ -39,11 +39,18 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
   if (!(await withinRateLimit(supabase, "calc.single", 600, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
 
   const isBrand = ctx.active.portal === "brand";
+  // Staff may price on behalf of one of their customers; the brand must be theirs, and drafts are then off limits.
+  let onBehalf: string | null = null;
+  if (!isBrand && req.brandId) {
+    const { data: brand } = await supabase.from("brands").select("id, tenant_id").eq("id", req.brandId).maybeSingle();
+    if (!brand || brand.tenant_id !== ctx.active.tenantId) return { ok: false, message: "That customer is not available to you." };
+    onBehalf = brand.id;
+  }
   const loaded = await loadPricingContext(supabase, {
     rateCardId: req.rateCardId,
     shipDate: req.shipDate,
-    versionId: isBrand ? undefined : req.versionId,
-    brandId: isBrand ? ctx.active.brandId : null,
+    versionId: isBrand || onBehalf ? undefined : req.versionId,
+    brandId: isBrand ? ctx.active.brandId : onBehalf,
   });
   if (!loaded.ok) {
     const messages = {
@@ -87,7 +94,7 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
 
   const activity = supabase.rpc("log_audit_event", {
     p_tenant: snapshot.tenantId,
-    p_brand: isBrand ? ctx.active.brandId : null,
+    p_brand: isBrand ? ctx.active.brandId : onBehalf,
     p_action: "simulation.single_shipment",
     p_entity_type: "rate_card_version",
     p_entity_id: snapshot.version.id,

@@ -7,6 +7,8 @@ const optionalDecimal = z.preprocess((v) => (v === "" || v === null || v === und
 
 export const calculatorRequestSchema = z.object({
   rateCardId: uuidSchema,
+    /** 3PL staff pricing on behalf of a customer: that customer's exceptions and brand-scoped rules apply. */
+    brandId: uuidSchema.optional(),
   /** Staff may price against a specific (e.g. draft) version; brands always get the version in effect. */
   versionId: uuidSchema.optional(),
   shipDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

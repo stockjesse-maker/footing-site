@@ -65,10 +65,16 @@ export type ExclusionReason =
   | "order_cancelled"
   | "date_missing"
   | "destination_missing"
+  | "destination_invalid"
+  | "destination_not_us"
   | "origin_missing"
   | "service_unmapped"
   | "weight_missing"
+  | "weight_invalid"
   | "order_inconsistent"
+  | "package_inconsistent"
+  | "nothing_to_ship"
+  | "sku_unknown"
   | "no_packages";
 
 /** The engine's reasons plus pre-pricing exclusions, as they appear in the exclusions table. */

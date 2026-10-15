@@ -66,6 +66,17 @@ export default async function CustomerDetail({ params }: { params: Promise<{ bra
       {brand.status === "suspended" ? <Alert tone="warning" className="mb-6">This customer is suspended. Their users cannot sign in to the portal until you reactivate the account.</Alert> : null}
       {brand.status === "revoked" ? <Alert tone="danger" className="mb-6">This customer&apos;s access was permanently revoked.</Alert> : null}
 
+      {can(role, "simulation.run") ? (
+        <section aria-labelledby="models-heading" className="mb-8 space-y-2">
+          <h2 id="models-heading" className="text-xl font-semibold tracking-tight">Cost models</h2>
+          <p className="text-sm text-muted">
+            Price shipments or an orders file on this customer&apos;s behalf. What you prepare stays private until you share it.{" "}
+            <Link href={`/app/customers/${brand.id}/model`} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+              Open cost models →
+            </Link>
+          </p>
+        </section>
+      ) : null}
       {canViewMembers ? (
         <div className="space-y-8">
           <section aria-labelledby="members-heading" className="space-y-3">

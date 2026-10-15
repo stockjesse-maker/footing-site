@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, useTransition, type FormEvent, type ReactNode } from "react";
 import { priceShipment, type CalculatorRequest, type CalculatorResponse } from "@/app/actions/calculator";
+import { saveSingleScenario } from "@/app/actions/modeling";
+import type { ResultAudience } from "@/components/pricing/calculation-result";
 import { CalculationResult, ESTIMATE_NOTICE, formatDecimal, formatMoney } from "@/components/pricing/calculation-result";
 import { Alert } from "@/components/ui/alert";
 import { Badge, statusTone } from "@/components/ui/badge";
@@ -45,6 +47,12 @@ export interface CalculatorFormProps {
   initialVersionId?: string;
   /** Staff may price against a specific version, including drafts. Brand portals pass false. */
   allowVersionChoice?: boolean;
+  /** Customers see plain provenance (no keys, ids or verification badges). */
+  audience?: ResultAudience;
+  /** Staff pricing on behalf of a customer: that customer's exceptions apply and results can be saved for them. */
+  brandId?: string;
+  /** Offer "Save as scenario" for single-service results (brand portal and on-behalf pricing). */
+  canSave?: boolean;
 }
 
 interface PackageDraft {
@@ -312,9 +320,10 @@ interface PricedRun {
   issues: string[];
   cardName: string;
   shipDate: string;
+  request: CalculatorRequest;
 }
 
-export function CalculatorForm({ cards, initialRateCardId, initialVersionId, allowVersionChoice = true }: CalculatorFormProps) {
+export function CalculatorForm({ cards, initialRateCardId, initialVersionId, allowVersionChoice = true, audience = "staff", brandId, canSave = false }: CalculatorFormProps) {
   const idPrefix = useId();
   const today = useLocalToday();
   const [rateCardId, setRateCardId] = useState(() => (initialRateCardId && cards.some((c) => c.id === initialRateCardId) ? initialRateCardId : (cards[0]?.id ?? "")));
@@ -418,6 +427,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
       ok: true,
       request: {
         rateCardId,
+        ...(brandId ? { brandId } : {}),
         versionId: allowVersionChoice && versionId ? versionId : undefined,
         shipDate,
         originZip: origin!,
@@ -455,7 +465,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
         setMessage(response.message ?? "Something went wrong. Please try again.");
         return;
       }
-      setRun({ results: response.results, version: response.version ?? null, cardName, shipDate: requestShipDate, issues: response.issues ?? [] });
+      setRun({ results: response.results, version: response.version ?? null, cardName, shipDate: requestShipDate, issues: response.issues ?? [], request: built.request });
     });
   };
 
@@ -623,9 +633,54 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
               <p className="mt-1">The quote below omits them; fix the rules before relying on it.</p>
             </Alert>
           ) : null}
-          {run.results.length === 1 && run.results[0] ? <CalculationResult result={run.results[0]} /> : <ComparisonList results={run.results} />}
+          {run.results.length === 1 && run.results[0] ? (
+            <CalculationResult result={run.results[0]} audience={audience} cardName={run.cardName} effectiveDate={run.version?.effectiveDate ?? null} />
+          ) : (
+            <ComparisonList results={run.results} />
+          )}
+          {canSave && run.results.length === 1 && run.results[0]?.status === "ok" ? <SaveScenarioForm request={run.request} brandId={brandId} /> : null}
         </section>
       ) : null}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Save as scenario
+// ---------------------------------------------------------------------------
+
+/** Names and saves the result just shown. The server prices the request again; nothing from the client's copy is stored. */
+function SaveScenarioForm({ request, brandId }: { request: CalculatorRequest; brandId?: string }) {
+  const id = useId();
+  const [name, setName] = useState("");
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pending, startTransition] = useTransition();
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    startTransition(async () => {
+      const response = await saveSingleScenario(request, name, brandId);
+      setMessage(response.ok ? { ok: true, text: "Saved. Find it under Saved scenarios." } : { ok: false, text: response.message ?? "The scenario could not be saved." });
+    });
+  };
+  return (
+    <Card>
+      <CardTitle>Save this result as a scenario</CardTitle>
+      <CardDescription>Keep it to compare later. It stays priced at today&apos;s rates; re-price it any time.</CardDescription>
+      <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end" noValidate>
+        <div className="flex-1">
+          <Field id={`${id}-name`} label="Scenario name">
+            {(aria) => <Input {...aria} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Typical 3 lb order to the West Coast" maxLength={160} required />}
+          </Field>
+        </div>
+        <Button type="submit" loading={pending} disabled={!name.trim()}>
+          Save scenario
+        </Button>
+      </form>
+      {message ? (
+        <Alert tone={message.ok ? "success" : "danger"} className="mt-3">
+          {message.text}
+        </Alert>
+      ) : null}
+    </Card>
   );
 }
