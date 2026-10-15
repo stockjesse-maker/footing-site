@@ -1,0 +1,1709 @@
+{
+  "_comment": "Golden expectations for the fee engine. Derived by hand from RULES.md (the contract) and the fictional fixtures schedules.json / scenarios.json by two independent derivers, then reconciled scenario by scenario; NOT derived from the engine code. Keys starting with an underscore are metadata (_working explains each scenario). Money in E4 = integer ten-thousandths of a dollar; allocation figures are decimal strings. Where RULES.md is silent and both derivers made the same call, the call is recorded here: (1) packaging_unmatched is only raised when the schedule has at least one packaging-conditioned rule (lines, tiers and rounding_* have none, so a typed or untyped package raises nothing there); (2) an order line's quantity is the chargeable quantity c (after the free allowance), the packages the rule won for package rules, and the base in dollars (4 dp) for percent lines; a null distinctSkus gives reason skus_unknown by analogy with A1; (3) a schedule with no minimum rule gives minimums [] which is treated as exact with a top-up of 0, so allocation.monthly.minimumTopUp is '0.00' (not null); (4) allocation annual = exact (unrounded) monthly total x 12 rounded once, which only matters in tiers_monthly_storage (365608.93, not 30467.41 x 12 = 365608.92); (5) quantity strings of non-terminating decimals are given to 20 significant digits (see _disagreements).",
+  "_disagreements": [
+    {
+      "scenario": "tiers_monthly_storage",
+      "field": "monthlyLines[bin_weekly].quantity",
+      "deriver1": "173.92857142857142857143",
+      "deriver2": "173.92857142857142857",
+      "decision": "Representation only, not a value difference. 40 x 30.4375 / 7 = 173.928571428571428571... repeats forever; deriver 1 rounded at 20 decimal places, deriver 2 at 20 significant digits, and both are correct roundings of the same number. RULES.md B2 fixes the AMOUNT (HALF_UP to E4 once, from the unrounded product: 217.4107142857... = 2174107, monthly total 4674107; both derivers agree on these) but gives no precision for a non-terminating quantity string. Kept 20 significant digits (173.92857142857142857). The golden test should compare this one quantity numerically (for example within 1e-12) rather than as a string; amountE4 and every other field are exact."
+    }
+  ],
+  "std_one_unit_box": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 38500,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. pick_order 1x2.50=25000. pick_additional c=max(0,1-1)=0 so no line. Box: pack_box (priority 2) beats catch-all pack_other (9): 1x0.85=8500, pack_other listed replaced by pack_box. inserts: orderShares empty so assumption_missing. handling 5% of 100000 = 5000 (quantity 10.0000). Unresolved ordered by position (pack_other 5, inserts 6). definite 38500."
+  },
+  "std_two_units_mailer": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_additional",
+        "quantity": "1",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_mailer",
+        "quantity": "1",
+        "amountE4": 3000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "8.4900",
+        "amountE4": 4245,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 37245,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_mailer"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. 'Poly  Mailer' normalises to 'poly mailer' so pack_mailer (priority 1) wins; pack_other replaced by pack_mailer. pick_additional c=2-1=1 x0.50=5000. mailer 0.30=3000. handling 5% of 84900 = 4245. definite 25000+5000+3000+4245=37245."
+  },
+  "std_seven_units_two_boxes": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_additional",
+        "quantity": "6",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "2",
+        "amountE4": 17000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "22.1000",
+        "amountE4": 11050,
+        "chargeClass": "estimated"
+      }
+    ],
+    "definiteE4": 72000,
+    "estimatedE4": 11050,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. pick_additional c=7-1=6 x0.50=30000. box and carton both won by pack_box: quantity 2 x0.85=17000; pack_other matched both and lost both, listed once. handling 5% of 221000 = 11050, estimated because shipping.estimated. definite 25000+30000+17000=72000, estimated 11050."
+  },
+  "std_unmatched_packaging": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_other",
+        "quantity": "1",
+        "amountE4": 6000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 36000,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. 'wooden crate' matches only the '*' catch-all pack_other: 1x0.60=6000, sole matcher so no replaced entry; catch-all exists so no packaging_unmatched. definite 25000+6000+5000=36000."
+  },
+  "std_no_packaging_type_no_default": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 30000,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pack_mailer",
+        "reason": "packaging_unknown"
+      },
+      {
+        "ruleKey": "pack_box",
+        "reason": "packaging_unknown"
+      },
+      {
+        "ruleKey": "pack_other",
+        "reason": "packaging_unknown"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. Untyped package, no default: every packaging-conditioned rule is unresolved packaging_unknown (positions 3,4,5), no competition so no replaced entries. definite 25000+5000=30000."
+  },
+  "std_no_packaging_type_with_default": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "estimated"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 30000,
+    "estimatedE4": 8500,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [
+      "packaging_defaulted"
+    ],
+    "_working": "Both derivers agreed. Default 'box' is used as the package type: pack_box wins, line estimated, warning packaging_defaulted; pack_other (matches via '*', the package now has a type) lost so replaced by pack_box. definite 25000+5000=30000, estimated 8500."
+  },
+  "std_units_unknown": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 38500,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pick_additional",
+        "reason": "units_unknown"
+      },
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. units null: pick_additional reads units so unresolved units_unknown (position 2); its allowance counts the order (known) so nothing else changes. lines/distinctSkus unknown but no standard rule reads them. Unresolved by position: pick_additional 2, pack_other 5, inserts 6. definite 38500."
+  },
+  "std_units_assumed": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_additional",
+        "quantity": "2",
+        "amountE4": 10000,
+        "chargeClass": "estimated"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 38500,
+    "estimatedE4": 10000,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. units=3 flagged assumed: pick_additional c=3-1=2 x0.50=10000 estimated (assumed.units). pick_order reads no unit quantity so definite; pack_box and handling definite. definite 25000+8500+5000=38500, estimated 10000."
+  },
+  "std_shipping_unknown": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 33500,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "reason": "shipping_unknown"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. shipping null: handling_pct unresolved shipping_unknown (position 7, last). definite 25000+8500=33500."
+  },
+  "std_shipping_with_exposure": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 38500,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [
+      "fee_base_excludes_exposure"
+    ],
+    "_working": "Both derivers agreed. Same as std_one_unit_box; handling base is shipping.totalE4 (100000), not baseFreight, so 5000; hasExposure adds warning fee_base_excludes_exposure. inserts still unanswered so partial."
+  },
+  "std_inserts_not_answered": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 38500,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      },
+      {
+        "ruleKey": "inserts",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. Identical to std_one_unit_box: orderShares has no 'inserts' answer so assumption_missing."
+  },
+  "std_inserts_ordinal_2_of_40pct": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 38500,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. p=0.40, ordinal 2: floor(0.8)=0 is not > floor(0.4)=0, so q=0, c=0: no inserts line and no unresolved entry (A5). The only unresolved entry is 'replaced' so status ok. definite 38500."
+  },
+  "std_inserts_ordinal_3_of_40pct": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "pick_order",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pack_box",
+        "quantity": "1",
+        "amountE4": 8500,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "inserts",
+        "quantity": "2",
+        "amountE4": 5000,
+        "chargeClass": "estimated"
+      },
+      {
+        "ruleKey": "handling_pct",
+        "quantity": "10.0000",
+        "amountE4": 5000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 38500,
+    "estimatedE4": 5000,
+    "unresolved": [
+      {
+        "ruleKey": "pack_other",
+        "reason": "replaced",
+        "replacedBy": "pack_box"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. Ordinal 3: floor(1.2)=1 > floor(0.8)=0 qualifies, q=countPerOrder=3, free 1x1, c=2 x0.25=5000, estimated (order driver). Line order by position: pick_order, pack_box, inserts, handling. definite 38500, estimated 5000."
+  },
+  "lines_two_lines_3_plus_1": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "line_pick",
+        "quantity": "2",
+        "amountE4": 20000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "line_additional",
+        "quantity": "2",
+        "amountE4": 8000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "sku_fee",
+        "quantity": "2",
+        "amountE4": 4000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "big_order",
+        "quantity": "1",
+        "amountE4": 15000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "shipment_fee",
+        "quantity": "1",
+        "amountE4": 7500,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 54500,
+    "estimatedE4": 0,
+    "unresolved": [],
+    "warnings": [],
+    "_working": "Both derivers agreed. line_pick 2 lines x1.00=20000. line_additional: free=1x2 lines=2, c=4-2=2 x0.40=8000. sku 2x0.20=4000. multi_box: 1 package, free 1, c=0 no line. big_order: 4 units in [4,10] so 1x1.50=15000. shipment 1x0.75=7500. Total 54500. Schedule has no packaging-conditioned rule so no packaging_unmatched."
+  },
+  "lines_three_boxes_two_shipments": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "line_pick",
+        "quantity": "3",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "line_additional",
+        "quantity": "9",
+        "amountE4": 36000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "sku_fee",
+        "quantity": "3",
+        "amountE4": 6000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "multi_box",
+        "quantity": "2",
+        "amountE4": 6000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "shipment_fee",
+        "quantity": "2",
+        "amountE4": 15000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 93000,
+    "estimatedE4": 0,
+    "unresolved": [],
+    "warnings": [],
+    "_working": "Both derivers agreed. line_pick 3x1.00=30000. line_additional free=1x3=3, c=12-3=9 x0.40=36000. sku 3x0.20=6000. multi_box 3 packages-1 free=2 x0.30=6000. big_order excluded (12>10): no line, no unresolved. shipments 2x0.75=15000. Total 93000."
+  },
+  "lines_five_units_null_skus": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "line_pick",
+        "quantity": "2",
+        "amountE4": 20000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "line_additional",
+        "quantity": "3",
+        "amountE4": 12000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "big_order",
+        "quantity": "1",
+        "amountE4": 15000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "shipment_fee",
+        "quantity": "1",
+        "amountE4": 7500,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 54500,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "sku_fee",
+        "reason": "skus_unknown"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. distinctSkus null: sku_fee unresolved skus_unknown (reason by analogy with A1). line_pick 20000; line_additional free=2, c=5-2=3 x0.40=12000; multi_box c=0; big_order 5 in [4,10] = 15000; shipment 7500. definite 54500."
+  },
+  "tiers_q1": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "pick_graduated",
+        "quantity": "1",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_volume",
+        "quantity": "1",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_flat_bracket",
+        "quantity": "1",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_monthly_graduated",
+        "quantity": "1",
+        "amountE4": 26667,
+        "chargeClass": "estimated"
+      },
+      {
+        "ruleKey": "pick_monthly_volume",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "estimated"
+      }
+    ],
+    "definiteE4": 90000,
+    "estimatedE4": 51667,
+    "unresolved": [],
+    "warnings": [],
+    "_working": "Both derivers agreed. c=1: graduated 1x3.00=30000; volume rate 1<=1 so 3.00x1=30000; flat bracket 1<=3 so 3.00 whole=30000. Monthly-quantity rules price c=1 x pinned rate 26667 / 25000, estimated (pinned rate used). definite 90000, estimated 51667."
+  },
+  "tiers_q7": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "pick_graduated",
+        "quantity": "7",
+        "amountE4": 60000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_volume",
+        "quantity": "7",
+        "amountE4": 35000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_flat_bracket",
+        "quantity": "7",
+        "amountE4": 50000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_monthly_graduated",
+        "quantity": "1",
+        "amountE4": 26667,
+        "chargeClass": "estimated"
+      },
+      {
+        "ruleKey": "pick_monthly_volume",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "estimated"
+      }
+    ],
+    "definiteE4": 145000,
+    "estimatedE4": 51667,
+    "unresolved": [],
+    "warnings": [],
+    "_working": "Both derivers agreed. c=7: graduated 1x3.00 + 6x0.50 = 6.00 = 60000; volume 7<=10 so 7x0.50=35000; flat 7<=10 so 5.00=50000. Monthly 26667 / 25000 estimated. definite 145000, estimated 51667."
+  },
+  "tiers_q12": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "pick_graduated",
+        "quantity": "12",
+        "amountE4": 83000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_volume",
+        "quantity": "12",
+        "amountE4": 48000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_flat_bracket",
+        "quantity": "12",
+        "amountE4": 80000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_monthly_graduated",
+        "quantity": "1",
+        "amountE4": 26667,
+        "chargeClass": "estimated"
+      },
+      {
+        "ruleKey": "pick_monthly_volume",
+        "quantity": "1",
+        "amountE4": 25000,
+        "chargeClass": "estimated"
+      }
+    ],
+    "definiteE4": 211000,
+    "estimatedE4": 51667,
+    "unresolved": [],
+    "warnings": [],
+    "_working": "Both derivers agreed. c=12: graduated 3.00 + 9x0.50 + 2x0.40 = 8.30 = 83000; volume last bracket 12x0.40=4.80=48000; flat last bracket 8.00=80000. Monthly 26667 / 25000 estimated. definite 211000, estimated 51667."
+  },
+  "tiers_monthly_rate_not_pinned": {
+    "status": "partial",
+    "lines": [
+      {
+        "ruleKey": "pick_graduated",
+        "quantity": "1",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_volume",
+        "quantity": "1",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      },
+      {
+        "ruleKey": "pick_flat_bracket",
+        "quantity": "1",
+        "amountE4": 30000,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 90000,
+    "estimatedE4": 0,
+    "unresolved": [
+      {
+        "ruleKey": "pick_monthly_graduated",
+        "reason": "assumption_missing"
+      },
+      {
+        "ruleKey": "pick_monthly_volume",
+        "reason": "assumption_missing"
+      }
+    ],
+    "warnings": [],
+    "_working": "Both derivers agreed. No pinned rates: both monthly_quantity rules unresolved assumption_missing (positions 4,5). Remaining three lines 90000. Monthly-scope rules (storage_cubic, bin_weekly, receipt_fee) are not order-scope. Schedule has no packaging-conditioned rule, so the box raises nothing."
+  },
+  "rounding_transaction_7": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "tiny_unit",
+        "quantity": "7",
+        "amountE4": 900,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 900,
+    "estimatedE4": 0,
+    "unresolved": [],
+    "warnings": [],
+    "_working": "Both derivers agreed. 7x0.0125 = 0.0875 = 875 E4; transaction rounding HALF_UP to cents = 0.09 = 900. No packaging-conditioned rule and no shipping rule, so null package type and null shipping raise nothing."
+  },
+  "rounding_invoice_7": {
+    "status": "ok",
+    "lines": [
+      {
+        "ruleKey": "tiny_unit",
+        "quantity": "7",
+        "amountE4": 875,
+        "chargeClass": "definite"
+      }
+    ],
+    "definiteE4": 875,
+    "estimatedE4": 0,
+    "unresolved": [],
+    "warnings": [],
+    "_working": "Both derivers agreed. 7x0.0125 = 875 E4 exact (invoice_line keeps exact amounts)."
+  },
+  "std_month_full": {
+    "monthlyLines": [
+      {
+        "ruleKey": "storage_pallet",
+        "quantity": "80",
+        "amountE4": 12000000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "storage_long_term",
+        "quantity": "20",
+        "amountE4": 4400000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_pallet",
+        "quantity": "10",
+        "amountE4": 1200000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_case",
+        "quantity": "300",
+        "amountE4": 1050000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "returns",
+        "quantity": "43.7",
+        "amountE4": 1311000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": true
+      },
+      {
+        "ruleKey": "admin",
+        "quantity": "1",
+        "amountE4": 990000,
+        "chargeClass": "definite",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 20951000,
+    "minimums": [
+      {
+        "ruleKey": "minimum",
+        "status": "exact",
+        "minimumE4": 5000000,
+        "countedE4": 57600000,
+        "topUpE4": 0,
+        "members": [
+          {
+            "ruleKey": "pick_order",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pick_additional",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_mailer",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_box",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_other",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_long_term",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_case",
+            "state": "priced"
+          }
+        ],
+        "buckets": [
+          {
+            "month": "average",
+            "minimumE4": 5000000,
+            "countedE4": 57600000,
+            "topUpE4": 0
+          }
+        ]
+      }
+    ],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": "10000.00",
+        "processing": "4595.00",
+        "fixed": "2095.10",
+        "minimumTopUp": "0.00",
+        "total": "16690.10",
+        "annual": "200281.20"
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "4.60",
+        "allocated": "2.10",
+        "allIn": "16.69"
+      }
+    },
+    "_working": "Both derivers agreed. Lines: storage_pallet 100-20 (replace)=80 x15=1200.00; long_term 20x22=440.00; receiving_pallet 10x12=120.00; receiving_case 300x0.35=105.00; returns 1000x4.37/100=43.7 x3=131.10 (estimated, scalesWithVolume); admin 99.00 definite. Total 20951000. Minimum: counted = 25000000+6000000+300000+7650000 (pack_other absent=0) + 12000000+4400000+1200000+1050000 = 57600000 vs 5000000: top-up 0, exact (nothing unmodeled). Allocation: coverage 100.0; per-order shipping 100000000/1000=100000 E4=10.00, processing 45950000/1000=45950 E4=4.595->4.60; monthly shipping 10000.00, processing 4595.00, fixed 2095.10, top-up 0.00; total 166901000 E4=16690.10; annual 200281.20; allocated 2.0951->2.10; all-in 16.6901->16.69."
+  },
+  "std_month_missing_storage": {
+    "monthlyLines": [
+      {
+        "ruleKey": "returns",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": true
+      },
+      {
+        "ruleKey": "admin",
+        "quantity": "1",
+        "amountE4": 990000,
+        "chargeClass": "definite",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [
+      {
+        "ruleKey": "storage_pallet",
+        "reason": "no_answer"
+      },
+      {
+        "ruleKey": "storage_long_term",
+        "reason": "no_answer"
+      },
+      {
+        "ruleKey": "receiving_pallet",
+        "reason": "no_answer"
+      },
+      {
+        "ruleKey": "receiving_case",
+        "reason": "no_answer"
+      }
+    ],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 990000,
+    "minimums": [
+      {
+        "ruleKey": "minimum",
+        "status": "upper_bound",
+        "minimumE4": 5000000,
+        "countedE4": 3850000,
+        "topUpE4": 1150000,
+        "members": [
+          {
+            "ruleKey": "pick_order",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pick_additional",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_mailer",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_box",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_other",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_pallet",
+            "state": "not_modeled"
+          },
+          {
+            "ruleKey": "storage_long_term",
+            "state": "not_modeled"
+          },
+          {
+            "ruleKey": "receiving_pallet",
+            "state": "not_modeled"
+          },
+          {
+            "ruleKey": "receiving_case",
+            "state": "not_modeled"
+          }
+        ],
+        "buckets": [
+          {
+            "month": "average",
+            "minimumE4": 5000000,
+            "countedE4": 3850000,
+            "topUpE4": 1150000
+          }
+        ]
+      }
+    ],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": "10000.00",
+        "processing": "3850.00",
+        "fixed": "99.00",
+        "minimumTopUp": null,
+        "total": "13949.00",
+        "annual": "167388.00"
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "3.85",
+        "allocated": "0.10",
+        "allIn": "13.95"
+      }
+    },
+    "_working": "Both derivers agreed. Null storage/receiving answers: notModeled no_answer (positions 8-11). returns '0' modeled at zero (line qty 0, amount 0). admin 99.00. Total 990000. Minimum: counted 2500000+500000+850000=3850000 vs 5000000: top-up 1150000, status upper_bound (four members not modeled). Allocation: the upper bound is never added, so minimumTopUp null; per-order shipping 10.00, processing 38500 E4=3.85; monthly shipping 10000.00, processing 3850.00, fixed 99.00; total 139490000 E4=13949.00; annual 167388.00; allocated 99.00/1000=0.099->0.10; all-in 13.949->13.95."
+  },
+  "std_month_minimum_below": {
+    "monthlyLines": [
+      {
+        "ruleKey": "storage_pallet",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "storage_long_term",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_pallet",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_case",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "returns",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": true
+      },
+      {
+        "ruleKey": "admin",
+        "quantity": "1",
+        "amountE4": 990000,
+        "chargeClass": "definite",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 990000,
+    "minimums": [
+      {
+        "ruleKey": "minimum",
+        "status": "exact",
+        "minimumE4": 5000000,
+        "countedE4": 3850000,
+        "topUpE4": 1150000,
+        "members": [
+          {
+            "ruleKey": "pick_order",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pick_additional",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_mailer",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_box",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_other",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_long_term",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_case",
+            "state": "priced"
+          }
+        ],
+        "buckets": [
+          {
+            "month": "average",
+            "minimumE4": 5000000,
+            "countedE4": 3850000,
+            "topUpE4": 1150000
+          }
+        ]
+      }
+    ],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": "1000.00",
+        "processing": "435.00",
+        "fixed": "99.00",
+        "minimumTopUp": "115.00",
+        "total": "1649.00",
+        "annual": "19788.00"
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "4.35",
+        "allocated": "2.14",
+        "allIn": "16.49"
+      }
+    },
+    "_working": "Both derivers agreed. Every '0' answer is modeled at zero (lines emitted, estimated; returns 100x0/100=0). admin 99.00. Total 990000. Minimum counted = 2500000+500000+850000 = 3850000 (handling_pct is not in R) vs 5000000: top-up 1150000, exact. Allocation: per-order shipping 10.00, processing 43500 E4=4.35; monthly shipping 1000.00, processing 435.00, fixed 99.00, top-up 115.00; total 16490000 E4=1649.00; annual 19788.00; allocated (99.00+115.00)/100=2.14; all-in 16.49."
+  },
+  "std_two_months_unequal": {
+    "monthlyLines": [
+      {
+        "ruleKey": "storage_pallet",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "storage_long_term",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_pallet",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_case",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "returns",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": true
+      },
+      {
+        "ruleKey": "admin",
+        "quantity": "1",
+        "amountE4": 990000,
+        "chargeClass": "definite",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 990000,
+    "minimums": [
+      {
+        "ruleKey": "minimum",
+        "status": "exact",
+        "minimumE4": 10000000,
+        "countedE4": 20000000,
+        "topUpE4": 0,
+        "members": [
+          {
+            "ruleKey": "pick_order",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pick_additional",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_mailer",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_box",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_other",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_long_term",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_case",
+            "state": "priced"
+          }
+        ],
+        "buckets": [
+          {
+            "month": "2026-03",
+            "minimumE4": 5000000,
+            "countedE4": 6000000,
+            "topUpE4": 0
+          },
+          {
+            "month": "2026-04",
+            "minimumE4": 5000000,
+            "countedE4": 14000000,
+            "topUpE4": 0
+          }
+        ]
+      }
+    ],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": "2500.00",
+        "processing": "1000.00",
+        "fixed": "99.00",
+        "minimumTopUp": "0.00",
+        "total": "3599.00",
+        "annual": "43188.00"
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "4.00",
+        "allocated": "0.40",
+        "allIn": "14.40"
+      }
+    },
+    "_working": "Both derivers agreed. Zero lines + admin 99.00; total 990000. Per-month minimum, no netting: March counted 4000000+1000000+1000000=6000000 vs 5000000 -> top-up 0; April 8500000+3000000+2500000=14000000 -> 0. Sums: minimum 10000000, counted 20000000, top-up 0; exact. Allocation (2 months, V=250): per-order shipping 50000000/500=100000 E4=10.00, processing 20000000/500=40000 E4=4.00; monthly shipping 2500.00, processing 1000.00, fixed 99.00, top-up 0/2=0.00; total 35990000 E4=3599.00; annual 43188.00; allocated 99/250=0.396->0.40; all-in 14.396->14.40."
+  },
+  "std_month_partial_coverage": {
+    "monthlyLines": [
+      {
+        "ruleKey": "storage_pallet",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "storage_long_term",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_pallet",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_case",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "returns",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": true
+      },
+      {
+        "ruleKey": "admin",
+        "quantity": "1",
+        "amountE4": 990000,
+        "chargeClass": "definite",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 990000,
+    "minimums": [
+      {
+        "ruleKey": "minimum",
+        "status": "upper_bound",
+        "minimumE4": 5000000,
+        "countedE4": 3850000,
+        "topUpE4": 1150000,
+        "members": [
+          {
+            "ruleKey": "pick_order",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pick_additional",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_mailer",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_box",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_other",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_long_term",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_case",
+            "state": "priced"
+          }
+        ],
+        "buckets": [
+          {
+            "month": "average",
+            "minimumE4": 5000000,
+            "countedE4": 3850000,
+            "topUpE4": 1150000
+          }
+        ]
+      }
+    ],
+    "allocation": {
+      "coveragePct": "80.0",
+      "extrapolated": true,
+      "monthly": {
+        "shipping": "1000.00",
+        "processing": "385.00",
+        "fixed": "99.00",
+        "minimumTopUp": null,
+        "total": "1484.00",
+        "annual": "17808.00"
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "3.85",
+        "allocated": "0.99",
+        "allIn": "14.84"
+      }
+    },
+    "_working": "Both derivers agreed. Zero lines + admin 99.00; total 990000. Coverage 80/100: order charges scaled x100/80=1.25 and rounded to cents: 2000000->2500000, 400000->500000, 680000->850000; counted 3850000 vs 5000000: top-up 1150000 but status upper_bound (modeledOrders<shippedOrders). Allocation: coverage 80.0 (>=80) so extrapolated true; per-order shipping 8000000/80=100000 E4=10.00, processing 3080000/80=38500 E4=3.85; monthly shipping 1000.00, processing 385.00, fixed 99.00, top-up null (upper bound); total 14840000 E4=1484.00; annual 17808.00; allocated 99/100=0.99; all-in 14.84."
+  },
+  "surcharge_long_term": {
+    "monthlyLines": [
+      {
+        "ruleKey": "storage_pallet",
+        "quantity": "100",
+        "amountE4": 15000000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "storage_long_term",
+        "quantity": "20",
+        "amountE4": 1400000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 16400000,
+    "minimums": [],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": "10000.00",
+        "processing": "0.00",
+        "fixed": "1640.00",
+        "minimumTopUp": "0.00",
+        "total": "11640.00",
+        "annual": "139680.00"
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "0.00",
+        "allocated": "1.64",
+        "allIn": "11.64"
+      }
+    },
+    "_working": "Both derivers agreed. Surcharge leaves storage_pallet at 100 x15=1500.00; long_term 20x7=140.00; total 16400000. No minimum rule so minimums [] (assumed exact with top-up 0, so minimumTopUp '0.00'; the total is unaffected either way). Allocation: per-order shipping 10.00, processing 0.00; monthly shipping 10000.00, processing 0.00, fixed 1640.00; total 116400000 E4=11640.00; annual 139680.00; allocated 16400000/1000 -> 1.64; all-in 11.64."
+  },
+  "tiers_monthly_storage": {
+    "monthlyLines": [
+      {
+        "ruleKey": "storage_cubic",
+        "quantity": "350",
+        "amountE4": 2250000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "bin_weekly",
+        "quantity": "173.92857142857142857",
+        "amountE4": 2174107,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receipt_fee",
+        "quantity": "4",
+        "amountE4": 250000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 4674107,
+    "minimums": [],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": "30000.00",
+        "processing": "0.00",
+        "fixed": "467.41",
+        "minimumTopUp": "0.00",
+        "total": "30467.41",
+        "annual": "365608.93"
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "0.00",
+        "allocated": "0.16",
+        "allIn": "10.16"
+      }
+    },
+    "_working": "Derivers differed only in the quantity string of bin_weekly (see _disagreements); all amounts agreed. storage_cubic graduated on 350: 100x0.75 + 250x0.60 = 225.00 = 2250000. bin_weekly: 40 x 30.4375 / 7 = 173.928571428571428571... (repeating; given to 20 significant digits), x1.25 = 217.4107142857... HALF_UP once to E4 = 2174107. receipt_fee 4x4.00=16.00 < minimumCharge 25.00 with quantity>0, so 250000. Total 4674107. No minimum rule so minimums [] (assumed exact, top-up 0.00). Allocation: per-order shipping 10.00, processing 0.00; monthly shipping 30000.00, fixed 467.41; total exact 304674107 E4 = 30467.4107 -> 30467.41; annual = exact total x12 rounded once = 365608.9284 -> 365608.93 (rounding the cent total first would give 365608.92); allocated 467.4107/3000=0.1558->0.16; all-in 10.1558->10.16."
+  },
+  "min_with_shipping_below": {
+    "monthlyLines": [],
+    "notModeled": [],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 0,
+    "minimums": [
+      {
+        "ruleKey": "minimum_all",
+        "status": "exact",
+        "minimumE4": 10000000,
+        "countedE4": 9000000,
+        "topUpE4": 1000000,
+        "members": [
+          {
+            "ruleKey": "pick_order",
+            "state": "priced"
+          }
+        ],
+        "buckets": [
+          {
+            "month": "average",
+            "minimumE4": 10000000,
+            "countedE4": 9000000,
+            "topUpE4": 1000000
+          }
+        ]
+      }
+    ],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": "700.00",
+        "processing": "200.00",
+        "fixed": "0.00",
+        "minimumTopUp": "100.00",
+        "total": "1000.00",
+        "annual": "12000.00"
+      },
+      "perOrder": {
+        "shipping": "7.00",
+        "processing": "2.00",
+        "allocated": "1.00",
+        "allIn": "10.00"
+      }
+    },
+    "_working": "Both derivers agreed. No monthly lines (schedule has only pick_order + minimum); total 0. Minimum includes shipping: counted = pick_order 2000000 + shippingExpected 7000000 = 9000000 vs 10000000: top-up 1000000, exact. Allocation: per-order shipping 7000000/100=70000 E4=7.00, processing 2000000/100=20000 E4=2.00; monthly shipping 700.00, processing 200.00, fixed 0.00, top-up 100.00; total 10000000 E4=1000.00; annual 12000.00; allocated 100.00/100=1.00; all-in 10.00."
+  },
+  "volume_zero": {
+    "monthlyLines": [
+      {
+        "ruleKey": "storage_pallet",
+        "quantity": "10",
+        "amountE4": 1500000,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "storage_long_term",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_pallet",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "receiving_case",
+        "quantity": "0",
+        "amountE4": 0,
+        "chargeClass": "estimated",
+        "scalesWithVolume": false
+      },
+      {
+        "ruleKey": "admin",
+        "quantity": "1",
+        "amountE4": 990000,
+        "chargeClass": "definite",
+        "scalesWithVolume": false
+      }
+    ],
+    "notModeled": [
+      {
+        "ruleKey": "returns",
+        "reason": "volume_unknown"
+      }
+    ],
+    "unusedAnswers": [],
+    "monthlyTotalE4": 2490000,
+    "minimums": [
+      {
+        "ruleKey": "minimum",
+        "status": "not_computed",
+        "minimumE4": 0,
+        "countedE4": 0,
+        "topUpE4": 0,
+        "members": [
+          {
+            "ruleKey": "pick_order",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pick_additional",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_mailer",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_box",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "pack_other",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "storage_long_term",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_pallet",
+            "state": "priced"
+          },
+          {
+            "ruleKey": "receiving_case",
+            "state": "priced"
+          }
+        ],
+        "buckets": []
+      }
+    ],
+    "allocation": {
+      "coveragePct": "100.0",
+      "extrapolated": false,
+      "monthly": {
+        "shipping": null,
+        "processing": null,
+        "fixed": "249.00",
+        "minimumTopUp": null,
+        "total": null,
+        "annual": null
+      },
+      "perOrder": {
+        "shipping": "10.00",
+        "processing": "3.33",
+        "allocated": null,
+        "allIn": null
+      }
+    },
+    "_working": "Both derivers agreed. monthlyOrders null: returns -> notModeled volume_unknown even though answered '0' (B3). storage_pallet 10-0=10 x15=150.00=1500000; zero lines for long_term/receiving; admin 99.00. Total 2490000 ($249.00). No buckets so minimum not_computed (0/0/0), members all priced (none of R is in notModeled). Allocation: V null so monthly shipping/processing/total/annual null, minimumTopUp null (not_computed), fixed 249.00; coverage 12/12=100.0, extrapolated false; per-order shipping 1200000/12=100000 E4=10.00, processing 400000/12=33333.3 E4=3.33; allocated and all-in null."
+  },
+  "pin_graduated_3000": {
+    "rateE4": 26667,
+    "_working": "Both derivers agreed. graduated(3000)=1000x3.00+2000x2.50=8000; /3000=2.666667 -> 26666.67 E4 -> HALF_UP 26667."
+  },
+  "pin_volume_3000": {
+    "rateE4": 25000,
+    "_working": "Both derivers agreed. 3000>1000 so last bracket 2.50 = 25000."
+  },
+  "pin_graduated_1000": {
+    "rateE4": 30000,
+    "_working": "Both derivers agreed. graduated(1000)=1000x3.00=3000; /1000=3.0000 = 30000."
+  },
+  "pin_volume_1000": {
+    "rateE4": 30000,
+    "_working": "Both derivers agreed. 1000<=1000 so first bracket 3.00 = 30000."
+  }
+}

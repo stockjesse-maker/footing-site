@@ -1,0 +1,114 @@
+{
+  "_comment": "FICTIONAL fee schedules for the fee-engine golden tests. Every amount is invented. Shapes follow src/engine/fees/types.ts (FeeScheduleSnapshot). Packaging types in conditions are normalised (lower case, single spaces).",
+  "standard": {
+    "scheduleId": "sched-standard",
+    "name": "Fictional Standard Fulfillment 2026",
+    "versionId": "sched-standard-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "invoice_line",
+    "rules": [
+      { "key": "pick_order", "name": "Pick & pack, per order", "category": "pick_pack", "scope": "order", "basis": "order", "method": "flat", "amount": "2.5000", "percent": null, "position": 1 },
+      { "key": "pick_additional", "name": "Each additional item", "category": "pick_pack", "scope": "order", "basis": "unit", "method": "flat", "amount": "0.5000", "percent": null, "includedQuantity": "1", "includedPer": "order", "position": 2 },
+      { "key": "pack_mailer", "name": "Poly mailer", "category": "packaging", "scope": "order", "basis": "package", "method": "flat", "amount": "0.3000", "percent": null, "conditions": { "packagingTypes": ["poly mailer"] }, "exclusiveGroup": "packaging", "priority": 1, "position": 3 },
+      { "key": "pack_box", "name": "Box", "category": "packaging", "scope": "order", "basis": "package", "method": "flat", "amount": "0.8500", "percent": null, "conditions": { "packagingTypes": ["box", "carton"] }, "exclusiveGroup": "packaging", "priority": 2, "position": 4 },
+      { "key": "pack_other", "name": "Other packaging", "category": "packaging", "scope": "order", "basis": "package", "method": "flat", "amount": "0.6000", "percent": null, "conditions": { "packagingTypes": ["*"] }, "exclusiveGroup": "packaging", "priority": 9, "position": 5 },
+      { "key": "inserts", "name": "Marketing inserts", "category": "other", "scope": "order", "basis": "order_driver", "method": "flat", "amount": "0.2500", "percent": null, "includedQuantity": "1", "includedPer": "order", "driver": { "key": "inserts", "label": "Orders that get marketing inserts", "unit": "inserts", "kind": "order_share" }, "position": 6 },
+      { "key": "handling_pct", "name": "Shipping handling", "category": "other", "scope": "order", "basis": "shipping_percent", "method": "percent", "amount": null, "percent": "5.0000", "percentBase": "shipping_total", "position": 7 },
+      { "key": "storage_pallet", "name": "Pallet storage", "category": "storage", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "15.0000", "percent": null, "driver": { "key": "pallets_stored", "label": "Pallets of your products stored, on average", "unit": "pallets", "kind": "monthly_quantity" }, "position": 8 },
+      { "key": "storage_long_term", "name": "Long-term pallet storage (over 180 days)", "category": "storage", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "22.0000", "percent": null, "driver": { "key": "long_term_pallets", "label": "Of those, pallets held longer than 180 days", "unit": "pallets", "kind": "monthly_quantity", "longTerm": { "mode": "replace", "replacesRuleKey": "storage_pallet", "thresholdDays": 180 } }, "position": 9 },
+      { "key": "receiving_pallet", "name": "Pallet receiving", "category": "receiving", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "12.0000", "percent": null, "driver": { "key": "pallets_received", "label": "Pallets you send in each month", "unit": "pallets", "kind": "monthly_quantity" }, "position": 10 },
+      { "key": "receiving_case", "name": "Loose carton receiving", "category": "receiving", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "0.3500", "percent": null, "driver": { "key": "cases_received", "label": "Loose cartons (not on pallets) you send in each month", "unit": "cartons", "kind": "monthly_quantity" }, "position": 11 },
+      { "key": "returns", "name": "Returns processing", "category": "returns", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "3.0000", "percent": null, "driver": { "key": "returns_rate", "label": "Out of every 100 orders, how many come back?", "unit": "returns", "kind": "returns_rate" }, "position": 12 },
+      { "key": "admin", "name": "Account administration", "category": "account", "scope": "monthly", "basis": "month", "method": "flat", "amount": "99.0000", "percent": null, "position": 13 },
+      { "key": "minimum", "name": "Monthly account minimum", "category": "account", "scope": "monthly", "basis": "minimum", "method": "minimum", "amount": "500.0000", "percent": null, "minimum": { "amount": "500.0000", "appliesTo": { "categories": ["pick_pack", "packaging", "storage", "receiving"], "includeRuleKeys": [], "excludeRuleKeys": [] }, "includesShipping": false }, "resolvedRuleKeys": ["pick_order", "pick_additional", "pack_mailer", "pack_box", "pack_other", "storage_pallet", "storage_long_term", "receiving_pallet", "receiving_case"], "position": 14 }
+    ]
+  },
+  "lines": {
+    "scheduleId": "sched-lines",
+    "name": "Fictional Per-Line Picking",
+    "versionId": "sched-lines-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "invoice_line",
+    "rules": [
+      { "key": "line_pick", "name": "First unit of each line", "category": "pick_pack", "scope": "order", "basis": "line", "method": "flat", "amount": "1.0000", "percent": null, "position": 1 },
+      { "key": "line_additional", "name": "Additional units within a line", "category": "pick_pack", "scope": "order", "basis": "unit", "method": "flat", "amount": "0.4000", "percent": null, "includedQuantity": "1", "includedPer": "line", "position": 2 },
+      { "key": "sku_fee", "name": "Per product (SKU) handling", "category": "pick_pack", "scope": "order", "basis": "sku", "method": "flat", "amount": "0.2000", "percent": null, "position": 3 },
+      { "key": "multi_box", "name": "Each additional box", "category": "packaging", "scope": "order", "basis": "package", "method": "flat", "amount": "0.3000", "percent": null, "includedQuantity": "1", "includedPer": "order", "position": 4 },
+      { "key": "big_order", "name": "Large-order handling (4 to 10 items)", "category": "pick_pack", "scope": "order", "basis": "order", "method": "flat", "amount": "1.5000", "percent": null, "conditions": { "minUnits": 4, "maxUnits": 10 }, "position": 5 },
+      { "key": "shipment_fee", "name": "Per shipment", "category": "pick_pack", "scope": "order", "basis": "shipment", "method": "flat", "amount": "0.7500", "percent": null, "position": 6 }
+    ]
+  },
+  "tiers": {
+    "scheduleId": "sched-tiers",
+    "name": "Fictional Tiered Picking",
+    "versionId": "sched-tiers-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "invoice_line",
+    "rules": [
+      { "key": "pick_graduated", "name": "Pick fee (graduated)", "category": "pick_pack", "scope": "order", "basis": "unit", "method": "tiered", "amount": null, "percent": null, "tiers": { "on": "order_quantity", "mode": "graduated", "pricing": "rate", "brackets": [{ "upTo": "1", "amount": "3.0000" }, { "upTo": "10", "amount": "0.5000" }, { "upTo": null, "amount": "0.4000" }] }, "position": 1 },
+      { "key": "pick_volume", "name": "Pick fee (volume)", "category": "pick_pack", "scope": "order", "basis": "unit", "method": "tiered", "amount": null, "percent": null, "tiers": { "on": "order_quantity", "mode": "volume", "pricing": "rate", "brackets": [{ "upTo": "1", "amount": "3.0000" }, { "upTo": "10", "amount": "0.5000" }, { "upTo": null, "amount": "0.4000" }] }, "position": 2 },
+      { "key": "pick_flat_bracket", "name": "Pick fee (flat per size)", "category": "pick_pack", "scope": "order", "basis": "unit", "method": "tiered", "amount": null, "percent": null, "tiers": { "on": "order_quantity", "mode": "volume", "pricing": "flat", "brackets": [{ "upTo": "3", "amount": "3.0000" }, { "upTo": "10", "amount": "5.0000" }, { "upTo": null, "amount": "8.0000" }] }, "position": 3 },
+      { "key": "pick_monthly_graduated", "name": "Pick fee by monthly volume (graduated)", "category": "pick_pack", "scope": "order", "basis": "order", "method": "tiered", "amount": null, "percent": null, "tiers": { "on": "monthly_quantity", "mode": "graduated", "pricing": "rate", "brackets": [{ "upTo": "1000", "amount": "3.0000" }, { "upTo": null, "amount": "2.5000" }] }, "position": 4 },
+      { "key": "pick_monthly_volume", "name": "Pick fee by monthly volume (volume)", "category": "pick_pack", "scope": "order", "basis": "order", "method": "tiered", "amount": null, "percent": null, "tiers": { "on": "monthly_quantity", "mode": "volume", "pricing": "rate", "brackets": [{ "upTo": "1000", "amount": "3.0000" }, { "upTo": null, "amount": "2.5000" }] }, "position": 5 },
+      { "key": "storage_cubic", "name": "Cubic-foot storage", "category": "storage", "scope": "monthly", "basis": "driver", "method": "tiered", "amount": null, "percent": null, "tiers": { "on": "monthly_quantity", "mode": "graduated", "pricing": "rate", "brackets": [{ "upTo": "100", "amount": "0.7500" }, { "upTo": "500", "amount": "0.6000" }, { "upTo": null, "amount": "0.5000" }] }, "driver": { "key": "cubic_feet_stored", "label": "Cubic feet of storage used, on average", "unit": "cubic feet", "kind": "monthly_quantity" }, "position": 6 },
+      { "key": "bin_weekly", "name": "Bin storage (per bin per week)", "category": "storage", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "1.2500", "percent": null, "driver": { "key": "bins_stored", "label": "Bins of your products stored, on average", "unit": "bins", "kind": "monthly_quantity", "billingPeriod": "week" }, "position": 7 },
+      { "key": "receipt_fee", "name": "Per receipt, minimum $25", "category": "receiving", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "4.0000", "percent": null, "minimumCharge": "25.0000", "driver": { "key": "receipts", "label": "Separate deliveries you send in each month", "unit": "receipts", "kind": "monthly_quantity" }, "position": 8 }
+    ]
+  },
+  "storage_surcharge": {
+    "scheduleId": "sched-storage-surcharge",
+    "name": "Fictional Storage with Long-term Surcharge",
+    "versionId": "sched-storage-surcharge-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "invoice_line",
+    "rules": [
+      { "key": "storage_pallet", "name": "Pallet storage", "category": "storage", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "15.0000", "percent": null, "driver": { "key": "pallets_stored", "label": "Pallets stored, on average", "unit": "pallets", "kind": "monthly_quantity" }, "position": 1 },
+      { "key": "storage_long_term", "name": "Long-term surcharge (over 180 days)", "category": "storage", "scope": "monthly", "basis": "driver", "method": "flat", "amount": "7.0000", "percent": null, "driver": { "key": "long_term_pallets", "label": "Of those, pallets held longer than 180 days", "unit": "pallets", "kind": "monthly_quantity", "longTerm": { "mode": "surcharge", "replacesRuleKey": "storage_pallet", "thresholdDays": 180 } }, "position": 2 }
+    ]
+  },
+  "rounding_transaction": {
+    "scheduleId": "sched-rounding",
+    "name": "Fictional Transaction Rounding",
+    "versionId": "sched-rounding-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "transaction",
+    "rules": [
+      { "key": "tiny_unit", "name": "Per-unit label scan", "category": "labeling", "scope": "order", "basis": "unit", "method": "flat", "amount": "0.0125", "percent": null, "position": 1 }
+    ]
+  },
+  "rounding_invoice": {
+    "scheduleId": "sched-rounding-inv",
+    "name": "Fictional Invoice-line Rounding",
+    "versionId": "sched-rounding-inv-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "invoice_line",
+    "rules": [
+      { "key": "tiny_unit", "name": "Per-unit label scan", "category": "labeling", "scope": "order", "basis": "unit", "method": "flat", "amount": "0.0125", "percent": null, "position": 1 }
+    ]
+  },
+  "minimum_with_shipping": {
+    "scheduleId": "sched-min-ship",
+    "name": "Fictional Minimum Including Shipping",
+    "versionId": "sched-min-ship-v1",
+    "versionNumber": 1,
+    "effectiveDate": "2026-01-01",
+    "expirationDate": null,
+    "rounding": "invoice_line",
+    "rules": [
+      { "key": "pick_order", "name": "Pick & pack, per order", "category": "pick_pack", "scope": "order", "basis": "order", "method": "flat", "amount": "2.0000", "percent": null, "position": 1 },
+      { "key": "minimum_all", "name": "Monthly minimum (fees and shipping)", "category": "account", "scope": "monthly", "basis": "minimum", "method": "minimum", "amount": "1000.0000", "percent": null, "minimum": { "amount": "1000.0000", "appliesTo": { "categories": ["pick_pack"], "includeRuleKeys": [], "excludeRuleKeys": [] }, "includesShipping": true }, "resolvedRuleKeys": ["pick_order"], "position": 2 }
+    ]
+  }
+}

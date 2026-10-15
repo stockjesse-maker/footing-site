@@ -1,0 +1,120 @@
+{
+  "_comment": "FICTIONAL golden scenarios for the fee engine. `order` scenarios call calculateOrderFees(input, schedules[schedule], context); `monthly` scenarios call calculateMonthlyFees(answers, schedule, monthlyOrders) then evaluateMinimums(buckets, schedule, monthlyLines) and allocate(...). Amounts in expected.json are decimal strings in dollars (4 dp for E4 values, 2 dp where rounded). Expected results must be derived by hand from m4-design-v2.md §1, §2 and §4, never from the code.",
+  "defaultContext": { "orderShares": {}, "pinnedRates": {}, "packagingDefault": null },
+  "order": [
+    { "id": "std_one_unit_box", "description": "Standard schedule, 1 unit, 1 line, 1 SKU, one box, shipping $10.00 definite", "schedule": "standard", "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 1 } },
+    { "id": "std_two_units_mailer", "description": "Standard schedule, 2 units in a poly mailer; the second unit is an additional pick", "schedule": "standard", "input": { "units": 2, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "Poly  Mailer" }], "shipments": 1, "shipping": { "totalE4": 84900, "baseFreightE4": 80000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 2 } },
+    { "id": "std_seven_units_two_boxes", "description": "Standard schedule, 7 units over 3 lines and 2 boxes (a two-package shipment); shipping estimated", "schedule": "standard", "input": { "units": 7, "lines": 3, "distinctSkus": 3, "packages": [{ "packagingType": "box" }, { "packagingType": "carton" }], "shipments": 1, "shipping": { "totalE4": 221000, "baseFreightE4": 200000, "estimated": true, "hasExposure": false }, "assumed": {}, "ordinal": 3 } },
+    { "id": "std_unmatched_packaging", "description": "Standard schedule, package type 'wooden crate' matches no packaging rule: the catch-all applies", "schedule": "standard", "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "Wooden crate" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 4 } },
+    { "id": "std_no_packaging_type_no_default", "description": "Standard schedule, package with no type and no default: packaging cannot be computed, the rest can", "schedule": "standard", "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": null }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 5 } },
+    { "id": "std_no_packaging_type_with_default", "description": "Standard schedule, package with no type, default 'box' assumed: packaging is an estimate", "schedule": "standard", "context": { "packagingDefault": "box" }, "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": null }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 6 } },
+    { "id": "std_units_unknown", "description": "Standard schedule, file without quantities: per-unit rules cannot be computed, per-order rules can", "schedule": "standard", "input": { "units": null, "lines": null, "distinctSkus": null, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 7 } },
+    { "id": "std_units_assumed", "description": "Standard schedule, units assumed 3 (from an order-content assumption): additional picks are an estimate", "schedule": "standard", "input": { "units": 3, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": { "units": true, "lines": true }, "ordinal": 8 } },
+    { "id": "std_shipping_unknown", "description": "Standard schedule, the order's shipping could not be priced: the handling percentage cannot be computed", "schedule": "standard", "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": null, "assumed": {}, "ordinal": 9 } },
+    { "id": "std_shipping_with_exposure", "description": "Standard schedule, shipping carries conditional exposure the percentage base excludes", "schedule": "standard", "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": true }, "assumed": {}, "ordinal": 10 } },
+    { "id": "std_inserts_not_answered", "description": "Standard schedule, the inserts question was not answered: inserts cannot be computed", "schedule": "standard", "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 11 } },
+    { "id": "std_inserts_ordinal_2_of_40pct", "description": "Standard schedule, inserts on 40% of orders with 3 inserts each; ordinal 2 does not qualify (floor(2*0.4)=0 = floor(1*0.4))", "schedule": "standard", "context": { "orderShares": { "inserts": { "sharePct": "40.00", "countPerOrder": 3 } } }, "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 2 } },
+    { "id": "std_inserts_ordinal_3_of_40pct", "description": "Standard schedule, inserts on 40% of orders with 3 inserts each; ordinal 3 qualifies (floor(3*0.4)=1 > floor(2*0.4)=0): 3 inserts, first free", "schedule": "standard", "context": { "orderShares": { "inserts": { "sharePct": "40.00", "countPerOrder": 3 } } }, "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 3 } },
+    { "id": "lines_two_lines_3_plus_1", "description": "Per-line schedule, 2 lines with 3 and 1 units (4 units, 2 SKUs), one box", "schedule": "lines", "input": { "units": 4, "lines": 2, "distinctSkus": 2, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 1 } },
+    { "id": "lines_three_boxes_two_shipments", "description": "Per-line schedule, 12 units over 3 lines and 3 SKUs, 3 boxes in 2 shipments: large-order handling does not apply above 10 units", "schedule": "lines", "input": { "units": 12, "lines": 3, "distinctSkus": 3, "packages": [{ "packagingType": "box" }, { "packagingType": "box" }, { "packagingType": "box" }], "shipments": 2, "shipping": { "totalE4": 300000, "baseFreightE4": 280000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 2 } },
+    { "id": "lines_five_units_null_skus", "description": "Per-line schedule, 5 units over 2 lines, SKUs unknown (null): SKU fee cannot be computed; large-order handling applies at 5 units", "schedule": "lines", "input": { "units": 5, "lines": 2, "distinctSkus": null, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 3 } },
+    { "id": "tiers_q1", "description": "Tiered schedule, 1 unit (the pinned monthly rates are for V = 3,000 orders)", "schedule": "tiers", "context": { "pinnedRates": { "pick_monthly_graduated": { "rateE4": 26667, "monthlyQuantity": "3000" }, "pick_monthly_volume": { "rateE4": 25000, "monthlyQuantity": "3000" } } }, "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 1 } },
+    { "id": "tiers_q7", "description": "Tiered schedule, 7 units", "schedule": "tiers", "context": { "pinnedRates": { "pick_monthly_graduated": { "rateE4": 26667, "monthlyQuantity": "3000" }, "pick_monthly_volume": { "rateE4": 25000, "monthlyQuantity": "3000" } } }, "input": { "units": 7, "lines": 2, "distinctSkus": 2, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 2 } },
+    { "id": "tiers_q12", "description": "Tiered schedule, 12 units", "schedule": "tiers", "context": { "pinnedRates": { "pick_monthly_graduated": { "rateE4": 26667, "monthlyQuantity": "3000" }, "pick_monthly_volume": { "rateE4": 25000, "monthlyQuantity": "3000" } } }, "input": { "units": 12, "lines": 4, "distinctSkus": 4, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 3 } },
+    { "id": "tiers_monthly_rate_not_pinned", "description": "Tiered schedule without pinned monthly rates (volume unknown): the monthly-volume rules cannot be computed", "schedule": "tiers", "input": { "units": 1, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": "box" }], "shipments": 1, "shipping": { "totalE4": 100000, "baseFreightE4": 90000, "estimated": false, "hasExposure": false }, "assumed": {}, "ordinal": 4 } },
+    { "id": "rounding_transaction_7", "description": "Transaction rounding, 7 units at $0.0125: the line is rounded to cents", "schedule": "rounding_transaction", "input": { "units": 7, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": null }], "shipments": 1, "shipping": null, "assumed": {}, "ordinal": 1 } },
+    { "id": "rounding_invoice_7", "description": "Invoice-line rounding, 7 units at $0.0125: the line stays exact", "schedule": "rounding_invoice", "input": { "units": 7, "lines": 1, "distinctSkus": 1, "packages": [{ "packagingType": null }], "shipments": 1, "shipping": null, "assumed": {}, "ordinal": 1 } }
+  ],
+  "monthly": [
+    {
+      "id": "std_month_full",
+      "description": "Standard schedule, every question answered: 100 pallets stored of which 20 long-term (replace), 10 pallets and 300 cartons received, returns 4.37% of 1,000 orders a month; order-variable charges over one average month are given per rule",
+      "schedule": "standard",
+      "monthlyOrders": "1000",
+      "answers": { "drivers": { "pallets_stored": "100", "long_term_pallets": "20", "pallets_received": "10", "cases_received": "300", "returns_rate": "4.37" }, "orderShares": { "inserts": { "sharePct": "40.00", "countPerOrder": 3 } } },
+      "buckets": [{ "month": "average", "fraction": "1", "orderVariableByRuleE4": { "pick_order": 25000000, "pick_additional": 6000000, "pack_box": 7650000, "pack_mailer": 300000, "handling_pct": 5000000, "inserts": 2000000 }, "modeledOrders": 1000, "shippedOrders": 1000, "shippingExpectedE4": 100000000 }],
+      "allocation": { "months": "1.000000", "modeledOrders": 1000, "shippingExpectedE4": 100000000, "processingE4": 45950000, "populationOrders": 1000 }
+    },
+    {
+      "id": "std_month_missing_storage",
+      "description": "Standard schedule, storage and receiving left blank (not sure): those fees are not modeled and the minimum can only be an upper bound",
+      "schedule": "standard",
+      "monthlyOrders": "1000",
+      "answers": { "drivers": { "pallets_stored": null, "long_term_pallets": null, "pallets_received": null, "cases_received": null, "returns_rate": "0" }, "orderShares": { "inserts": null } },
+      "buckets": [{ "month": "average", "fraction": "1", "orderVariableByRuleE4": { "pick_order": 2500000, "pick_additional": 500000, "pack_box": 850000 }, "modeledOrders": 100, "shippedOrders": 100, "shippingExpectedE4": 10000000 }],
+      "allocation": { "months": "1.000000", "modeledOrders": 100, "shippingExpectedE4": 10000000, "processingE4": 3850000, "populationOrders": 100 }
+    },
+    {
+      "id": "std_month_minimum_below",
+      "description": "Standard schedule, everything answered with 'we don't use this' (0) for storage, receiving and returns; order charges below the $500 minimum: exact top-up",
+      "schedule": "standard",
+      "monthlyOrders": "100",
+      "answers": { "drivers": { "pallets_stored": "0", "long_term_pallets": "0", "pallets_received": "0", "cases_received": "0", "returns_rate": "0" }, "orderShares": { "inserts": { "sharePct": "0", "countPerOrder": 1 } } },
+      "buckets": [{ "month": "average", "fraction": "1", "orderVariableByRuleE4": { "pick_order": 2500000, "pick_additional": 500000, "pack_box": 850000, "handling_pct": 500000 }, "modeledOrders": 100, "shippedOrders": 100, "shippingExpectedE4": 10000000 }],
+      "allocation": { "months": "1.000000", "modeledOrders": 100, "shippingExpectedE4": 10000000, "processingE4": 4350000, "populationOrders": 100 }
+    },
+    {
+      "id": "std_two_months_unequal",
+      "description": "Standard schedule, two full calendar months with order charges of $600 and $1,400 against the $500 minimum (storage etc. answered 0): per-month evaluation",
+      "schedule": "standard",
+      "monthlyOrders": "250",
+      "answers": { "drivers": { "pallets_stored": "0", "long_term_pallets": "0", "pallets_received": "0", "cases_received": "0", "returns_rate": "0" }, "orderShares": { "inserts": { "sharePct": "0", "countPerOrder": 1 } } },
+      "buckets": [
+        { "month": "2026-03", "fraction": "1", "orderVariableByRuleE4": { "pick_order": 4000000, "pick_additional": 1000000, "pack_box": 1000000 }, "modeledOrders": 160, "shippedOrders": 160, "shippingExpectedE4": 16000000 },
+        { "month": "2026-04", "fraction": "1", "orderVariableByRuleE4": { "pick_order": 8500000, "pick_additional": 3000000, "pack_box": 2500000 }, "modeledOrders": 340, "shippedOrders": 340, "shippingExpectedE4": 34000000 }
+      ],
+      "allocation": { "months": "2.000000", "modeledOrders": 500, "shippingExpectedE4": 50000000, "processingE4": 20000000, "populationOrders": 500 }
+    },
+    {
+      "id": "std_month_partial_coverage",
+      "description": "Standard schedule, 80 of 100 shipped orders modeled: monthly order-variable figures extrapolate the average; the minimum is an upper bound",
+      "schedule": "standard",
+      "monthlyOrders": "100",
+      "answers": { "drivers": { "pallets_stored": "0", "long_term_pallets": "0", "pallets_received": "0", "cases_received": "0", "returns_rate": "0" }, "orderShares": { "inserts": { "sharePct": "0", "countPerOrder": 1 } } },
+      "buckets": [{ "month": "average", "fraction": "1", "orderVariableByRuleE4": { "pick_order": 2000000, "pick_additional": 400000, "pack_box": 680000 }, "modeledOrders": 80, "shippedOrders": 100, "shippingExpectedE4": 8000000 }],
+      "allocation": { "months": "1.000000", "modeledOrders": 80, "shippingExpectedE4": 8000000, "processingE4": 3080000, "populationOrders": 100 }
+    },
+    {
+      "id": "surcharge_long_term",
+      "description": "Storage with a long-term SURCHARGE: 100 pallets stored, 20 long-term",
+      "schedule": "storage_surcharge",
+      "monthlyOrders": "1000",
+      "answers": { "drivers": { "pallets_stored": "100", "long_term_pallets": "20" }, "orderShares": {} },
+      "buckets": [{ "month": "average", "fraction": "1", "orderVariableByRuleE4": {}, "modeledOrders": 1000, "shippedOrders": 1000, "shippingExpectedE4": 100000000 }],
+      "allocation": { "months": "1.000000", "modeledOrders": 1000, "shippingExpectedE4": 100000000, "processingE4": 0, "populationOrders": 1000 }
+    },
+    {
+      "id": "tiers_monthly_storage",
+      "description": "Tiered schedule: 350 cubic feet (graduated), 40 bins at $1.25 per bin per WEEK, 4 receipts at $4 with a $25 minimum per month",
+      "schedule": "tiers",
+      "monthlyOrders": "3000",
+      "answers": { "drivers": { "cubic_feet_stored": "350", "bins_stored": "40", "receipts": "4" }, "orderShares": {} },
+      "buckets": [{ "month": "average", "fraction": "1", "orderVariableByRuleE4": {}, "modeledOrders": 3000, "shippedOrders": 3000, "shippingExpectedE4": 300000000 }],
+      "allocation": { "months": "1.000000", "modeledOrders": 3000, "shippingExpectedE4": 300000000, "processingE4": 0, "populationOrders": 3000 }
+    },
+    {
+      "id": "min_with_shipping_below",
+      "description": "Minimum that includes shipping: 100 orders at $2 pick = $200 plus $700 expected shipping = $900 against $1,000",
+      "schedule": "minimum_with_shipping",
+      "monthlyOrders": "100",
+      "answers": { "drivers": {}, "orderShares": {} },
+      "buckets": [{ "month": "average", "fraction": "1", "orderVariableByRuleE4": { "pick_order": 2000000 }, "modeledOrders": 100, "shippedOrders": 100, "shippingExpectedE4": 7000000 }],
+      "allocation": { "months": "1.000000", "modeledOrders": 100, "shippingExpectedE4": 7000000, "processingE4": 2000000, "populationOrders": 100 }
+    },
+    {
+      "id": "volume_zero",
+      "description": "Standard schedule with no monthly volume (short undated file, nothing stated): fixed charges are still listed, per-order figures are null",
+      "schedule": "standard",
+      "monthlyOrders": null,
+      "answers": { "drivers": { "pallets_stored": "10", "long_term_pallets": "0", "pallets_received": "0", "cases_received": "0", "returns_rate": "0" }, "orderShares": { "inserts": null } },
+      "buckets": [],
+      "allocation": { "months": "1.000000", "modeledOrders": 12, "shippingExpectedE4": 1200000, "processingE4": 400000, "populationOrders": 12 }
+    }
+  ],
+  "pins": [
+    { "id": "pin_graduated_3000", "description": "Monthly-volume graduated tiers [1000 @ 3.00, rest @ 2.50] at 3,000 orders a month: effective rate per order", "schedule": "tiers", "ruleKey": "pick_monthly_graduated", "monthlyQuantity": "3000" },
+    { "id": "pin_volume_3000", "description": "Monthly-volume volume tiers at 3,000", "schedule": "tiers", "ruleKey": "pick_monthly_volume", "monthlyQuantity": "3000" },
+    { "id": "pin_graduated_1000", "description": "Exactly on the boundary: 1,000 orders", "schedule": "tiers", "ruleKey": "pick_monthly_graduated", "monthlyQuantity": "1000" },
+    { "id": "pin_volume_1000", "description": "Exactly on the boundary, volume mode", "schedule": "tiers", "ruleKey": "pick_monthly_volume", "monthlyQuantity": "1000" }
+  ]
+}

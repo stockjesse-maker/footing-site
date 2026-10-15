@@ -1,3 +1,4 @@
+import type { AllocationResult, E4, FeeBasis, FeeCategory, FeeScheduleSnapshot, FeeScope, FeeUnresolvedReason, FulfillmentAnswers, MinimumResult, MinimumStatus, MonthlyFeeResult } from "../fees/types";
 import type { DecimalString, SurchargeCategory, UnavailableReason } from "../types";
 
 /**
@@ -102,12 +103,93 @@ export interface FoldShipment {
   packagesWithoutDimensions: number;
 }
 
+// ---------------------------------------------------------------------------
+// Fees (Milestone 4): one fee result per order, folded next to the shipping figures
+// ---------------------------------------------------------------------------
+
+/**
+ * ok/partial/no_content: the fee engine ran (see OrderFeeResult.status); no_schedule: the brand has no
+ * fee schedule; not_effective: none in effect on the fee date; date_missing: no fee date could be
+ * determined (ship-date basis, undated order); skipped: the run modeled shipping only.
+ */
+export type FeeStatus = "ok" | "partial" | "no_content" | "no_schedule" | "not_effective" | "date_missing" | "skipped";
+
+/** What a fee dictionary index stands for: one entry per rule id the run priced with (brand-safe: no sources or notes). */
+export interface FeeDictionaryEntry {
+  ruleId: string;
+  key: string;
+  name: string;
+  category: FeeCategory;
+  basis: FeeBasis;
+  scope: FeeScope;
+}
+
+/** `[feeDictionaryIndex, amountE4, class]` with class d = definite, e = estimated. */
+export type CompactFeeLine = [number, E4, "d" | "e"];
+
+export interface FoldOrderFees {
+  status: FeeStatus;
+  lines: CompactFeeLine[];
+  unresolved: { ruleKey: string; reason: FeeUnresolvedReason; replacedBy?: string }[];
+  /** Order-level warning codes from the fee engine (fee_base_excludes_exposure, packaging_defaulted). */
+  warnings: string[];
+  definiteE4: E4;
+  estimatedE4: E4;
+  /** Which content quantities were assumed rather than read from the file. */
+  assumed: { units?: boolean; lines?: boolean; skus?: boolean; packaging?: boolean };
+}
+
 /** A whole order; a batch never splits an order across folds. */
 export interface FoldOrder {
   orderKey: string;
   orderDate: string | null;
+  /** "YYYY-MM" of the order date, else of the first ship date; null when the order has neither (mirrors simulation_order_results.order_month). */
+  orderMonth: string | null;
   cancelled: boolean;
   shipments: FoldShipment[];
+  /** The order's fee result (always present in a v2 run; status says whether fees were modeled). */
+  fees: FoldOrderFees;
+}
+
+export interface FeeRulePartial {
+  ruleIds: string[];
+  name: string;
+  category: FeeCategory;
+  basis: FeeBasis;
+  scope: FeeScope;
+  definiteE4: E4;
+  estimatedE4: E4;
+  /** Processing orders with at least one line of this rule, and lines in total. */
+  orders: number;
+  lines: number;
+  /** Processing orders where this rule could not be computed, by reason (never "replaced"). */
+  unresolvedOrders: number;
+  unresolvedBy: Record<string, number>;
+  /** Processing orders where this rule was replaced by another rule of its exclusive group. */
+  replacedOrders: number;
+}
+
+export interface FeeMonthPartial {
+  /** Processing orders (shipping-modeled and fee status ok or partial) dated in the month. */
+  orders: number;
+  /** Order-variable fee amounts of those orders per rule key, E4. */
+  byRuleE4: Record<string, E4>;
+  /** Expected shipping of those orders, E4 (cents × 100). */
+  shippingExpectedE4: E4;
+  /** Rule keys unresolved on at least one of those orders (reasons other than "replaced"). */
+  unresolvedRuleKeys: string[];
+}
+
+/** Fee figures accumulated batch by batch. "Processing orders" = shipping-modeled orders whose fee status is ok or partial. */
+export interface FeePartial {
+  /** Fee status counts over shipping-modeled orders only (unmodeled orders are not counted here). */
+  statusCounts: Partial<Record<FeeStatus, number>>;
+  processing: { orders: number; definiteE4: E4; estimatedE4: E4 };
+  byRule: Record<string, FeeRulePartial>;
+  /** Keyed by "YYYY-MM" or "unknown" (undated orders). */
+  byMonth: Record<string, FeeMonthPartial>;
+  warnings: Record<string, number>;
+  assumed: { units: number; lines: number; skus: number; packaging: number };
 }
 
 export interface MoneyBucket {
@@ -145,10 +227,13 @@ export interface SurchargeBucket {
 export const WEIGHT_BRACKET_EDGES: readonly DecimalString[] = ["1", "2", "3", "5", "10", "20", "50", "70", "150"] as const;
 export type WeightBracketLabel = "≤1 lb" | "≤2 lb" | "≤3 lb" | "≤5 lb" | "≤10 lb" | "≤20 lb" | "≤50 lb" | "≤70 lb" | "≤150 lb" | ">150 lb";
 
-/** Running state persisted after every batch (jsonb). Version it so a later engine can refuse to resume an older shape. */
+/** Running state persisted after every batch (jsonb). Version it so a later engine can refuse to resume an older shape (the database refuses a v1 partial on a v2 run). */
 export interface PartialSummary {
-  version: 1;
+  version: 2;
   dictionary: LineDictionaryEntry[];
+  /** Fee dictionary of the run (shared, appended by the batch core like `dictionary`). */
+  feeDictionary: FeeDictionaryEntry[];
+  fees: FeePartial;
   orders: { seen: number; modeled: number; cancelled: number };
   shipments: { seen: number; ok: number; unavailable: number; excludedBeforePricing: number; modeled: number };
   packages: { seen: number; modeled: number };
@@ -185,8 +270,61 @@ export interface DatasetCounts {
   packages: number;
 }
 
+/** The forecast period and volume the run was started with (computed in SQL by start_simulation_run; never recomputed here). */
+export interface RunPeriod {
+  from: string | null;
+  to: string | null;
+  days: number | null;
+  /** Calendar months covered, 6 dp, e.g. "2.838710"; null when no order is dated. */
+  months: DecimalString | null;
+  population: number;
+  inPeriod: number;
+  trimmed: number;
+  undated: number;
+  volumeBasis: "file" | "stated" | "none";
+  monthlyOrders: DecimalString | null;
+  monthlyUnits: DecimalString | null;
+  /** One entry per calendar month touched by the period: covered fraction and orders the customer shipped in it. */
+  monthProfile: { month: string; fraction: DecimalString; orders: number }[];
+}
+
+/** What `finalizeSummary` needs beyond the partial to produce the fee sections (read from the run row and the pinned version). */
+export interface FinalizeFeeInput {
+  mode: "modeled" | "skipped" | "no_schedule";
+  feeEngineVersion: string;
+  /** The version pinned for monthly components (null when none is in effect). */
+  monthlySchedule: FeeScheduleSnapshot | null;
+  answers: FulfillmentAnswers;
+  period: RunPeriod;
+  /** Fee schedule provenance for the customer: name and the version(s) orders were priced with. */
+  provenance: { scheduleName: string; versions: { versionId: string; effectiveDate: string }[] } | null;
+}
+
+export type CompletenessState = "priced" | "not_modeled" | "not_in_schedule";
+
+export interface CategoryCompleteness {
+  category: FeeCategory;
+  state: CompletenessState;
+  /** Processing orders on which at least one rule of this category could not be computed. */
+  notModeledOrders: number;
+  rules: { key: string; name: string; scope: FeeScope; state: CompletenessState; reason: string | null; describe: string }[];
+}
+
+export interface FeeSummary {
+  mode: FinalizeFeeInput["mode"];
+  statusCounts: Partial<Record<FeeStatus, number>>;
+  /** Over processing orders. definite/estimated carry four decimals (exact E4 → dollars); perOrder is HALF_UP to cents, null when there are none. */
+  processing: { orders: number; definiteE4: E4; estimatedE4: E4; definite: DecimalString; estimated: DecimalString; expected: DecimalString; perOrder: DecimalString | null };
+  byRule: Array<FeeRulePartial & { key: string; definite: DecimalString; estimated: DecimalString }>;
+  completeness: CategoryCompleteness[];
+  warnings: { code: string; orders: number }[];
+  assumed: FeePartial["assumed"];
+}
+
 export interface BulkSummary {
+  version: 2;
   engineVersion: string;
+  feeEngineVersion: string;
   imported: DatasetCounts;
   modeled: { orders: number; shipments: number; packages: number };
   /** Percentages with one decimal, as decimal strings ("95.2"). */
@@ -214,4 +352,16 @@ export interface BulkSummary {
   loadIssues: string[];
   assumptions: PartialSummary["assumptions"];
   dictionary: LineDictionaryEntry[];
+  // --- Milestone 4: fees, monthly charges, minimums, period and allocation ---
+  feeDictionary: FeeDictionaryEntry[];
+  fees: FeeSummary;
+  /** Monthly charges from the customer's answers (null when fees were not modeled or no version is in effect). */
+  monthly: MonthlyFeeResult | null;
+  /** Account minimums of the monthly version; `minimumStatus` folds them into one word ("none" when the version has no minimum). */
+  minimums: MinimumResult[];
+  minimumStatus: MinimumStatus | "none";
+  period: RunPeriod;
+  /** Monthly and per-order figures over processing orders; null when fees were not modeled. */
+  allocation: AllocationResult | null;
+  provenance: FinalizeFeeInput["provenance"];
 }
