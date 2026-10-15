@@ -23,13 +23,14 @@ const ids = (rows: { id: string }[]) => rows.map((r) => r.id).sort();
 const E4 = (dollars: number) => Math.round(dollars * 10000);
 const json = (v: unknown) => (v === undefined || v === null ? null : JSON.stringify(v));
 
-/** Asserts a statement is rejected by Postgres with the given SQLSTATE (and a message matching `pattern`). */
-async function expectCode(promise: Promise<unknown>, code: string, pattern: RegExp = /./): Promise<void> {
+/** Asserts a statement is rejected by Postgres with the given SQLSTATE (one of them, when several are acceptable) and a message matching `pattern`. */
+async function expectCode(promise: Promise<unknown>, code: string | string[], pattern: RegExp = /./): Promise<void> {
+  const codes = Array.isArray(code) ? code : [code];
   try {
     await promise;
   } catch (err) {
     const e = err as { code?: string; message?: string };
-    if (e.code !== code || !pattern.test(e.message ?? "")) throw new Error(`Rejected, but with ${e.code ?? "no code"}: ${e.message}`);
+    if (!codes.includes(e.code ?? "") || !pattern.test(e.message ?? "")) throw new Error(`Rejected, but with ${e.code ?? "no code"}: ${e.message}`);
     return;
   }
   throw new Error("Expected the statement to be rejected, but it succeeded.");
@@ -103,7 +104,7 @@ async function buildMainSchedule(): Promise<typeof main> {
   return { scheduleId, versionId, rules };
 }
 
-interface OrderSpec { id: string; date: string | null; units: number | null; lines: [string | null, number][]; ships: { date: string | null; pkgs: (string | null)[] }[] }
+interface OrderSpec { id: string; date: string | null; units: number | null; lines: [string | null, number][]; ships: { date: string | null; pkgs: (string | null)[] }[]; cancelled?: boolean }
 /** What the database must derive for an order from the file (hand-derived here from the spec). */
 interface OrderFacts { ext: string; firstRow: number; month: string | null; units: number | null; lines: number | null; skus: number | null; packages: number; shipments: number }
 
@@ -113,7 +114,7 @@ function rowsFor(specs: OrderSpec[]) {
   const orders: Record<string, unknown>[] = [], lines: Record<string, unknown>[] = [], shipments: Record<string, unknown>[] = [], packages: Record<string, unknown>[] = [];
   for (const o of specs) {
     const firstRow = row + 1;
-    orders.push({ external_order_id: o.id, order_date: o.date, destination_zip: "85001", origin_zip: "90001", residential: true, units: o.units, line_count: o.lines.length, cancelled: false, issues: [] });
+    orders.push({ external_order_id: o.id, order_date: o.date, destination_zip: "85001", origin_zip: "90001", residential: true, units: o.units, line_count: o.lines.length, cancelled: o.cancelled ?? false, issues: [] });
     o.lines.forEach(([sku, units], i) => lines.push({ external_order_id: o.id, line_no: i + 1, sku, units }));
     o.ships.forEach((s, i) => {
       shipments.push({ external_order_id: o.id, seq: i + 1, row_no: ++row, external_shipment_id: `${o.id}-${i + 1}`, service_text: "UPS Ground", service_id: upsGround, origin_zip: null, destination_zip: null, ship_date: s.date, residential: null, issues: [] });
@@ -155,15 +156,20 @@ const shipResult = (s: Shipment, ok: boolean) => ({
 });
 
 type FeeLine = [number, number, "d" | "e"];
-interface FeeSpec { status: string; lines?: FeeLine[]; unresolved?: { ruleKey: string; reason: string }[]; feeDate?: string | null; version?: string | null; month?: string | null; firstRow?: number; units?: number | null; definite?: number }
+interface FeeSpec {
+  status: string; lines?: FeeLine[]; unresolved?: { ruleKey: string; reason: string }[]; feeDate?: string | null; version?: string | null; month?: string | null; firstRow?: number; units?: number | null; definite?: number;
+  /** Content the customer assumed (lines / SKUs the file does not carry) and the flags that say so. */
+  content?: { lines?: number | null; skus?: number | null }; assumed?: Record<string, boolean>;
+}
 /** One order result; every quantity comes from the hand-derived facts unless the test overrides it to provoke a refusal. */
 function orderResult(o: { id: string } & OrderFacts, f: FeeSpec) {
   const lines = f.lines ?? [];
   const sum = (cls: string) => lines.filter((l) => l[2] === cls).reduce((n, l) => n + l[1], 0);
   return {
     order_id: o.id, first_row_no: f.firstRow ?? o.firstRow, order_month: f.month === undefined ? o.month : f.month, fee_date: f.feeDate === undefined ? "2026-03-15" : f.feeDate,
-    fee_schedule_version_id: f.version === undefined ? main.versionId : f.version, units: f.units === undefined ? o.units : f.units, lines: o.lines, distinct_skus: o.skus, packages: o.packages, shipments: o.shipments,
-    assumed: {}, fee_status: f.status, processing_definite: f.definite ?? sum("d"), processing_estimated: sum("e"), fee_lines: lines, unresolved: f.unresolved ?? [], warning_codes: [],
+    fee_schedule_version_id: f.version === undefined ? main.versionId : f.version, units: f.units === undefined ? o.units : f.units,
+    lines: f.content?.lines === undefined ? o.lines : f.content.lines, distinct_skus: f.content?.skus === undefined ? o.skus : f.content.skus, packages: o.packages, shipments: o.shipments,
+    assumed: f.assumed ?? {}, fee_status: f.status, processing_definite: f.definite ?? sum("d"), processing_estimated: sum("e"), fee_lines: lines, unresolved: f.unresolved ?? [], warning_codes: [],
   };
 }
 /** Dictionary index 0 = pick ($1.00 per unit, definite), 1 = volume_pick (pinned rate $3.00 at 3 orders a month, estimated). */
@@ -199,8 +205,8 @@ const mainMonthlyLines = () => [
   { rule_id: main.rules.receiving_pallet, quantity: null, amount_e4: null, status: "not_modeled" },
 ];
 const minimum = (status: string, countedE4: number) => ({ ruleKey: "account_minimum", status, minimumE4: 5000000, countedE4, topUpE4: 5000000 - countedE4 });
-/** `projected` = the monthly total the engine allocates (RULES.md D3–D5), which finish recomputes from the stored rows. */
-const summaryFor = (s: { orders: number; shipments: number; expected: string; processing: { orders: number; definite: string; estimated: string }; minimums: unknown[]; minimumStatus: string; projected: string }) => ({
+/** `projected` = the monthly total the engine allocates (RULES.md D3–D5), which finish recomputes from the stored rows; null when the volume is unknown. */
+const summaryFor = (s: { orders: number; shipments: number; expected: string; processing: { orders: number; definite: string; estimated: string }; minimums: unknown[]; minimumStatus: string; projected: string | null }) => ({
   version: 2, modeled: { orders: s.orders, shipments: s.shipments }, totals: { expected: s.expected, definite: s.expected, estimated: "0.00" }, processing: s.processing,
   monthly: { totalE4: 2300000 }, minimums: s.minimums, minimumStatus: s.minimumStatus, allocation: { monthly: { total: s.projected } }, feeEngineVersion: "1.0.0",
 });
@@ -271,6 +277,9 @@ describe("fee schedule lifecycle", () => {
       [driverRule("d3", "pallets", "1", { driver: { key: "pallets", label: "Pallets", unit: "pallets", kind: "monthly_quantity", bonus: 1 } }), /driver has an unknown field/],
       [{ key: "d4", basis: "order_driver", driver: { key: "inserts", label: "Inserts", unit: "inserts", kind: "monthly_quantity" } }, /per-order driver is answered as a share of orders/],
       [{ ...minimumRule("m1", "100"), minimum: { amount: "100", appliesTo: { categories: [], includeRuleKeys: [], excludeRuleKeys: [] }, includesShipping: "yes" } }, /minimum.includesShipping must be true or false/],
+      // A missing key is as wrong as a wrong one (a null `includesShipping` would otherwise read as "false" when the minimum is evaluated).
+      [{ ...minimumRule("m1b", "100"), minimum: { amount: "100", appliesTo: { categories: [], includeRuleKeys: [], excludeRuleKeys: [] } } }, /minimum.includesShipping must be true or false/],
+      [{ ...minimumRule("m1c", "100"), minimum: { amount: "100", includesShipping: false } }, /minimum.appliesTo must list/],
       [{ ...minimumRule("m2", "100"), minimum: { amount: "1e3", appliesTo: { categories: [], includeRuleKeys: [], excludeRuleKeys: [] }, includesShipping: false } }, /minimum.amount must be a number/],
       [{ ...minimumRule("m3", "100"), minimum: { amount: "100", appliesTo: { categories: ["shipping"], includeRuleKeys: [], excludeRuleKeys: [] }, includesShipping: false } }, /unknown category/],
       [{ key: "m4", minimum: { amount: "100", appliesTo: { categories: [], includeRuleKeys: [], excludeRuleKeys: [] }, includesShipping: false } }, /minimum is required for account minimums and not allowed otherwise/],
@@ -382,9 +391,11 @@ describe("fee schedule lifecycle", () => {
       const v1 = life.versionId;
       expect(ids(await asUser(w.brandA.admin.id, "select id from public.fee_schedules"))).toEqual([life.scheduleId]);
       expect(await asUser(w.brandA.employee.id, "select id, status from public.fee_schedule_versions where schedule_id = $1", [life.scheduleId])).toEqual([{ id: v1, status: "active" }]);
+      // `draft` was discarded above: a closed version that was never active is invisible too (a live draft is checked in the ship-date suite).
       expect(await asUser(w.brandA.admin.id, "select id from public.fee_schedule_versions where id = $1", [draft])).toHaveLength(0);
       expect(await asUser(w.brandA.employee.id, "select id from public.fee_rules where version_id = $1", [v1])).toHaveLength(3);
       expect(await asUser(w.brandA.admin.id, "select id from public.fee_rules where version_id = $1", [draft])).toHaveLength(0);
+      await expectCode(asUser(w.brandA.admin.id, "select public.fee_schedule_snapshot($1)", [draft]), "P0002", /not found/);
       expect(await asUser(w.brandA.admin.id, "select * from public.fee_rule_sources")).toHaveLength(0);
       expect(await asUser(w.brandA.admin.id, "select * from public.fee_schedule_version_notes")).toHaveLength(0);
       expect(await asUser(w.brandA.admin.id, "select id from public.brand_fee_schedule_assignments where schedule_id = $1 and unassigned_at is null", [life.scheduleId])).toHaveLength(1);
@@ -435,6 +446,9 @@ describe("fee schedule lifecycle", () => {
       expect(ids(await asUser(w.brandA.admin.id, "select id from public.fee_schedules"))).toEqual([main.scheduleId]);
       expect(await asUser(w.brandA.admin.id, "select id from public.fee_rules where version_id = $1", [life.versionId])).toHaveLength(0);
       expect(await asUser(w.brandA.admin.id, "select id from public.fee_rules where version_id = $1", [main.versionId])).toHaveLength(6);
+      // The schedule the brand left is closed to it at once, snapshot included; the new one opens.
+      await expectCode(asUser(w.brandA.admin.id, "select public.fee_schedule_snapshot($1)", [life.versionId]), "P0002", /not found/);
+      expect((await asUser<{ s: { versionId: string } }>(w.brandA.employee.id, "select public.fee_schedule_snapshot($1) as s", [main.versionId]))[0]!.s.versionId).toBe(main.versionId);
       // Assigning the schedule the brand is already on changes nothing.
       expect((await asUser<{ id: string }>(admin, "select public.assign_fee_schedule($1, $2) as id", [w.brandA.id, main.scheduleId]))[0]!.id).toBe(a2!.id);
       await asUser(admin, "select public.unassign_fee_schedule($1)", [a2!.id]);
@@ -517,6 +531,8 @@ describe("runs with fees", () => {
     await expectCode(start({ fulfillment: { orderShares: { nope: { sharePct: "10.00", countPerOrder: 1 } } } }), "PC001", /not a question of this fee schedule/);
     await expectCode(start({ fulfillment: { monthlyOrders: "0" } }), "PC001", /monthly orders must be between/);
     await expectCode(start({ fulfillment: { drivers: { pallets_stored: "abc" } } }), "PC001", /must be a number/);
+    // Answers for a date no version covers cannot be validated against anything, so the run is refused rather than silently unpriced.
+    await expectCode(startRun(w.brandA.admin.id, projectId, answers, "fixed_date", "2025-06-01"), "PC001", /no fee schedule is in effect/);
     expect(await sql("select 1 from public.simulation_runs where project_id = $1", [projectId])).toHaveLength(0);
     const [r] = await start(answers);
     runId = r!.id;
@@ -542,7 +558,24 @@ describe("runs with fees", () => {
     const [r1] = await startRun(w.brandA.admin.id, project, {});
     const [none] = await asUser<Record<string, unknown>>(w.brandA.admin.id, "select volume_basis, monthly_orders, forecast_days, forecast_months::text, period_orders, fee_rates from public.simulation_runs where id = $1", [r1!.id]);
     expect(none).toEqual({ volume_basis: "none", monthly_orders: null, forecast_days: 3, forecast_months: "0.096774", period_orders: 2, fee_rates: { [main.versionId]: {} } });
-    await asUser(w.brandA.admin.id, "select public.cancel_simulation_run($1)", [r1!.id]);
+    // Without a volume the tier has no rate: each order carries the pick fee only and reports the tier as unresolved. The run still
+    // finishes: monthly rules without answers are not modeled; the $500 minimum is prorated to the 3 covered days of March
+    // (0.096774 → $48.39) against $3.00 of pick fees → $45.39 top-up, exact (the tier is not in the set); nothing is projected.
+    const me = w.brandA.admin.id;
+    const [sa, sb] = short.shipments as [Shipment, Shipment];
+    const unresolved = [{ ruleKey: "volume_pick", reason: "assumption_missing" }];
+    const partials = [orderResult(short.orders["S-1"]!, { status: "partial", lines: [[0, 10000, "d"]], unresolved }), orderResult(short.orders["S-2"]!, { status: "partial", lines: [[0, 20000, "d"]], unresolved })];
+    expect((await advance(me, r1!.id, 1, 2, [shipResult(sa, true), shipResult(sb, true)], partials))[0]!.r).toMatchObject({ applied: true, processed: 2 });
+    const prorated = { ruleKey: "account_minimum", status: "exact", minimumE4: 483900, countedE4: 30000, topUpE4: 453900 };
+    const noVolume = { ...summaryFor({ orders: 2, shipments: 2, expected: "19.20", processing: { orders: 2, definite: "3.0000", estimated: "0.0000" }, minimums: [prorated], minimumStatus: "exact", projected: null }), monthly: { totalE4: 0 } };
+    const notModeled = mainMonthlyLines().map((l) => ({ ...l, quantity: null, amount_e4: null, status: "not_modeled" }));
+    await expectCode(finish(me, r1!.id, noVolume, mainMonthlyLines()), "PC003", /monthly lines do not reconcile/);
+    // A minimum taken for the whole month ($500 → $497 top-up) is refused: only 3 days of March are in the period.
+    await expectCode(finish(me, r1!.id, { ...noVolume, minimums: [{ ...prorated, minimumE4: 5000000, topUpE4: 4970000 }] }, notModeled), "PC003", /minimum top-up .* does not reconcile \(sql: exact 453900, counted 30000\)/);
+    const [fin] = await finish(me, r1!.id, noVolume, notModeled);
+    expect(fin!.r).toEqual({ modeledOrders: 2, modeledShipments: 2, modeledPackages: 2, okShipments: 2, unavailableShipments: 0, expected: "19.20", processingOrders: 2, processingDefinite: "3.0000", processingEstimated: "0.0000", monthlyFixed: "0.0000", minimumTopUp: "45.3900", minimumStatus: "exact", projectedMonthly: null });
+    expect((await sql<Record<string, unknown>>("select projected_monthly, fee_status_counts, minimum_status from public.simulation_runs where id = $1", [r1!.id]))[0]).toEqual({ projected_monthly: null, fee_status_counts: { partial: 2 }, minimum_status: "exact" });
+    expect((await sql<{ n: number }>("select count(*)::int as n from public.simulation_monthly_lines where run_id = $1 and status = 'not_modeled' and reason = 'no_answer'", [r1!.id]))[0]?.n).toBe(3);
     const [r2] = await startRun(w.brandA.admin.id, project, { fulfillment: { monthlyOrders: "3000" } });
     const [stated] = await asUser<Record<string, unknown>>(w.brandA.admin.id, "select volume_basis, monthly_orders::text, fee_rates from public.simulation_runs where id = $1", [r2!.id]);
     // graduated: 1,000 × $3.00 + 2,000 × $2.50 = $8,000 over 3,000 orders = $2.6667 an order.
@@ -572,7 +605,9 @@ describe("runs with fees", () => {
     await expectCode(adv([orderResult(o1, { status: "no_schedule", version: null, lines: feesFor(100) }), good[1]]), "PC003", /does not agree/);
     await expectCode(adv([orderResult(o1, { status: "ok", lines: feesFor(100), feeDate: "2026-03-16" }), good[1]]), "PC003", /does not agree/);
     await expectCode(adv([orderResult(o1, { status: "ok", lines: feesFor(100), version: null }), good[1]]), "PC003", /does not agree/);
-    await expectCode(adv([good[0], good[0]]), "23505", /simulation_order_results_run_id_order_id_key/);
+    // Two results for one order (and none for the other) are refused. The rule is "exactly one result per distinct order" (PC003);
+    // today the unique key refuses it first (23505), which the run loop would not recognise as permanent: see the review report.
+    await expectCode(adv([good[0], good[0]]), ["PC003", "23505"], /order/);
     await expectCode(adv(good, { partial: { version: 1, shipments: { seen: 3 } } }), "PC002", /older release/);
     await expectCode(adv(good, { partial: { version: 2, shipments: { seen: 2 } } }), "PC003", /does not cover the window/);
     await expectCode(asUser(w.brandB.admin.id, "select public.advance_simulation_run($1, 1, 3, '[]', '{}', '[]', '[]', '[]')", [runId]), "P0002", /run not found/);
@@ -680,6 +715,25 @@ describe("runs with fees", () => {
       .toEqual({ minimum_status: "upper_bound", minimum_topup: "200.0000", projected_monthly: "567.80", fee_status_counts: { ok: 2, partial: 1 }, processing_orders: 3 });
   });
 
+  it("an undated order priced on the as-of date counts in processing but leaves every minimum an upper bound", async () => {
+    const me = w.brandA.admin.id;
+    const [r] = await startRun(me, await createProject(ds.id, "Undated order counted"), answers);
+    const all = ds.shipments.map((s) => shipResult(s, true));
+    const results = ["O-1", "O-2", "O-3", "O-4"].map((k) => orderResult(ds.orders[k]!, { status: "ok", lines: feesFor(ds.orders[k]!.units!) }));
+    expect((await advance(me, r!.id, 1, 5, all, results))[0]!.r).toMatchObject({ applied: true, processed: 5 });
+    // Under the fixed-date basis O-4 ships and is priced like the others (5 shipments, $48.00; pick 385 units, tier 4 × $3.00), but its
+    // $5.00 of pick fees fall in no calendar month: March counts $380 against $500 (top-up $120) and the figure is only an upper bound.
+    // Projected month at 100% coverage: 48.00 × 3/4 + 397.00 × 3/4 + 230.00 fixed, no top-up (an upper bound is never added) = 563.75.
+    const exact = summaryFor({ orders: 4, shipments: 5, expected: "48.00", processing: { orders: 4, definite: "385.0000", estimated: "12.0000" }, minimums: [minimum("exact", 3800000)], minimumStatus: "exact", projected: "563.75" });
+    await expectCode(finish(me, r!.id, exact, mainMonthlyLines()), "PC003", /minimum top-up .* does not reconcile \(sql: upper_bound 1200000, counted 3800000\)/);
+    const upper = { ...exact, minimums: [minimum("upper_bound", 3800000)], minimumStatus: "upper_bound" };
+    await expectCode(finish(me, r!.id, { ...upper, allocation: { monthly: { total: "683.75" } } }, mainMonthlyLines()), "PC003", /projected monthly total does not reconcile \(sql 563.75\)/);
+    const [fin] = await finish(me, r!.id, upper, mainMonthlyLines());
+    expect(fin!.r).toMatchObject({ modeledOrders: 4, modeledShipments: 5, processingOrders: 4, processingDefinite: "385.0000", processingEstimated: "12.0000", minimumTopUp: "120.0000", minimumStatus: "upper_bound", projectedMonthly: "563.75" });
+    expect((await sql<Record<string, unknown>>("select undated_orders, fee_status_counts, processing_orders from public.simulation_runs where id = $1", [r!.id]))[0]).toEqual({ undated_orders: 1, fee_status_counts: { ok: 4 }, processing_orders: 4 });
+    expect((await sql<{ n: number }>("select count(*)::int as n from public.simulation_order_results where run_id = $1 and in_totals and order_month is null", [r!.id]))[0]?.n).toBe(1);
+  });
+
   it("a run that skips fulfillment costs stores skipped results, no fee context and no monthly lines", async () => {
     const [r] = await startRun(w.brandA.admin.id, projectId, { fulfillment: { skip: true } });
     const [run] = await sql<{ monthly_fee_schedule_version_id: string | null; fee_rates: unknown }>("select monthly_fee_schedule_version_id, fee_rates from public.simulation_runs where id = $1", [r!.id]);
@@ -707,7 +761,8 @@ describe("forecasts from assumptions", () => {
   const summary = {
     basis: "assumptions", monthlyOrders: "1250.00", weightSum: "1250.00",
     shipping: { definite: "0.00", estimated: "12000.00", perOrder: "9.60" }, processing: { definite: "0.00", estimated: "1250.0000", perOrder: "1.00" },
-    allocated: { perOrder: "0.17" }, allIn: { perOrder: "10.77" }, monthly: { total: "216.00", totalE4: 2160000 }, minimum: { topUp: "0.00" }, minimumStatus: "none",
+    // The pinned version carries a $500 minimum on pick fees; at 1,250 orders the $1,250 of pick fees cover it: exact, no top-up.
+    allocated: { perOrder: "0.17" }, allIn: { perOrder: "10.77" }, monthly: { total: "216.00", totalE4: 2160000 }, minimum: { topUp: "0.00" }, minimumStatus: "exact",
   };
   const pins = () => ({ feeScheduleVersionId: main.versionId, rateCardVersionId: rcVersion, ruleVersionIds: [], zipListIds: [], overrideIds: [], loadIssues: [] });
   const save = (userId: string, a: unknown, s: unknown, p: unknown = pins(), brand = w.brandA.id) =>
@@ -723,7 +778,7 @@ describe("forecasts from assumptions", () => {
     expect(run).toMatchObject({
       kind: "forecast", status: "completed", pricing_basis: "fixed_date", as_of_date: "2026-03-15", volume_basis: "stated", monthly_orders: "1250.0000", forecast_months: "1.000000",
       fee_schedule_id: main.scheduleId, monthly_fee_schedule_version_id: main.versionId, processing_orders: null, processing_definite: "0.0000", processing_estimated: "1250.0000",
-      monthly_fixed: "216.0000", minimum_topup: "0.0000", minimum_status: "none", fee_engine_version: "1.0.0", engine_version: "2.2.0", total_shipments: 0, assumptions, reference_data: pins(),
+      monthly_fixed: "216.0000", minimum_topup: "0.0000", minimum_status: "exact", fee_engine_version: "1.0.0", engine_version: "2.2.0", total_shipments: 0, assumptions, reference_data: pins(),
     });
     expect(await asUser(w.brandA.admin.id, "select fee_date::text, fee_schedule_version_id, unavailable_reason from public.simulation_run_fee_contexts where run_id = $1", [run!.id])).toEqual([{ fee_date: "2026-03-15", fee_schedule_version_id: main.versionId, unavailable_reason: null }]);
     expect(await asUser(w.t1.employee.id, "select ship_date::text, rate_card_version_id from public.simulation_run_contexts where run_id = $1", [run!.id])).toEqual([{ ship_date: "2026-03-15", rate_card_version_id: rcVersion }]);
@@ -762,5 +817,146 @@ describe("forecasts from assumptions", () => {
     await expectCode(save(w.brandB.admin.id, assumptions, summary), "P0002", /customer not found/);
     await expectCode(save(w.brandB.admin.id, assumptions, summary, pins(), w.brandB.id), "PC001", /not assigned/);
     expect(await sql("select 1 from public.simulation_projects where brand_id = $1 and kind = 'forecast'", [w.brandA.id])).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) A price change inside a ship-date run: two versions, a file without line data, a cancelled order, no minimum rule
+// ---------------------------------------------------------------------------
+describe("ship-date runs across a fee schedule version change", () => {
+  let seasonal: { scheduleId: string; versionId: string };
+  let v2: string;
+  const v1Rules: Record<string, string> = {};
+  let v2Rules: Record<string, string>;
+  const graduated = (first: string, rest: string) => ({ on: "monthly_quantity", mode: "graduated", pricing: "rate", brackets: [{ upTo: "1000", amount: first }, { upTo: null, amount: rest }] });
+
+  it("a live draft is invisible to the assigned brand; staff-only text is written by the owning tenant's managers only; active versions never overlap", async () => {
+    const admin = w.t1.admin.id, brand = w.brandA.admin.id;
+    seasonal = await createSchedule("Seasonal fees");
+    v1Rules.pick = await insertRule(admin, seasonal.versionId, { key: "pick", name: "Pick fee", basis: "unit", amount: "1.00", position: 0 });
+    v1Rules.volume_pick = await insertRule(admin, seasonal.versionId, { key: "volume_pick", name: "Order handling (volume tier)", category: "other", basis: "order", method: "tiered", amount: null, position: 1, tiers: graduated("3.00", "2.50") });
+    await asUser(admin, "select public.activate_fee_schedule_version($1, '2026-01-01')", [seasonal.versionId]);
+    await asUser(admin, "select public.assign_fee_schedule($1, $2)", [w.brandA.id, seasonal.scheduleId]);
+    // A new draft copies a version of this schedule only; the spring prices go up in it.
+    await expectCode(asUser(admin, "select public.copy_fee_schedule_version($1, $2)", [seasonal.scheduleId, main.versionId]), "P0002", /version not found/);
+    const [copy] = await asUser<{ id: string }>(admin, "select public.copy_fee_schedule_version($1, $2) as id", [seasonal.scheduleId, seasonal.versionId]);
+    v2 = copy!.id;
+    v2Rules = Object.fromEntries((await sql<{ id: string; key: string }>("select id, key from public.fee_rules where version_id = $1", [v2])).map((r) => [r.key, r.id]));
+    await asUser(admin, "update public.fee_rules set amount = 1.50 where id = $1", [v2Rules.pick]);
+    await asUser(admin, "update public.fee_rules set tiers = $2::jsonb where id = $1", [v2Rules.volume_pick, JSON.stringify(graduated("4.00", "3.50"))]);
+    // The brand is on the schedule and sees version 1; of the draft it sees nothing (row, rules, snapshot), and no date resolves to it.
+    expect(await asUser(brand, "select id from public.fee_schedule_versions where id = $1", [v2])).toHaveLength(0);
+    expect(await asUser(brand, "select id from public.fee_rules where version_id = $1", [v2])).toHaveLength(0);
+    await expectCode(asUser(brand, "select public.fee_schedule_snapshot($1)", [v2]), "P0002", /not found/);
+    type On = { status: string; snapshot: { versionId: string; rules: { key: string; amount?: string }[] } };
+    const on = async (date: string) => (await asUser<{ s: On }>(brand, "select public.brand_fee_schedule_on($1, $2) as s", [w.brandA.id, date]))[0]!.s;
+    expect((await on("2026-12-01")).snapshot.versionId).toBe(seasonal.versionId);
+    expect(await asUser(w.t1.employee.id, "select id from public.fee_schedule_versions where id = $1", [v2])).toHaveLength(1);
+    // Sources and notes of a draft rule: another tenant's manager, a manager naming another tenant, and a viewer are all refused.
+    await expectDenied(asUser(w.t2.admin.id, "insert into public.fee_rule_sources (rule_id, tenant_id, source_reference) values ($1, $2, 'x')", [v2Rules.pick, w.t2.id]), /row-level security/);
+    await expectDenied(asUser(w.t2.admin.id, "insert into public.fee_schedule_version_notes (version_id, tenant_id, notes) values ($1, $2, 'x')", [v2, w.t2.id]), /row-level security/);
+    await expectDenied(asUser(admin, "insert into public.fee_rule_sources (rule_id, tenant_id, source_reference) values ($1, $2, 'x')", [v2Rules.pick, w.t2.id]), /row-level security/);
+    await expectDenied(asUser(w.t1.employee.id, "insert into public.fee_schedule_version_notes (version_id, tenant_id, notes) values ($1, $2, 'x')", [v2, w.t1.id]), /row-level security/);
+    await asUser(admin, "insert into public.fee_rule_sources (rule_id, tenant_id, source_reference) values ($1, $2, 'SENTINEL_SOURCE_2026: spring price list')", [v2Rules.pick, w.t1.id]);
+    expect(await asUser(brand, "select 1 from public.fee_rule_sources where rule_id = $1", [v2Rules.pick])).toHaveLength(0);
+    // Two active versions never cover the same day: version 1 must end before version 2 starts, and the boundary day belongs to one of them.
+    await expectCode(asUser(admin, "select public.activate_fee_schedule_version($1, '2026-03-16')", [v2]), "P0007", /already covers those dates/);
+    await asUser(admin, "select public.end_fee_schedule_version($1, '2026-03-15')", [seasonal.versionId]);
+    await expectCode(asUser(admin, "select public.activate_fee_schedule_version($1, '2026-03-15')", [v2]), "P0007", /already covers those dates/);
+    expect((await sql<{ status: string }>("select status from public.fee_schedule_versions where id = $1", [v2]))[0]?.status).toBe("draft");
+    await asUser(admin, "select public.activate_fee_schedule_version($1, '2026-03-16')", [v2]);
+    await expectCode(asUser(admin, "select public.reorder_fee_rules($1, $2::uuid[])", [v2, [v2Rules.volume_pick, v2Rules.pick]]), "P0001", /only a draft/);
+    expect((await on("2026-03-15")).snapshot.versionId).toBe(seasonal.versionId);
+    const spring = await on("2026-03-16");
+    expect(spring.snapshot.versionId).toBe(v2);
+    expect(spring.snapshot.rules.map((r) => [r.key, r.amount ?? null])).toEqual([["pick", "1.5000"], ["volume_pick", null]]);
+    expect(JSON.stringify(spring)).not.toMatch(/SENTINEL/);
+  });
+
+  it("prices each order with the version in effect on its date, pins the tier rate per version, and leaves cancelled and undated orders out", async () => {
+    const me = w.brandA.admin.id, v1 = seasonal.versionId;
+    // The file carries no line data at all; D-5 was cancelled; D-4 has no date.
+    const nolines = await buildDataset("No line data", [
+      { id: "D-1", date: "2026-03-01", units: 100, lines: [], ships: [{ date: "2026-03-01", pkgs: [null] }] },
+      { id: "D-2", date: "2026-03-10", units: 80, lines: [], ships: [{ date: "2026-03-10", pkgs: [null] }, { date: "2026-03-11", pkgs: [null] }] },
+      { id: "D-3", date: "2026-03-31", units: 200, lines: [], ships: [{ date: "2026-03-31", pkgs: [null] }] },
+      { id: "D-4", date: null, units: 5, lines: [], ships: [{ date: null, pkgs: [null] }] },
+      { id: "D-5", date: "2026-03-20", units: 10, lines: [], ships: [{ date: "2026-03-20", pkgs: [null] }], cancelled: true },
+    ]);
+    expect((await asUser<{ r: Record<string, unknown> }>(me, "select public.dataset_forecast_period($1) as r", [nolines.id]))[0]!.r).toMatchObject({ population: 4, dated: 3, undated: 1, inPeriod: 3, units: 380, packages: 4, shipments: 4, months: 1 });
+    const [r] = await startRun(me, await createProject(nolines.id, "Spring with a price change"), {}, "ship_date", null);
+    const runId = r!.id;
+    // Monthly components use the version in effect at the period's end; the volume tier is pinned once per version the run may price with.
+    expect((await asUser<Record<string, unknown>>(me, "select fee_schedule_id, monthly_fee_schedule_version_id, fee_rates, volume_basis, monthly_orders::text, monthly_units::text, population_orders, undated_orders from public.simulation_runs where id = $1", [runId]))[0]).toEqual({
+      fee_schedule_id: seasonal.scheduleId, monthly_fee_schedule_version_id: v2, volume_basis: "file", monthly_orders: "3.0000", monthly_units: "380.0000", population_orders: 4, undated_orders: 1,
+      fee_rates: { [v1]: { volume_pick: { rateE4: 30000, monthlyQuantity: "3.0000" } }, [v2]: { volume_pick: { rateE4: 40000, monthlyQuantity: "3.0000" } } },
+    });
+    type Batch = { shipments: { externalOrderId: string; cancelled: boolean; orderUnits: number | null; orderLines: number | null; orderSkus: number | null; orderNullSkuLines: number | null }[] };
+    const [b] = await asUser<{ r: Batch }>(me, "select public.simulation_batch_input($1, 100) as r", [runId]);
+    // Without line data every order's lines and SKUs are unknown (null, never 0).
+    expect(b!.r.shipments.map((s) => [s.externalOrderId, s.cancelled, s.orderUnits, s.orderLines, s.orderSkus, s.orderNullSkuLines])).toEqual([
+      ["D-1", false, 100, null, null, null], ["D-2", false, 80, null, null, null], ["D-2", false, 80, null, null, null], ["D-3", false, 200, null, null, null], ["D-4", false, 5, null, null, null], ["D-5", true, 10, null, null, null]]);
+
+    const [s1, s2a, s2b, s3, s4, s5] = nolines.shipments as [Shipment, Shipment, Shipment, Shipment, Shipment, Shipment];
+    const d = (k: string) => nolines.orders[k]!;
+    const ctx = (date: string, version: string) => ({ fee_date: date, fee_schedule_version_id: version, unavailable_reason: null });
+    const v1Fees = (units: number): FeeLine[] => [[0, E4(units), "d"], [1, 30000, "e"]];
+    const v2Fees = (units: number): FeeLine[] => [[2, E4(units * 1.5), "d"], [3, 40000, "e"]];
+    const d1 = orderResult(d("D-1"), { status: "ok", lines: v1Fees(100), feeDate: "2026-03-01", version: v1 });
+    // D-2's content was assumed by the customer (the file has no lines), which the file cannot contradict.
+    const d2 = orderResult(d("D-2"), { status: "ok", lines: v1Fees(80), feeDate: "2026-03-10", version: v1, content: { lines: 1, skus: 1 }, assumed: { lines: true, skus: true } });
+    const adv1 = (orders: unknown[], feeContexts: unknown[] = [ctx("2026-03-01", v1), ctx("2026-03-10", v1)]) => advance(me, runId, 1, 3, [shipResult(s1, true), shipResult(s2a, true), shipResult(s2b, true)], orders, { feeContexts });
+    // A context may only name a version of the run's schedule that covered its date; an order must agree with the context of its own fee date.
+    await expectCode(adv1([d1, d2], [ctx("2026-03-01", v2), ctx("2026-03-10", v1)]), "PC003", /not in effect on its date/);
+    await expectCode(adv1([d1, d2], [ctx("2026-03-01", main.versionId), ctx("2026-03-10", v1)]), "PC003", /not in effect on its date/);
+    await expectCode(adv1([{ ...d1, fee_schedule_version_id: v2 }, d2]), "PC003", /does not agree/);
+    await expectCode(adv1([{ ...d1, fee_date: "2026-03-15" }, d2]), "PC003", /does not agree/);
+    await expectCode(adv1([d1, d2], []), "PC003", /does not agree/);
+    // Units are in the file, so they cannot be "assumed"; lines are not, so a count without the flag is a fabrication.
+    await expectCode(adv1([{ ...d1, assumed: { units: true } }, d2]), "PC003", /does not agree/);
+    await expectCode(adv1([d1, { ...d2, assumed: {} }]), "PC003", /does not agree/);
+    await expectCode(adv1([{ ...d1, shipments: 2 }, d2]), "PC003", /does not agree/);
+    await expectCode(adv1([d1, { ...d2, packages: 1 }]), "PC003", /does not agree/);
+    const [foreign] = await sql<{ id: string }>("select id from public.orders where dataset_id <> $1 and brand_id = $2 limit 1", [nolines.id, w.brandA.id]);
+    await expectCode(adv1([d1, { ...d2, order_id: foreign!.id }]), "PC003", /does not agree/);
+    expect(await sql("select 1 from public.simulation_order_results where run_id = $1", [runId])).toHaveLength(0);
+    expect((await adv1([d1, d2]))[0]!.r).toMatchObject({ applied: true, nextRow: 4 });
+
+    const d3 = orderResult(d("D-3"), { status: "ok", lines: v2Fees(200), feeDate: "2026-03-31", version: v2 });
+    const d4 = orderResult(d("D-4"), { status: "date_missing", feeDate: null, version: null });
+    const d5 = orderResult(d("D-5"), { status: "ok", lines: v2Fees(10), feeDate: "2026-03-20", version: v2 });
+    const adv2 = (orders: unknown[]) => advance(me, runId, 4, 6, [shipResult(s3, true), shipResult(s4, false), shipResult(s5, true)], orders, { feeContexts: [ctx("2026-03-31", v2), ctx("2026-03-20", v2)] });
+    // An undated order has no fee date under the ship-date basis (never the period's end); a dated order is never "date missing".
+    await expectCode(adv2([d3, orderResult(d("D-4"), { status: "ok", lines: v2Fees(5), feeDate: "2026-03-31", version: v2 }), d5]), "PC003", /does not agree/);
+    await expectCode(adv2([orderResult(d("D-3"), { status: "date_missing", feeDate: null, version: null }), d4, d5]), "PC003", /does not agree/);
+    expect((await adv2([d3, d4, d5]))[0]!.r).toMatchObject({ applied: true, nextRow: 7, processed: 6 });
+    expect(await asUser(w.t1.employee.id, "select fee_date::text, fee_schedule_version_id as v from public.simulation_run_fee_contexts where run_id = $1 order by fee_date", [runId]))
+      .toEqual([{ fee_date: "2026-03-01", v: v1 }, { fee_date: "2026-03-10", v: v1 }, { fee_date: "2026-03-20", v: v2 }, { fee_date: "2026-03-31", v: v2 }]);
+
+    // Shipping-modeled: D-1, D-2, D-3 (4 shipments, $38.40); D-4 could not ship, D-5 is cancelled. Processing over those three:
+    // 100 × $1.00 + 80 × $1.00 (version 1) + 200 × $1.50 (version 2) = $480.00 definite; tier $3.00 + $3.00 + $4.00 = $10.00 estimated.
+    // Version 2 has no monthly rule and no minimum: nothing fixed, minimum status "none". 3 of 4 population orders (< 80%):
+    // projected month = (38.40 + 490.00) / 1.000000 = 528.40.
+    const dict = [
+      { ruleId: v1Rules.pick, key: "pick", name: "Pick fee", category: "pick_pack", basis: "unit", scope: "order" },
+      { ruleId: v1Rules.volume_pick, key: "volume_pick", name: "Order handling (volume tier)", category: "other", basis: "order", scope: "order" },
+      { ruleId: v2Rules.pick, key: "pick", name: "Pick fee", category: "pick_pack", basis: "unit", scope: "order" },
+      { ruleId: v2Rules.volume_pick, key: "volume_pick", name: "Order handling (volume tier)", category: "other", basis: "order", scope: "order" },
+    ];
+    const ref = { dictionary: [], feeDictionary: dict };
+    const right = { ...summaryFor({ orders: 3, shipments: 4, expected: "38.40", processing: { orders: 3, definite: "480.0000", estimated: "10.0000" }, minimums: [], minimumStatus: "none", projected: "528.40" }), monthly: { totalE4: 0 } };
+    await expectCode(finish(me, runId, { ...right, processing: { ...right.processing, definite: "495.0000", estimated: "14.0000" } }, [], ref), "PC003", /processing totals do not reconcile/);
+    await expectCode(finish(me, runId, { ...right, minimumStatus: "exact" }, [], ref), "PC003", /minimum status does not reconcile \(none\)/);
+    await expectCode(finish(me, runId, right, mainMonthlyLines(), ref), "PC003", /monthly lines do not reconcile/);
+    await expectCode(finish(me, runId, right, [], { dictionary: [], feeDictionary: [...dict, mainDictionary()[0]] }), "PC003", /fee dictionary names a rule/);
+    const [fin] = await finish(me, runId, right, [], ref);
+    expect(fin!.r).toEqual({ modeledOrders: 3, modeledShipments: 4, modeledPackages: 4, okShipments: 5, unavailableShipments: 1, expected: "38.40", processingOrders: 3, processingDefinite: "480.0000", processingEstimated: "10.0000", monthlyFixed: "0.0000", minimumTopUp: "0.0000", minimumStatus: "none", projectedMonthly: "528.40" });
+    expect(await asUser(w.brandA.employee.id, "select o.external_order_id as ext, x.fee_status, x.fee_schedule_version_id as v, x.in_totals from public.simulation_order_results x join public.orders o on o.id = x.order_id where x.run_id = $1 order by x.first_row_no", [runId])).toEqual([
+      { ext: "D-1", fee_status: "ok", v: v1, in_totals: true }, { ext: "D-2", fee_status: "ok", v: v1, in_totals: true }, { ext: "D-3", fee_status: "ok", v: v2, in_totals: true },
+      { ext: "D-4", fee_status: "date_missing", v: null, in_totals: false }, { ext: "D-5", fee_status: "ok", v: v2, in_totals: false }]);
+    expect((await sql<Record<string, unknown>>("select fee_status_counts, minimum_status, monthly_fixed::text, projected_monthly::text from public.simulation_runs where id = $1", [runId]))[0]).toEqual({ fee_status_counts: { ok: 3 }, minimum_status: "none", monthly_fixed: "0.0000", projected_monthly: "528.40" });
+    expect(await sql("select 1 from public.simulation_monthly_lines where run_id = $1", [runId])).toHaveLength(0);
+    // Back on the standard schedule.
+    await asUser(w.t1.admin.id, "select public.assign_fee_schedule($1, $2)", [w.brandA.id, main.scheduleId]);
   });
 });
