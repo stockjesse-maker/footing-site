@@ -90,6 +90,7 @@ const WARNING: Record<WarningCode, string> = {
   rule_overridden: "Customer exception applied",
   rule_reference_cycle: "Rule reference cycle",
   override_not_applicable: "Customer exception did not fit the rule",
+  assumed_inputs: "Priced on assumed inputs",
 };
 
 // ---------------------------------------------------------------------------

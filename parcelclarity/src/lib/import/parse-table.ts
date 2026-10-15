@@ -54,9 +54,9 @@ function cellToString(value: unknown): string {
   return String(value).trim();
 }
 
-function capRows(name: string, rows: string[][]): Table {
-  if (rows.length > LIMITS.maxRowsPerSheet) throw new ParseError(`Sheet "${name}" has more than ${LIMITS.maxRowsPerSheet.toLocaleString("en-US")} rows; split the file.`, "too_large");
-  const kept = rows.map((r) => r.slice(0, LIMITS.maxColumns).map(cellToString));
+function capRows(name: string, rows: string[][], limits: ParseLimits): Table {
+  if (rows.length > limits.maxRowsPerSheet) throw new ParseError(`Sheet "${name}" has more than ${limits.maxRowsPerSheet.toLocaleString("en-US")} rows; split the file.`, "too_large");
+  const kept = rows.map((r) => r.slice(0, limits.maxColumns).map(cellToString));
   // Drop fully empty trailing rows.
   while (kept.length && kept[kept.length - 1]!.every((c) => c === "")) kept.pop();
   return { name, rows: kept, truncated: false };
@@ -94,8 +94,13 @@ export function checkXlsxInflation(bytes: Uint8Array): void {
   }
 }
 
-export async function parseTables(bytes: Uint8Array, kind: FileKind): Promise<Table[]> {
-  if (bytes.length > LIMITS.maxBytes) throw new ParseError("The file is larger than 5 MB.", "too_large");
+export type ParseLimits = { maxBytes: number; maxRowsPerSheet: number; maxCellsPerSheet: number; maxSheets: number; maxColumns: number };
+
+/** Order files are wider and longer than rate cards (a Shopify export has ~75 columns, one row per line item). */
+export const ORDER_FILE_LIMITS: ParseLimits = { maxBytes: 15 * 1024 * 1024, maxRowsPerSheet: 100_000, maxCellsPerSheet: 4_000_000, maxSheets: 5, maxColumns: 200 };
+
+export async function parseTables(bytes: Uint8Array, kind: FileKind, limits: ParseLimits = LIMITS): Promise<Table[]> {
+  if (bytes.length > limits.maxBytes) throw new ParseError(`The file is larger than ${Math.round(limits.maxBytes / 1024 / 1024)} MB.`, "too_large");
   if (bytes.length === 0) throw new ParseError("The file is empty.", "empty");
 
   if (kind === "csv") {
@@ -104,7 +109,7 @@ export async function parseTables(bytes: Uint8Array, kind: FileKind): Promise<Ta
     if (parsed.errors.some((e) => e.code !== "TooFewFields" && e.code !== "TooManyFields" && e.code !== "UndetectableDelimiter")) {
       throw new ParseError(`The CSV could not be read: ${parsed.errors[0]?.message ?? "unknown error"}.`, "unreadable");
     }
-    const table = capRows("Sheet1", parsed.data);
+    const table = capRows("Sheet1", parsed.data, limits);
     if (!table.rows.length) throw new ParseError("The file has no rows.", "empty");
     return [table];
   }
@@ -116,12 +121,12 @@ export async function parseTables(bytes: Uint8Array, kind: FileKind): Promise<Ta
   } catch (err) {
     throw new ParseError(`The workbook could not be read: ${err instanceof Error ? err.message : "unknown error"}.`, "unreadable");
   }
-  if (sheets.length > LIMITS.maxSheets) throw new ParseError(`The workbook has more than ${LIMITS.maxSheets} sheets.`, "too_large");
-  const tables = sheets.map((s) => capRows(s.sheet, s.data as string[][])).filter((t) => t.rows.length > 0);
+  if (sheets.length > limits.maxSheets) throw new ParseError(`The workbook has more than ${limits.maxSheets} sheets.`, "too_large");
+  const tables = sheets.map((s) => capRows(s.sheet, s.data as string[][], limits)).filter((t) => t.rows.length > 0);
   if (!tables.length) throw new ParseError("The workbook has no data.", "empty");
   for (const t of tables) {
     const cells = t.rows.reduce((n, r) => n + r.length, 0);
-    if (cells > LIMITS.maxCellsPerSheet) throw new ParseError(`Sheet "${t.name}" has too many cells (${cells}).`, "too_large");
+    if (cells > limits.maxCellsPerSheet) throw new ParseError(`Sheet "${t.name}" has too many cells (${cells}).`, "too_large");
   }
   return tables;
 }

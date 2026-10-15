@@ -443,9 +443,10 @@ describe("bulk read helpers respect RLS", () => {
 describe("review fixes: brand exceptions, hidden notes, archived cards, atomic zone charts", () => {
   it("a brand's live exceptions reach the calculation through the RPC, joined to the rule key", async () => {
     // brandA holds a markup_percent exception on northwind.residential from 2026-06-01 (created above).
-    type Payload = { overrides: { ruleKey: string; mode: string; percent: string | null }[] };
+    type Payload = { overrides: { id: string; ruleKey: string; mode: string; percent: string | null }[] };
     const [a] = await asUser<{ r: Payload }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
-    expect(a!.r.overrides).toEqual([{ ruleKey: "northwind.residential", mode: "markup_percent", percent: "10.0000", amount: null, effectiveDate: "2026-06-01", expirationDate: null, reference: "Addendum" }]);
+    expect(a!.r.overrides).toEqual([expect.objectContaining({ ruleKey: "northwind.residential", mode: "markup_percent", percent: "10.0000", amount: null, effectiveDate: "2026-06-01", expirationDate: null, reference: "Addendum" })]);
+    expect(a!.r.overrides[0]!.id).toMatch(/^[0-9a-f-]{36}$/); // pinned by bulk runs
     const [early] = await asUser<{ r: Payload }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-03-01') as r", [cardId]);
     expect(early!.r.overrides).toEqual([]);
     // Staff modelling on behalf of the brand get the same; staff pricing for nobody get none.

@@ -32,6 +32,21 @@ export interface ZipListIndex {
 }
 
 /** Keeps, per key, the list version in force on the ship date (highest version wins among several in force). */
+/**
+ * A list's entry Set depends only on the list object, so it is built once per object and reused
+ * across the thousands of shipments a bulk run prices against the same context (referentially
+ * transparent: the same ZipList always indexes to the same Set, so purity is kept).
+ */
+const entrySets = new WeakMap<ZipList, Set<string>>();
+function entrySetOf(list: ZipList): Set<string> {
+  let set = entrySets.get(list);
+  if (!set) {
+    set = new Set(list.entries.map((e) => e.trim()));
+    entrySets.set(list, set);
+  }
+  return set;
+}
+
 export function indexZipLists(lists: ZipList[], shipDate: string): Map<string, ZipListIndex> {
   const map = new Map<string, ZipListIndex>();
   for (const l of lists) {
@@ -39,9 +54,16 @@ export function indexZipLists(lists: ZipList[], shipDate: string): Map<string, Z
     if (l.expirationDate && shipDate > l.expirationDate) continue;
     const existing = map.get(l.key);
     if (existing && existing.version >= l.version) continue;
-    map.set(l.key, { key: l.key, version: l.version, sourceReference: l.sourceReference, entries: new Set(l.entries.map((e) => e.trim())) });
+    map.set(l.key, { key: l.key, version: l.version, sourceReference: l.sourceReference, entries: entrySetOf(l) });
   }
   return map;
+}
+
+/** True when the condition tree mentions any of the given condition types (any_of groups are searched recursively). */
+export function mentionsConditionType(c: RuleCondition, types: ReadonlySet<RuleCondition["type"]>): boolean {
+  if (types.has(c.type)) return true;
+  if (c.type === "any_of") return c.conditions.some((inner) => mentionsConditionType(inner, types));
+  return false;
 }
 
 export function zipInList(list: ZipListIndex, zip5: string): boolean {

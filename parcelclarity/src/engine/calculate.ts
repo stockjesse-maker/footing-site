@@ -8,6 +8,7 @@ import {
   evaluateRule,
   indexZipLists,
   latestPerKey,
+  mentionsConditionType,
   referencedRuleKeys,
   referencesRule,
   ruleIsCandidate,
@@ -19,8 +20,10 @@ import {
 import {
   ENGINE_VERSION,
   type CalculationWarning,
+  type AssumedInputs,
   type ChargeClass,
   type ChargeLine,
+  type RuleCondition,
   type LineStatus,
   type Money,
   type PricingContext,
@@ -51,6 +54,19 @@ interface Candidate {
 }
 
 const isWaived = (c: Candidate) => c.override?.mode === "exclude";
+
+const RESIDENTIAL_CONDITIONS: ReadonlySet<RuleCondition["type"]> = new Set(["residential"]);
+const ZONE_CONDITIONS: ReadonlySet<RuleCondition["type"]> = new Set(["zone_in"]);
+const MEASUREMENT_CONDITIONS: ReadonlySet<RuleCondition["type"]> = new Set(["weight_gt", "weight_lte", "longest_side_gt", "second_longest_side_gt", "length_plus_girth_gt", "cubic_in_gt"]);
+
+/** Which assumed input, if any, a rule's applicability rests on (its charge can then only be an estimate). */
+function assumptionBehind(rule: SurchargeRule, assumed: AssumedInputs): string | null {
+  const mentions = (types: ReadonlySet<RuleCondition["type"]>) => rule.conditions.some((c) => mentionsConditionType(c, types));
+  if (assumed.residential && mentions(RESIDENTIAL_CONDITIONS)) return "residential status";
+  if (assumed.originZip && mentions(ZONE_CONDITIONS)) return "origin";
+  if ((assumed.weight || assumed.dimensions) && mentions(MEASUREMENT_CONDITIONS)) return assumed.weight && assumed.dimensions ? "weight and dimensions" : assumed.weight ? "weight" : "dimensions";
+  return null;
+}
 
 /** An override can only change a figure the rule's method actually uses; anything else is ignored with a warning. */
 function overrideApplies(rule: SurchargeRule, o: SurchargeOverride): boolean {
@@ -191,6 +207,11 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
   const warn = (w: CalculationWarning) => {
     if (!warnings.some((x) => x.code === w.code && x.ruleKey === w.ruleKey)) warnings.push(w);
   };
+  const assumed: AssumedInputs = input.assumed ?? {};
+  const assumedList = [assumed.residential ? "residential status" : null, assumed.originZip ? "origin ZIP" : null, assumed.weight ? "weight" : null, assumed.dimensions ? "dimensions" : null].filter((x): x is string => x !== null);
+  if (assumedList.length) warn({ code: "assumed_inputs", message: `Priced on assumed ${assumedList.join(", ")}; every charge that depends on them is an estimate.` });
+  // The base rate rests on the billable weight and the zone; if either comes from an assumption it is an estimate.
+  const baseAssumed = assumed.weight || assumed.dimensions || assumed.originZip ? true : false;
 
   if (input.shipDate < card.effectiveDate || (card.expirationDate && input.shipDate > card.expirationDate)) {
     return unavailable(input, ctx, "rate_card_not_effective", `Rate card "${card.rateCardName}" version ${card.versionNumber} is not in effect on ${input.shipDate} (effective ${card.effectiveDate}${card.expirationDate ? ` to ${card.expirationDate}` : ""}).`);
@@ -331,7 +352,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
     if (!found.ok) {
       return unavailable(input, ctx, found.reason, `${found.message} (package ${p.index + 1}: billable ${p.m.result.billableLb} lb)`, { service: serviceInfo, zone, packages: packages.map((q) => q.m.result), warnings, references });
     }
-    const baseClass: ChargeClass = dimUnknown(p) ? "estimated" : "definite";
+    const baseClass: ChargeClass = dimUnknown(p) || baseAssumed ? "estimated" : "definite";
     const price = dec(found.row.price);
     lines.push({
       kind: "base",
@@ -342,7 +363,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
       counted: true,
       status: "charged",
       packageIndex: p.index,
-      explanation: `Zone ${zone.zone}, ${fmt(found.comparedWeight, 3)} ${found.row.weightUnit} billable (bracket ${fmt(dec(found.row.weightMin), 3)}–${fmt(dec(found.row.weightMax), 3)} ${found.row.weightUnit})${found.originScope === "any_origin" ? "" : ` from origin ${found.originScope === "origin_5" ? input.originZip : input.originZip.slice(0, 3)}`}, rate card "${card.rateCardName}" v${card.versionNumber}.`,
+      explanation: `Zone ${zone.zone}, ${fmt(found.comparedWeight, 3)} ${found.row.weightUnit} billable (bracket ${fmt(dec(found.row.weightMin), 3)}–${fmt(dec(found.row.weightMax), 3)} ${found.row.weightUnit})${found.originScope === "any_origin" ? "" : ` from origin ${found.originScope === "origin_5" ? input.originZip : input.originZip.slice(0, 3)}`}, rate card "${card.rateCardName}" v${card.versionNumber}.${baseAssumed ? ` Based on assumed ${[assumed.weight ? "weight" : null, assumed.dimensions ? "dimensions" : null, assumed.originZip ? "origin" : null].filter(Boolean).join(" and ")}, so this is an estimate.` : ""}`,
       basis: `rate_card:${card.versionId}:${service.serviceId}:${found.row.zone}:${found.row.weightMax}${found.row.weightUnit}`,
       rule: null,
     });
@@ -382,6 +403,8 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
     const counted = status === "charged";
     let classification: ChargeClass = c.outcome === "unknown" ? "estimated" : rule.chargeClass;
     if (counted && classification === "definite" && rule.verificationStatus === "unverified") classification = "estimated";
+    const assumption = counted ? assumptionBehind(rule, assumed) : null;
+    if (assumption && classification === "definite") classification = "estimated";
     const markup = markupOf(c);
     const overrideNote = c.override && !waived ? ` Customer-specific rate applied (${c.override.reference}).` : markup && !markup.isZero() ? ` Includes the ${fmt(markup, 2)}% markup agreed in the rate card terms.` : "";
 
@@ -393,6 +416,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
       else if (status === "conditional") explanation = `${baseNote} Charged only if the carrier applies it after shipping; shown as potential exposure, not included in the total.`;
       explanation += overrideNote;
       if (counted && rule.verificationStatus === "unverified") explanation += " The rule's source has not been verified, so this is an estimate.";
+      if (assumption) explanation += ` Based on an assumed ${assumption}, so this is an estimate.`;
       if (counted && c.uncertainNote) explanation += ` ${c.uncertainNote}`;
       lines.push({
         kind: rule.category === "fuel" ? "fuel" : "surcharge",

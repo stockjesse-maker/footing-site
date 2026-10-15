@@ -50,6 +50,7 @@ export const shipmentSchema = z
       .optional(),
     orderId: z.string().max(120).optional(),
     shipmentId: z.string().max(120).optional(),
+    assumed: z.object({ residential: z.boolean().optional(), originZip: z.boolean().optional(), weight: z.boolean().optional(), dimensions: z.boolean().optional() }).optional(),
   })
   .refine((s) => s.destinationZip !== undefined || s.destinationZone !== undefined, {
     message: "provide a destination ZIP or a destination zone",

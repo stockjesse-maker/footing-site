@@ -79,10 +79,32 @@ interface RulesPayload {
     sourceUrl: string | null;
     verificationStatus: SurchargeRule["verificationStatus"];
   }>;
-  zipLists: Array<{ key: string; version: number; sourceReference: string; effectiveDate: string; expirationDate: string | null; entries: string[] }>;
+  /** `entries` is null for lists the caller said it already holds (`p_known_lists`). */
+  zipLists: Array<{ id: string; key: string; version: number; sourceReference: string; effectiveDate: string; expirationDate: string | null; entries: string[] | null }>;
   /** The priced brand's live exceptions, already joined to rule keys inside the authorizing function. */
-  overrides: Array<{ ruleKey: string; mode: SurchargeOverride["mode"]; amount: string | null; percent: string | null; effectiveDate: string; expirationDate: string | null; reference: string }>;
+  overrides: Array<{ id: string; ruleKey: string; mode: SurchargeOverride["mode"]; amount: string | null; percent: string | null; effectiveDate: string; expirationDate: string | null; reference: string }>;
   brandId: string | null;
+}
+
+/**
+ * Caches a bulk run keeps across many loads of the same card: rate rows, zones and terms per
+ * version, and ZIP lists per id (the database skips entries for lists the cache already holds).
+ */
+export interface PricingLoadCache {
+  versions: Map<string, { terms: ServiceTerms[]; rows: RateRow[]; zones: ZoneRow[] }>;
+  zipLists: Map<string, ZipList>;
+}
+
+export function createPricingLoadCache(): PricingLoadCache {
+  return { versions: new Map(), zipLists: new Map() };
+}
+
+/** Identifiers of everything a load used, pinned by bulk runs for reproducibility. */
+export interface PricingPins {
+  rateCardVersionId: string;
+  ruleVersionIds: string[];
+  zipListIds: string[];
+  overrideIds: string[];
 }
 
 const num = (v: string | number | null | undefined): string | null => (v === null || v === undefined ? null : String(v));
@@ -150,6 +172,8 @@ export interface LoadOptions {
   brandId?: string | null;
   /** Only load rows for these service ids (faster for a single calculation). */
   serviceIds?: string[];
+  /** Shared across loads by bulk runs; never shared between users. */
+  cache?: PricingLoadCache;
 }
 
 export interface LoadedSnapshot {
@@ -159,6 +183,7 @@ export interface LoadedSnapshot {
   tenantId: string;
   /** Rule versions that could not be used (malformed conditions or base); surfaced as warnings by callers. */
   issues: string[];
+  pins: PricingPins;
 }
 
 export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOptions): Promise<{ ok: true; snapshot: LoadedSnapshot } | { ok: false; error: SnapshotError }> {
@@ -169,7 +194,8 @@ export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOpt
   if (!resolved.ok) return resolved;
   const version = resolved.version;
 
-  let terms = await loadServiceTerms(supabase, version.id);
+  const cached = opts.cache?.versions.get(version.id);
+  let terms = cached ? cached.terms : await loadServiceTerms(supabase, version.id);
   if (opts.brandId) {
     const { data: assignment } = await supabase
       .from("brand_rate_card_assignments")
@@ -184,29 +210,40 @@ export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOpt
     }
   }
 
+  const knownLists = opts.cache ? [...opts.cache.zipLists.keys()] : null;
   const [rowsResult, zonesResult, rulesResult] = await Promise.all([
-    supabase.rpc("rate_card_rows_json", { p_version: version.id, p_service_ids: opts.serviceIds ?? null }),
-    supabase.rpc("rate_card_zones_json", { p_version: version.id }),
-    supabase.rpc("pricing_rules_for_card", { p_rate_card: card.id, p_ship_date: opts.shipDate, p_brand: opts.brandId ?? null }),
+    cached && !opts.serviceIds ? Promise.resolve({ data: cached.rows, error: null }) : supabase.rpc("rate_card_rows_json", { p_version: version.id, p_service_ids: opts.serviceIds ?? null }),
+    cached ? Promise.resolve({ data: cached.zones, error: null }) : supabase.rpc("rate_card_zones_json", { p_version: version.id }),
+    supabase.rpc("pricing_rules_for_card", { p_rate_card: card.id, p_ship_date: opts.shipDate, p_brand: opts.brandId ?? null, p_known_lists: knownLists }),
   ]);
   // A failed load is never priced as "no rules": the database refuses the call when the caller (or
   // the brand being priced) has no right to this card, and anything else is an outage, not a quote.
   if (rowsResult.error || zonesResult.error || rulesResult.error || !rulesResult.data) return { ok: false, error: "rate_card_not_found" };
   const rows = (rowsResult.data ?? []) as RateRow[];
   const zones = ((zonesResult.data ?? []) as ZoneRow[]).map((z) => ({ ...z, zoneChartKey: z.zoneChartKey ?? "default" }));
+  if (opts.cache && !cached && !opts.serviceIds) opts.cache.versions.set(version.id, { terms: await loadServiceTerms(supabase, version.id), rows, zones });
 
   const issues: string[] = [];
   const payload = rulesResult.data as RulesPayload;
   const serviceCodeById = new Map(terms.map((t) => [t.serviceId, t.serviceCode]));
   const rules = mapRules(payload, serviceCodeById, issues);
-  const zipLists: ZipList[] = (payload.zipLists ?? []).map((l) => ({
-    key: l.key,
-    version: l.version,
-    sourceReference: l.sourceReference,
-    effectiveDate: l.effectiveDate,
-    expirationDate: l.expirationDate,
-    entries: l.entries ?? [],
-  }));
+  const zipLists: ZipList[] = [];
+  for (const l of payload.zipLists ?? []) {
+    const known = opts.cache?.zipLists.get(l.id);
+    if (known) {
+      zipLists.push(known);
+      continue;
+    }
+    const list: ZipList = { key: l.key, version: l.version, sourceReference: l.sourceReference, effectiveDate: l.effectiveDate, expirationDate: l.expirationDate, entries: l.entries ?? [] };
+    opts.cache?.zipLists.set(l.id, list);
+    zipLists.push(list);
+  }
+  const pins: PricingPins = {
+    rateCardVersionId: version.id,
+    ruleVersionIds: rules.map((r) => r.versionId),
+    zipListIds: (payload.zipLists ?? []).map((l) => l.id),
+    overrideIds: (payload.overrides ?? []).map((o) => o.id),
+  };
   const overrides: SurchargeOverride[] = (payload.overrides ?? []).map((o) => ({
     ruleKey: o.ruleKey,
     mode: o.mode,
@@ -237,6 +274,7 @@ export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOpt
       services: terms.map((t) => ({ serviceId: t.serviceId, carrierCode: t.carrierCode, serviceCode: t.serviceCode, serviceName: t.serviceName })),
       tenantId: card.tenant_id,
       issues,
+      pins,
     },
   };
 }

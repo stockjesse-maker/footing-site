@@ -11,7 +11,7 @@
  */
 
 /** Bumped whenever a behavioural change could alter a result for the same inputs. Recorded in every result. */
-export const ENGINE_VERSION = "2.1.0";
+export const ENGINE_VERSION = "2.2.0";
 
 /** Decimal number encoded as a string, e.g. "12.5000". Never a JS float. */
 export type DecimalString = string;
@@ -74,6 +74,23 @@ export interface ShipmentInput {
   options?: ShipmentOptions;
   orderId?: string;
   shipmentId?: string;
+  /**
+   * Inputs the caller filled in by assumption rather than from the shipment record (bulk modeling
+   * of files that lack them). Every counted line that depends on an assumed input is classed
+   * **estimated**, never definite, and the result carries an `assumed_inputs` warning.
+   */
+  assumed?: AssumedInputs;
+}
+
+export interface AssumedInputs {
+  /** Residential/commercial was not in the record; the value given is a default. */
+  residential?: boolean;
+  /** The origin ZIP is a default (e.g. the 3PL's warehouse) rather than the shipment's own. */
+  originZip?: boolean;
+  /** Package weight was derived (e.g. from product weights) rather than measured. */
+  weight?: boolean;
+  /** Package dimensions were derived rather than measured. */
+  dimensions?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +399,7 @@ export type WarningCode =
   | "rate_card_not_effective"
   | "rule_overridden"
   | "override_not_applicable"
+  | "assumed_inputs"
   | "rule_reference_cycle";
 
 export interface CalculationWarning {

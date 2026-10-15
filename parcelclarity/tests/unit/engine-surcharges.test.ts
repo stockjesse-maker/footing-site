@@ -991,3 +991,33 @@ describe("customer exceptions that cannot change the figure", () => {
     expect(marked.warnings.map((w) => w.code)).not.toContain("override_not_applicable");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Assumed inputs (bulk modeling of files that lack them)
+// ---------------------------------------------------------------------------
+
+describe("assumed inputs make dependent charges estimates", () => {
+  it("an assumed residential flag turns the residential line (and fuel on it) into estimates, but not the base", () => {
+    const r = calc(shipment([ONE_LB], { residential: true, assumed: { residential: true } }), context({ rules: [residential(), fuel("20", { kind: "base_plus_all_surcharges" })] }));
+    const res = lineFor(r, "res");
+    expect(res.counted).toBe(true);
+    expect(res.chargeClass).toBe("estimated");
+    expect(res.explanation).toContain("Based on an assumed residential status");
+    expect(r.lines.find((l) => l.kind === "base")!.chargeClass).toBe("definite");
+    expect(lineFor(r, "fuel").chargeClass).toBe("estimated"); // part of its base is an estimate
+    expect(r.warnings).toContainEqual(expect.objectContaining({ code: "assumed_inputs" }));
+    // 10.00 definite; 5.00 + 3.00 estimated
+    expect(totals(r)).toMatchObject({ definite: "10.00", estimated: "8.00", expected: "18.00", conditionalExposure: "0.00" });
+  });
+
+  it("an assumed weight or origin makes the base rate an estimate; nothing assumed changes nothing", () => {
+    const assumedWeight = calc(shipment([ONE_LB], { assumed: { weight: true } }), context());
+    expect(assumedWeight.lines.find((l) => l.kind === "base")!.chargeClass).toBe("estimated");
+    expect(totals(assumedWeight).definite).toBe("0.00");
+    const assumedOrigin = calc(shipment([ONE_LB], { assumed: { originZip: true } }), context());
+    expect(assumedOrigin.lines.find((l) => l.kind === "base")!.chargeClass).toBe("estimated");
+    const plain = calc(shipment([ONE_LB], { assumed: {} }), context());
+    expect(plain.lines.find((l) => l.kind === "base")!.chargeClass).toBe("definite");
+    expect(plain.warnings.map((w) => w.code)).not.toContain("assumed_inputs");
+  });
+});
