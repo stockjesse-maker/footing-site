@@ -8,6 +8,7 @@ import { getContext, requireUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/permissions";
 import { loadPricingContext } from "@/lib/pricing/snapshot";
 import { RATE_LIMITED_MESSAGE, withinRateLimit } from "@/lib/rate-limit";
+import { customerSafe } from "@/lib/pricing/customer-safe";
 import { createClient } from "@/lib/supabase/server";
 
 
@@ -18,15 +19,13 @@ export interface CalculatorResponse {
   ok: boolean;
   message?: string;
   results?: ShipmentCalculation[];
+  /** Staff only: which version priced the shipment. Customers get `effectiveDate` alone. */
   version?: { id: string; versionNumber: number; effectiveDate: string; expirationDate: string | null; status: string };
+  effectiveDate?: string | null;
   /** Configuration problems found while loading (e.g. a rule version whose stored conditions no longer validate). Shown with the result. */
   issues?: string[];
 }
 
-/**
- * Prices a shipment for the signed-in user. 3PL staff can use any rate card of their tenant;
- * brand users only their assigned cards (Row Level Security makes anything else invisible).
- */
 export async function priceShipment(request: unknown): Promise<CalculatorResponse> {
   await requireUser();
   const ctx = await getContext();
@@ -57,6 +56,7 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
       rate_card_not_found: "That rate card is not available to you.",
       no_version_in_effect: "No active version of this rate card is in effect on the ship date.",
       version_not_found: "That version is not available.",
+      load_failed: "Pricing data could not be loaded right now. Try again in a moment.",
     } as const;
     return { ok: false, message: messages[loaded.error] };
   }
@@ -101,5 +101,6 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
     p_metadata: { services: services.length, packages: req.packages.length, statuses: results.map((r) => r.status) },
   });
   await activity;
-  return { ok: true, results, version: snapshot.version, issues: snapshot.issues };
+  if (isBrand) return { ok: true, results: results.map(customerSafe), effectiveDate: snapshot.version.effectiveDate, issues: snapshot.issues };
+  return { ok: true, results, version: snapshot.version, effectiveDate: snapshot.version.effectiveDate, issues: snapshot.issues };
 }

@@ -96,9 +96,14 @@ interface BatchInput {
   toRow: number;
   total: number;
   shipments: BatchShipment[];
+  /** The partial summary as of `fromRow`, read in the same statement as the cursor. */
+  partialSummary: PartialSummary | null;
 }
 
 type ContextLoad = { ok: true; snapshot: LoadedSnapshot } | { ok: false; reason: "no_version_in_effect" };
+
+/** Thrown when the batch cannot continue right now (a load failed); the caller retries later without failing the run. */
+export class BatchRetryError extends Error {}
 
 interface ContextRow {
   ship_date: string;
@@ -153,6 +158,7 @@ const BLOCKING_ISSUES: Record<string, ExclusionReason> = {
   weight_unit_invalid: "weight_invalid",
   nothing_to_ship: "nothing_to_ship",
   sku_unknown: "sku_unknown",
+  value_out_of_range: "value_out_of_range",
 };
 
 function unavailableResult(reason: CompactResult["unavailableReason"], shipDate: string | null, serviceId: string | null): CompactResult {
@@ -178,6 +184,7 @@ export async function priceBatchCore(
   let processed = run.processed_shipments;
   const total = run.total_shipments;
   let partial: PartialSummary = run.partial_summary ?? emptyPartial();
+  let applied = true;
 
   const loadContext = async (shipDate: string): Promise<ContextLoad> => {
     const hit = caches.contexts.get(shipDate);
@@ -186,6 +193,7 @@ export async function priceBatchCore(
     let entry: ContextLoad;
     if (loaded.ok) entry = { ok: true, snapshot: loaded.snapshot };
     else if (loaded.error === "no_version_in_effect") entry = { ok: false, reason: "no_version_in_effect" };
+    else if (loaded.error === "load_failed") throw new BatchRetryError("pricing context load failed");
     else throw new Error(`pricing context unavailable (${loaded.error})`);
     caches.contexts.set(shipDate, entry);
     return entry;
@@ -200,6 +208,10 @@ export async function priceBatchCore(
       break;
     }
     if (!input.shipments.length) break;
+    // The partial that belongs to this cursor position: another caller (a second tab, a retry whose
+    // first request was still pricing) may have advanced the run since this call read the row.
+    partial = input.partialSummary ?? emptyPartial();
+    nextRow = input.fromRow;
 
     const dictionary = partial.dictionary.length ? [...partial.dictionary] : createDictionary();
     const contextRows = new Map<string, ContextRow>();
@@ -244,6 +256,7 @@ export async function priceBatchCore(
       let compact: CompactResult | null = null;
       if (!excludedReason) {
         const ctx = await loadContext(shipDate!);
+        if (ctx.ok) for (const issue of ctx.snapshot.issues) if (!partial.loadIssues.includes(issue)) partial = { ...partial, loadIssues: [...partial.loadIssues, issue] };
         if (!contextRows.has(shipDate!)) {
           contextRows.set(shipDate!, ctx.ok
             ? { ship_date: shipDate!, rate_card_version_id: ctx.snapshot.pins.rateCardVersionId, rule_version_ids: ctx.snapshot.pins.ruleVersionIds, zip_list_ids: ctx.snapshot.pins.zipListIds, override_ids: ctx.snapshot.pins.overrideIds, load_issues: ctx.snapshot.issues, unavailable_reason: null }
@@ -332,23 +345,24 @@ export async function priceBatchCore(
     status = progress.status;
     nextRow = progress.nextRow;
     processed = progress.processed;
+    applied = progress.applied;
+    // Not applied: another caller committed this window first. Its partial is now the truth; this call stops here.
+    if (!applied) break;
   }
 
-  if (status === "running" && nextRow > total) {
-    const [{ data: ds }, { data: ctxRows }] = await Promise.all([
-      db.from("order_datasets").select("row_count, order_count, shipment_count, package_count").eq("id", project.dataset_id!).maybeSingle(),
-      db.from("simulation_run_contexts").select("load_issues").eq("run_id", run.id),
-    ]);
-    const counts: DatasetCounts = { rows: ds?.row_count ?? 0, orders: ds?.order_count ?? 0, shipments: ds?.shipment_count ?? total, packages: ds?.package_count ?? 0 };
-    const loadIssues = [...new Set((ctxRows ?? []).flatMap((c) => (c.load_issues as string[]) ?? []))];
-    const summary = finalizeSummary(partial, counts, loadIssues, ENGINE_VERSION);
+  if (status === "running" && applied && nextRow > total) {
+    const { data: ds, error: dsError } = await db.from("order_datasets").select("row_count, order_count, shipment_count, package_count").eq("id", project.dataset_id!).maybeSingle();
+    if (dsError || !ds) throw new BatchRetryError("dataset counts could not be read");
+    const counts: DatasetCounts = { rows: ds.row_count, orders: ds.order_count, shipments: ds.shipment_count, packages: ds.package_count };
+    const summary = finalizeSummary(partial, counts, [], ENGINE_VERSION);
     const { error: finError } = await db.rpc("finish_simulation_run", {
       p_run: run.id,
       p_summary: summary,
       p_reference_data: { dictionary: summary.dictionary, pricingBasis: run.pricing_basis, asOfDate: run.as_of_date },
       p_engine_version: ENGINE_VERSION,
     });
-    if (finError) throw new Error(`finish: ${finError.message}`);
+    // "run is completed": a concurrent caller finished it between this call's last window and now.
+    if (finError && !/run is completed/.test(finError.message)) throw new Error(`finish: ${finError.message}`);
     status = "completed";
   }
 

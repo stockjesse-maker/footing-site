@@ -141,7 +141,8 @@ export interface OrderValidationReport {
   counts: { rows: number; orders: number; shipments: number; packages: number; lines: number; units: number };
   /** Orders with no validation issue under the mapping's defaults (a run may still exclude more or fewer). */
   modelableOrders: number;
-  issuesByCode: Array<{ code: string; severity: "error" | "warning"; orders: number; rows: number; message: string }>;
+  /** Per issue code: orders it touches, source rows it covers, shipments it was raised on (order-level issues count 0 shipments). */
+  issuesByCode: Array<{ code: string; severity: "error" | "warning"; orders: number; rows: number; shipments: number; message: string }>;
   issues: OrderIssue[];
   issuesTruncated: boolean;
   /** Distinct service strings and how often they occur, for the service-map step. */

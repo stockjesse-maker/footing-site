@@ -16,6 +16,11 @@ export function finalizeSummary(partial: PartialSummary, datasetCounts: DatasetC
   // Share of the modeled expected cost: the one basis every breakdown has, whether it is counted in orders, shipments or packages.
   const share = (amount: DecimalString) => pct(dec(amount), expected);
   const imported = { ...datasetCounts };
+  // Orders the fold never saw have no shipments at all (nothing to ship, e.g. gift cards): they stay in
+  // the imported count and are listed as excluded, so modeled + excluded always reconciles to imported.
+  const exclusions: Record<string, { orders: number; shipments: number }> = { ...partial.exclusions };
+  const unseen = imported.orders - partial.orders.seen;
+  if (unseen > 0) exclusions.nothing_to_ship = { orders: (exclusions.nothing_to_ship?.orders ?? 0) + unseen, shipments: exclusions.nothing_to_ship?.shipments ?? 0 };
   return {
     engineVersion,
     imported,
@@ -33,7 +38,7 @@ export function finalizeSummary(partial: PartialSummary, datasetCounts: DatasetC
       unresolved: { amount: partial.totals.unresolved, shipments: partial.exposureShipments.unresolved, by: structuredClone(partial.unresolvedBy) },
     },
     pricedButExcluded: { ...partial.pricedButExcluded },
-    exclusions: Object.entries(partial.exclusions)
+    exclusions: Object.entries(exclusions)
       .map(([reason, e]) => ({ reason, orders: e.orders, shipments: e.shipments, ordersPct: pct(dec(e.orders), dec(imported.orders)) }))
       .sort((a, b) => b.orders - a.orders || compareKeys(a.reason, b.reason)),
     byZone: Object.entries(partial.byZone)
@@ -55,7 +60,7 @@ export function finalizeSummary(partial: PartialSummary, datasetCounts: DatasetC
     warnings: Object.entries(partial.warnings)
       .map(([stored, w]) => ({ ...splitWarningCode(stored), shipments: w.shipments }))
       .sort((a, b) => b.shipments - a.shipments || compareKeys(a.code, b.code) || compareKeys(a.ruleKey ?? "", b.ruleKey ?? "")),
-    loadIssues: [...loadIssues],
+    loadIssues: [...new Set([...partial.loadIssues, ...loadIssues])].sort(compareKeys),
     assumptions: { ...partial.assumptions },
     dictionary: partial.dictionary.map((e) => ({ ...e })),
   };

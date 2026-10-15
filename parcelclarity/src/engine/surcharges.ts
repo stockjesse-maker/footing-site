@@ -16,6 +16,8 @@ export interface EvaluationContext {
   zone: string | null;
   packages: PackageContext[];
   zipLists: Map<string, ZipListIndex>;
+  /** Display names by rule key, so explanations name rules the way the customer sees them. */
+  ruleNames: Map<string, string>;
   /**
    * Keys of rules that ended up applying (after exclusivity and overrides) and of rules whose
    * outcome stayed unknown, per scope. null during the first pass: `rule_applied` conditions are
@@ -241,7 +243,7 @@ export function unknownReason(rule: SurchargeRule, ctx: EvaluationContext, pkg: 
     if (evaluateCondition(c, ctx, pkg) !== "unknown") return null;
     switch (c.type) {
       case "destination_zip_in_list":
-        return ctx.zipLists.has(c.listKey) ? "no destination ZIP was given" : `the ZIP list "${c.listKey}" is not loaded`;
+        return ctx.zipLists.has(c.listKey) ? "no destination ZIP was given" : "a ZIP code list the rule needs is not available for this date";
       case "destination_zip_prefix_in":
         return "no destination ZIP was given";
       case "zone_in":
@@ -249,7 +251,7 @@ export function unknownReason(rule: SurchargeRule, ctx: EvaluationContext, pkg: 
       case "any_of":
         return c.conditions.map(describe).find((d) => d) ?? "an input needed to decide was missing";
       case "rule_applied":
-        return `it depends on ${c.ruleKey}, which could not be decided`;
+        return `it depends on ${ctx.ruleNames.get(c.ruleKey) ?? "another surcharge"}, which could not be decided`;
       default:
         return "package dimensions were not given";
     }

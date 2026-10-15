@@ -46,7 +46,7 @@ export function buildMaterialisePayloads(orders: ParsedOrder[], chunkOrders = 50
           seq: s.seq,
           row_no: rowNo,
           external_shipment_id: s.externalShipmentId,
-          service_text: s.serviceText,
+          service_text: s.serviceText === null ? null : s.serviceText.slice(0, 160),
           service_id: s.serviceId,
           origin_zip: s.originZip,
           destination_zip: s.destinationZip,
@@ -65,7 +65,7 @@ export function buildMaterialisePayloads(orders: ParsedOrder[], chunkOrders = 50
             width_in: p.width,
             height_in: p.height,
             declared_value: p.declaredValue,
-            packaging_type: p.packagingType,
+            packaging_type: p.packagingType === null ? null : p.packagingType.slice(0, 60),
             weight_derived: p.weightDerived,
             dimensions_derived: p.dimensionsDerived,
           });

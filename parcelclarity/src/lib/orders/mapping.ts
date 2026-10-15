@@ -39,7 +39,8 @@ const HEADER_SYNONYMS: Record<Field, string[]> = {
   residential: ["residential", "address type", "residential indicator", "is residential", "delivery type", "home delivery"],
   carrier: ["carrier", "carrier name", "carrier code", "courier"],
   service: ["shipping method", "ship method", "service level", "shipping service", "carrier service", "service name", "delivery method", "service", "method", "shipping"],
-  weight: ["package weight", "shipment weight", "total weight", "actual weight", "weight lb", "weight lbs", "weight oz", "weight kg", "weight g", "lineitem grams", "total grams", "weight", "grams"],
+  // "Lineitem grams" (Shopify) is per line and per unit, not a package weight: such files use product weights instead.
+  weight: ["package weight", "shipment weight", "total weight", "actual weight", "weight lb", "weight lbs", "weight oz", "weight kg", "weight g", "weight", "grams"],
   weightUnit: ["weight unit", "weight uom", "uom"],
   length: ["length in", "length", "l"],
   width: ["width in", "width", "w"],

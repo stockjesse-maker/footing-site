@@ -75,6 +75,7 @@ export type ExclusionReason =
   | "package_inconsistent"
   | "nothing_to_ship"
   | "sku_unknown"
+  | "value_out_of_range"
   | "no_packages";
 
 /** The engine's reasons plus pre-pricing exclusions, as they appear in the exclusions table. */
@@ -173,6 +174,8 @@ export interface PartialSummary {
   unresolvedBy: Record<"dimensions_missing" | "zip_list_missing" | "other", { shipments: number; amount: DecimalString }>;
   /** Modeled shipments carrying a non-zero conditional / unresolved amount: the N in "up to X across N shipments". */
   exposureShipments: { conditional: number; unresolved: number };
+  /** Distinct pricing-configuration problems met while loading (rule names, never keys); merged by the run loop, untouched by the fold. */
+  loadIssues: string[];
 }
 
 export interface DatasetCounts {

@@ -42,6 +42,14 @@ Line order in results: per package (base, minimum, surcharges in the carrier's c
 
 Reported weights (`actualLb`, `dimLb`, `billableLb`) are exact when they terminate within 12 decimals and otherwise rounded **up** at the 12th decimal, so a reported billable weight never falls below the value that was priced (and never outside its bracket, whose minimum is exclusive). Display formatting is the UI's job.
 
+## Assumed inputs (engine 2.2.0)
+
+Bulk modeling often has to fill in what an orders file lacks. `ShipmentInput.assumed = { residential?, originZip?, weight?, dimensions? }` tells the engine which inputs came from an assumption (a default, a product weight) rather than the record. Every counted charge that rests on an assumed input is classed **estimated** and says so in its explanation: the base rate when weight, dimensions or the origin (hence the zone) were assumed; surcharges whose conditions read the residential flag, the zone, or the package measurements; percentages over those lines follow automatically. The result carries an `assumed_inputs` warning. Nothing about the amounts changes; only their certainty does.
+
+## Bulk modeling (`src/engine/modeling`)
+
+A run prices each shipment of an orders file with `calculateShipment` and stores a compact result (`encodeResult`: dictionary-encoded lines `[entry, cents, status, class, package]`, split totals, billable weights, warning codes). `foldBatch` accumulates whole orders into a `PartialSummary` (totals, by zone / service / billable-weight bracket / month / surcharge, exclusions by reason, assumptions, warnings) and `finalizeSummary` turns it into the customer-facing `BulkSummary` (averages HALF_UP to cents or null, coverage and shares to one decimal). Rules: an order is **modeled** only when it is not cancelled and every one of its shipments priced `ok`; totals, averages and breakdowns cover modeled orders only; conditional exposure and unresolved amounts are reported as "up to" figures and never averaged. Everything is decimal strings; nothing is summed in floating point. Tests: `tests/unit/modeling-fold.test.ts`.
+
 ## Carrier adapters
 
 `src/engine/carriers/index.ts` holds **structure only**: how a carrier rounds and measures (offered as *structural defaults* when a 3PL sets up service terms, labelled "verify against the carrier's current service guide"), the evaluation order of surcharge categories, and the known mutually exclusive groups for the rule editor's guidance. No amounts, divisors or ZIP lists live there. The engine reads only `ServiceTerms`, so a 3PL can override every structural default per service.
@@ -61,10 +69,12 @@ CSV/XLSX → tables (`parse-table.ts`, 5 MB, 50,000 rows and 600,000 cells per s
 * `tests/unit/engine-golden.test.ts`: 32 scenarios against `tests/fixtures/pricing/expected.json`, whose values were derived **independently of the engine** by two separate computations (one scripted, one by hand) from the design document and the fixture files, then reconciled. Two deliberate post-reconciliation decisions are recorded in the file (fuel on an estimated base is estimated; a counted line from an unverified rule is estimated).
 * `tests/unit/engine-*.test.ts`: per-area tests (dimensional weight and rounding, zones and brackets and unavailable paths, surcharge semantics, money and validation) with hand-derived expectations, plus two adversarial review suites (`engine-numerics-review`, `engine-semantics-review`) written by reviewers who were asked to break the engine; each of their findings is now a passing test.
 * `tests/unit/import-pipeline.test.ts`: parsers, mapping heuristics, validation.
+* `tests/unit/orders-import.test.ts`: order-file detection and validation against generic, Shopify and ShipHero-style fixtures (counts of rows, orders, shipments, packages and lines derived by hand).
+* `tests/unit/engine-throughput.test.ts`: 2,000 varied shipments on the fixture context stay under 10 ms each (measured ≈0.6 ms).
 * `tests/db/pricing.test.ts`: who can see and change pricing data (RLS), activation/publication state machines, audit.
 
 All fixture data is fictional and must never be shown as real pricing.
 
 ## Not implemented yet
 
-Order-level aggregation and average cost per order (Milestone 3), processing/fulfillment fees (4), reweight/remeasure adjustment risk (5; a correction will be defined as calculate(corrected) − calculate(original) plus any correction-fee line), metric units, non-US destinations, carrier-published rule monitoring (8). Platform-scope (carrier-verified) rules can only be inserted by the service role today; the review/approval workflow arrives in Milestone 8. Out of scope by decision: volume-tiered products (USPS Cubic) and packaging-keyed rows (flat-rate boxes); rate cards are weight-bracketed only and the importer treats everything as weight brackets, so such sheets must not be imported until a `bracket_basis` is added.
+Manual forecasting from assumptions (with Milestone 4, which brings the packaging/storage/receiving assumptions it needs), processing/fulfillment fees (4), reweight/remeasure adjustment risk (5; a correction will be defined as calculate(corrected) − calculate(original) plus any correction-fee line), metric units, non-US destinations, carrier-published rule monitoring (8). Platform-scope (carrier-verified) rules can only be inserted by the service role today; the review/approval workflow arrives in Milestone 8. Out of scope by decision: volume-tiered products (USPS Cubic) and packaging-keyed rows (flat-rate boxes); rate cards are weight-bracketed only and the importer treats everything as weight brackets, so such sheets must not be imported until a `bracket_basis` is added.

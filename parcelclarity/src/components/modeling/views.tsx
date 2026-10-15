@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import type { ShipmentCalculation } from "@/engine/types";
+import type { ReactNode } from "react";
+import type { ShipmentCalculation, ShipmentInput } from "@/engine/types";
 import type { BulkSummary } from "@/engine/modeling/types";
 import { DatasetList, HubCard, ScenarioList, runStateLabel } from "@/components/modeling/lists";
 import { OrderMappingWizard, type DatasetValidation } from "@/components/modeling/order-mapping-wizard";
@@ -8,7 +9,7 @@ import { RunProgress } from "@/components/modeling/run-progress";
 import { RunBreakdowns, RunExclusions, RunHeadline, ShipmentsTable, type RunProvenance, type ShipmentRowView } from "@/components/modeling/run-results";
 import { RunSetupForm } from "@/components/modeling/run-setup-form";
 import { OrderUploadForm, SkuProfilesForm } from "@/components/modeling/upload-forms";
-import { CalculationResult, formatMoney } from "@/components/pricing/calculation-result";
+import { CalculationResult, formatDecimal, formatMoney } from "@/components/pricing/calculation-result";
 import { CalculatorForm } from "@/components/pricing/calculator-form";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +20,7 @@ import { Stat } from "@/components/ui/stat";
 import { uuidSchema } from "@/lib/auth/validation";
 import { formatDate } from "@/lib/format/date";
 import type { ModelingView } from "@/lib/modeling/page-context";
-import { latestCompletedBulkRun, loadAssignedCards, loadModelingLists, type RunListRow } from "@/lib/modeling/queries";
+import { latestCompletedBulkRun, loadAssignedCards, loadModelingLists, type ProjectListRow, type RunListRow } from "@/lib/modeling/queries";
 import type { OrderDetection } from "@/lib/orders/mapping";
 import type { OrderMapping } from "@/lib/orders/types";
 
@@ -29,7 +30,6 @@ import type { OrderMapping } from "@/lib/orders/types";
  * the view only decides vocabulary and links.
  */
 
-const today = () => new Date().toISOString().slice(0, 10);
 
 function BackLink({ href, label }: { href: string; label: string }) {
   return (
@@ -93,15 +93,15 @@ function HeadlineFromRun({ summary, run, scenarioName, rateCardName, href }: { s
     <div className="space-y-2">
       <div className="grid gap-4 sm:grid-cols-3">
         <Stat label="Estimated shipping cost per order" value={summary.averages.expectedPerOrder ? formatMoney({ amount: summary.averages.expectedPerOrder, currency: "USD" }) : "—"} note={`${summary.modeled.orders.toLocaleString("en-US")} of ${summary.imported.orders.toLocaleString("en-US")} orders (${summary.coverage.ordersPct}%)`} />
-        <Stat label="Projected shipping spend" value={formatMoney({ amount: summary.totals.expected, currency: "USD" })} note="for the orders in the file" />
+        <Stat label="Projected shipping spend" value={summary.modeled.orders ? formatMoney({ amount: summary.totals.expected, currency: "USD" }) : "—"} note={summary.modeled.orders ? `for the ${summary.modeled.orders.toLocaleString("en-US")} of ${summary.imported.orders.toLocaleString("en-US")} orders that could be priced` : "no orders could be priced"} />
         <Stat label="Per package" value={summary.averages.expectedPerPackage ? formatMoney({ amount: summary.averages.expectedPerPackage, currency: "USD" }) : "—"} note={`${summary.modeled.packages.toLocaleString("en-US")} packages`} />
       </div>
       <p className="text-sm text-muted">
-        <Link href={href} className="font-medium text-accent-text hover:underline">
-          {scenarioName}
-        </Link>{" "}
-        · {rateCardName} · {run.pricing_basis === "fixed_date" && run.as_of_date ? `rates in effect on ${formatDate(run.as_of_date)}` : "rates on each ship date"} · estimates, not an invoice.
+        {scenarioName} · {rateCardName} · {run.pricing_basis === "fixed_date" && run.as_of_date ? `rates in effect on ${formatDate(run.as_of_date)}` : "rates on each ship date"} · estimates, not an invoice.
       </p>
+      <Link href={href} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+        View the results →
+      </Link>
     </div>
   );
 }
@@ -192,7 +192,7 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
     v.supabase.from("sku_profiles").select("id", { count: "exact", head: true }).eq("brand_id", v.brandId),
   ]);
   const brandIdProp = v.staff ? v.brandId : undefined;
-  const unmapped = ds.validation?.issuesByCode.find((i) => i.code === "service_unmapped")?.rows ?? 0;
+  const unmapped = ds.validation?.issuesByCode.find((i) => i.code === "service_unmapped")?.shipments ?? 0;
   const earliestRates = assigned.cards.flatMap((c) => c.versions.map((x) => x.effectiveDate)).filter((d): d is string => !!d).sort()[0] ?? null;
   return (
     <>
@@ -213,7 +213,12 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
           defaultOriginZip={assigned.defaultOriginZip}
           skuProfileCount={skuCount ?? 0}
           productsHref={`${v.basePath}/products`}
+          uploadHref={v.basePath}
+          hasCards={assigned.cards.length > 0}
         />
+        {ds.status === "ready" && !assigned.cards.length ? (
+          <Alert tone="warning">{v.staff ? "Assign an active rate card to this customer to run the model." : `${v.tenantName} has not assigned a rate card to your account, so this file cannot be priced yet.`}</Alert>
+        ) : null}
         {ds.status === "ready" && assigned.cards.length ? (
           <RunSetupForm
             brandId={brandIdProp}
@@ -226,7 +231,6 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
             unmappedShipments={unmapped}
             earliestRatesDate={earliestRates}
             firstOrderDate={ds.validation?.dateRange.from ?? null}
-            today={today()}
             tenantName={v.tenantName}
           />
         ) : null}
@@ -241,8 +245,7 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
 interface RunRow extends RunListRow {
   project_id: string;
   brand_id: string;
-  service_override_id: string | null;
-  single_input: Record<string, unknown> | null;
+  single_input: ShipmentInput | null;
   single_result: ShipmentCalculation | null;
   error: string | null;
   simulation_projects: { id: string; name: string; dataset_id: string | null; rate_cards: { name: string } | null; order_datasets: { name: string; mapping: OrderMapping | null; validation: DatasetValidation | null } | null } | null;
@@ -261,7 +264,8 @@ interface ResultRow {
   expected: string | number;
   conditional_exposure: string | number;
   unresolved: string | number;
-  shipments: { external_shipment_id: string | null; destination_zip: string | null; orders: { external_order_id: string } | null } | null;
+  in_totals: boolean;
+  shipments: { external_shipment_id: string | null; destination_zip: string | null; ship_date: string | null; orders: { external_order_id: string; order_date: string | null } | null } | null;
   shipping_services: { name: string } | null;
 }
 
@@ -272,7 +276,7 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
   const { data } = await v.supabase
     .from("simulation_runs")
     .select(
-      "id, project_id, brand_id, status, kind, pricing_basis, as_of_date, service_override_id, created_at, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, single_input, single_result, error, simulation_projects(id, name, dataset_id, rate_cards(name), order_datasets(name, mapping, validation)), shipping_services(name)",
+      "id, project_id, brand_id, status, kind, pricing_basis, as_of_date, service_override_id, assumptions, created_at, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, single_input, single_result, error, simulation_projects(id, name, dataset_id, rate_cards(name), order_datasets(name, mapping, validation)), shipping_services(name)",
     )
     .eq("id", runId)
     .maybeSingle();
@@ -283,17 +287,43 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
   const state = runStateLabel(run);
 
   if (run.kind === "single") {
+    const input = run.single_input;
     return (
       <>
         <BackLink href={v.basePath} label="Model Costs" />
         <PageHeader title={project.name} description={<Badge tone="success">Saved scenario</Badge>} />
-        {run.single_result ? <CalculationResult result={run.single_result} audience={v.staff ? "staff" : "brand"} cardName={project.rate_cards?.name ?? "your rate card"} effectiveDate={run.as_of_date} /> : <EmptyState title="No result stored" />}
+        <div className="space-y-6">
+          {input ? (
+            <Card>
+              <CardTitle>What was priced</CardTitle>
+              <dl className="mt-3 grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <SingleDetail label="Ship date">{formatDate(input.shipDate)}</SingleDetail>
+                <SingleDetail label="From">{input.originZip}</SingleDetail>
+                <SingleDetail label="To">{input.destinationZone ? `zone ${input.destinationZone}` : (input.destinationZip ?? "—")}</SingleDetail>
+                <SingleDetail label="Delivery">{input.residential ? "Home address" : "Business address"}</SingleDetail>
+                <SingleDetail label="Service">{run.single_result?.service?.serviceName ?? `${input.carrierCode} ${input.serviceCode}`}</SingleDetail>
+                <SingleDetail label="Options">{[input.options?.signature && input.options.signature !== "none" ? `${input.options.signature.replace(/_/g, " ")} signature` : null, input.options?.saturdayDelivery ? "Saturday delivery" : null].filter(Boolean).join(", ") || "None"}</SingleDetail>
+                <SingleDetail label={input.packages.length === 1 ? "Package" : "Packages"}>
+                  {input.packages.map((p, i) => (
+                    <span key={i} className="block">
+                      {formatDecimal(p.weight)} {p.weightUnit}
+                      {p.length && p.width && p.height ? ` · ${formatDecimal(p.length)} × ${formatDecimal(p.width)} × ${formatDecimal(p.height)} in` : " · no dimensions"}
+                    </span>
+                  ))}
+                </SingleDetail>
+              </dl>
+              <p className="mt-3 text-sm text-muted">Saved {formatDate(run.created_at)}; the price does not change afterwards. To price the same shipment again, enter it in the calculator.</p>
+            </Card>
+          ) : null}
+          {run.single_result ? <CalculationResult result={run.single_result} audience={v.staff ? "staff" : "brand"} cardName={project.rate_cards?.name ?? "your rate card"} effectiveDate={null} shipDate={run.as_of_date} /> : <EmptyState title="No result stored" />}
+        </div>
       </>
     );
   }
 
   const assigned = await loadAssignedCards(v.supabase, v.brandId, v.tenantDefaultOriginZip);
   const dataset = project.order_datasets;
+  const assumptions = run.assumptions ?? {};
   const setup = (
     <RunSetupForm
       brandId={brandIdProp}
@@ -303,19 +333,27 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
       askResidential={dataset?.mapping?.columns.residential === null}
       askOrigin={dataset?.mapping?.columns.originZip === null}
       defaultOriginZip={assigned.defaultOriginZip}
-      unmappedShipments={dataset?.validation?.issuesByCode.find((i) => i.code === "service_unmapped")?.rows ?? 0}
+      unmappedShipments={dataset?.validation?.issuesByCode.find((i) => i.code === "service_unmapped")?.shipments ?? 0}
       earliestRatesDate={assigned.cards.flatMap((c) => c.versions.map((x) => x.effectiveDate)).filter((d): d is string => !!d).sort()[0] ?? null}
       firstOrderDate={dataset?.validation?.dateRange.from ?? null}
-      today={today()}
       tenantName={v.tenantName}
+      initial={{
+        pricingBasis: run.pricing_basis,
+        asOfDate: run.as_of_date,
+        serviceOverrideId: run.service_override_id,
+        overrideAllServices: assumptions.overrideAllServices ?? false,
+        residentialDefault: assumptions.residentialDefault ?? null,
+        originZipDefault: assumptions.originZipDefault ?? null,
+      }}
     />
   );
 
   if (run.status === "running") {
+    // The progress card owns the live state; a server-rendered "paused" badge would contradict it as soon as the loop resumes.
     return (
       <>
         <BackLink href={v.basePath} label="Model Costs" />
-        <PageHeader title={project.name} description={<Badge tone={state.tone}>{state.label}</Badge>} />
+        <PageHeader title={project.name} />
         <RunProgress runId={run.id} brandId={brandIdProp} initial={{ processed: run.processed_shipments, total: run.total_shipments, status: run.status }} />
       </>
     );
@@ -326,7 +364,9 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
         <BackLink href={v.basePath} label="Model Costs" />
         <PageHeader title={project.name} description={<Badge tone={state.tone}>{state.label}</Badge>} />
         <Alert tone={run.status === "failed" ? "danger" : "info"} className="mb-6">
-          {run.status === "failed" ? `This run could not finish${run.error ? `: ${run.error}` : ""}. Nothing from it is shown as a result.` : "This run was cancelled before it finished; nothing from it is shown as a result."}
+          {run.status === "failed"
+            ? `This run could not finish. Nothing from it is shown as a result. You can run it again below; if it keeps failing, contact ${v.staff ? "support" : v.tenantName}.${v.staff && run.error ? ` (${run.error})` : ""}`
+            : "This run was cancelled before it finished; nothing from it is shown as a result."}
         </Alert>
         {setup}
       </>
@@ -337,7 +377,7 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
   const status = searchParams.status === "ok" || searchParams.status === "unavailable" ? searchParams.status : "all";
   let query = v.supabase
     .from("simulation_results")
-    .select("row_no, status, unavailable_reason, ship_date, zone, billable_lb, definite, estimated, expected, conditional_exposure, unresolved, shipments(external_shipment_id, destination_zip, orders(external_order_id)), shipping_services(name)", { count: "exact" })
+    .select("row_no, status, unavailable_reason, ship_date, zone, billable_lb, definite, estimated, expected, conditional_exposure, unresolved, in_totals, shipments(external_shipment_id, destination_zip, ship_date, orders(external_order_id, order_date)), shipping_services(name)", { count: "exact" })
     .eq("run_id", run.id)
     .order("row_no")
     .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
@@ -347,7 +387,9 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
     rowNo: r.row_no,
     externalOrderId: r.shipments?.orders?.external_order_id ?? "—",
     externalShipmentId: r.shipments?.external_shipment_id ?? null,
-    shipDate: r.ship_date,
+    shipDate: r.shipments?.ship_date ?? r.shipments?.orders?.order_date ?? null,
+    pricedOn: r.ship_date,
+    inTotals: r.in_totals,
     destinationZip: r.shipments?.destination_zip ?? null,
     zone: r.zone,
     serviceName: r.shipping_services?.name ?? null,
@@ -367,6 +409,9 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
     pricingBasis: run.pricing_basis,
     asOfDate: run.as_of_date,
     serviceOverrideName: run.shipping_services?.name ?? null,
+    overrideAllServices: assumptions.overrideAllServices ?? false,
+    residentialDefault: assumptions.residentialDefault ?? null,
+    originZipDefault: assumptions.originZipDefault ?? null,
     finishedAt: run.finished_at,
     exportHref: `/api/runs/${run.id}/results.csv${v.staff ? `?brandId=${v.brandId}` : ""}`,
   };
@@ -377,9 +422,9 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
       <PageHeader title={project.name} description={<Badge tone={state.tone}>{state.label}</Badge>} />
       <div className="space-y-8">
         <RunHeadline summary={run.summary} provenance={provenance} />
-        <RunExclusions summary={run.summary} fixHref={project.dataset_id ? `${v.basePath}/orders/${project.dataset_id}` : null} />
+        <RunExclusions summary={run.summary} fixHref={project.dataset_id ? `${v.basePath}/orders/${project.dataset_id}` : null} staff={v.staff} />
         <RunBreakdowns summary={run.summary} />
-        <ShipmentsTable rows={rows} page={page} pageSize={PAGE_SIZE} total={count ?? rows.length} hrefFor={hrefFor} status={status} />
+        <ShipmentsTable rows={rows} page={page} pageSize={PAGE_SIZE} total={count ?? rows.length} hrefFor={hrefFor} status={status} pricedButExcluded={run.summary.pricedButExcluded.shipments} />
         {setup}
       </div>
     </>
@@ -389,9 +434,19 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
 // ---------------------------------------------------------------------------
 // Reports: list and compare
 // ---------------------------------------------------------------------------
+function SingleDetail({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-xs font-medium text-muted">{label}</dt>
+      <dd className="font-medium break-words">{children}</dd>
+    </div>
+  );
+}
+
 export async function ReportsView(v: ModelingView, searchParams: { a?: string; b?: string }) {
   const { projects } = await loadModelingLists(v.supabase, v.brandId);
   const completed = projects.flatMap((p) => p.simulation_runs.filter((r) => r.kind === "bulk" && r.status === "completed" && r.summary).map((r) => ({ project: p, run: r })));
+  const label = (x: { project: ProjectListRow; run: RunListRow }) => `${x.project.name} · ${x.run.pricing_basis === "fixed_date" && x.run.as_of_date ? `rates of ${formatDate(x.run.as_of_date)}` : "rates on each ship date"} · priced ${formatDate(x.run.finished_at ?? x.run.created_at)}`;
   const pick = (id: string | undefined) => (id && uuidSchema.safeParse(id).success ? completed.find((x) => x.run.id === id) : undefined);
   const a = pick(searchParams.a);
   const b = pick(searchParams.b);
@@ -404,21 +459,21 @@ export async function ReportsView(v: ModelingView, searchParams: { a?: string; b
           <CardTitle>Compare</CardTitle>
           {!b ? (
             <div className="space-y-2 text-sm">
-              <p className="text-muted">Comparing {a.project.name}. Choose a second model:</p>
+              <p className="text-muted">Comparing {label(a)}. Choose a second model:</p>
               <ul className="space-y-1">
                 {completed
                   .filter((x) => x.run.id !== a.run.id)
                   .map((x) => (
                     <li key={x.run.id}>
                       <Link href={`${v.reportsPath}?a=${a.run.id}&b=${x.run.id}`} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
-                        {x.project.name}
+                        {label(x)}
                       </Link>
                     </li>
                   ))}
               </ul>
             </div>
           ) : (
-            <CompareTable a={a} b={b} />
+            <CompareTable a={a} b={b} labelA={label(a)} labelB={label(b)} />
           )}
         </Card>
       ) : null}
@@ -427,17 +482,21 @@ export async function ReportsView(v: ModelingView, searchParams: { a?: string; b
   );
 }
 
-function CompareTable({ a, b }: { a: { project: { name: string; dataset_id: string | null; rate_cards: { name: string } | null }; run: RunListRow }; b: { project: { name: string; dataset_id: string | null; rate_cards: { name: string } | null }; run: RunListRow } }) {
+function CompareTable({ a, b, labelA, labelB }: { a: { project: ProjectListRow; run: RunListRow }; b: { project: ProjectListRow; run: RunListRow }; labelA: string; labelB: string }) {
   const sa = a.run.summary!;
   const sb = b.run.summary!;
   const warnings: string[] = [];
   if (a.project.dataset_id !== b.project.dataset_id) warnings.push("Different orders files were modeled, so the averages are not directly comparable.");
   if (Math.abs(Number(sa.coverage.ordersPct) - Number(sb.coverage.ordersPct)) > 5) warnings.push("The share of orders that could be priced differs by more than 5 points.");
   if (a.run.pricing_basis !== b.run.pricing_basis || a.run.as_of_date !== b.run.as_of_date) warnings.push("The two models use different pricing dates.");
+  if (a.run.service_override_id !== b.run.service_override_id || (a.run.assumptions?.overrideAllServices ?? false) !== (b.run.assumptions?.overrideAllServices ?? false)) warnings.push("The two models price shipments on different services (one is a what-if).");
   const m = (x: string | null) => (x ? formatMoney({ amount: x, currency: "USD" }) : "—");
+  const pricedOn = (x: { run: RunListRow }) => (x.run.shipping_services?.name ? `${x.run.assumptions?.overrideAllServices ? "everything" : "unmapped shipments"} on ${x.run.shipping_services.name}` : "services in the file");
   const rows: [string, string, string][] = [
+    ["Orders file", a.project.order_datasets?.name ?? "—", b.project.order_datasets?.name ?? "—"],
     ["Rate card", a.project.rate_cards?.name ?? "—", b.project.rate_cards?.name ?? "—"],
-    ["Rates", a.run.pricing_basis === "fixed_date" ? `as of ${a.run.as_of_date ?? "?"}` : "each ship date", b.run.pricing_basis === "fixed_date" ? `as of ${b.run.as_of_date ?? "?"}` : "each ship date"],
+    ["Rates", a.run.pricing_basis === "fixed_date" && a.run.as_of_date ? `in effect on ${formatDate(a.run.as_of_date)}` : "each ship date", b.run.pricing_basis === "fixed_date" && b.run.as_of_date ? `in effect on ${formatDate(b.run.as_of_date)}` : "each ship date"],
+    ["Priced on", pricedOn(a), pricedOn(b)],
     ["Orders modeled", `${sa.modeled.orders.toLocaleString("en-US")} of ${sa.imported.orders.toLocaleString("en-US")} (${sa.coverage.ordersPct}%)`, `${sb.modeled.orders.toLocaleString("en-US")} of ${sb.imported.orders.toLocaleString("en-US")} (${sb.coverage.ordersPct}%)`],
     ["Estimated cost per order", m(sa.averages.expectedPerOrder), m(sb.averages.expectedPerOrder)],
     ["Per package", m(sa.averages.expectedPerPackage), m(sb.averages.expectedPerPackage)],
@@ -463,8 +522,8 @@ function CompareTable({ a, b }: { a: { project: { name: string; dataset_id: stri
           <thead>
             <tr className="text-left text-xs text-muted">
               <th className="py-1 pr-3 font-medium" />
-              <th className="py-1 pr-3 font-medium">{a.project.name}</th>
-              <th className="py-1 font-medium">{b.project.name}</th>
+              <th className="py-1 pr-3 font-medium">{labelA}</th>
+              <th className="py-1 font-medium">{labelB}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">

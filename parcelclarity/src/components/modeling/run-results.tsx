@@ -15,6 +15,8 @@ import { formatDate } from "@/lib/format/date";
 
 const money = (v: string | null) => (v === null ? "—" : formatMoney({ amount: v, currency: "USD" }));
 const n = (v: number) => v.toLocaleString("en-US");
+/** "1 shipment", "12 shipments". */
+const plural = (count: number, one: string, many = `${one}s`) => `${n(count)} ${count === 1 ? one : many}`;
 
 const EXCLUSION_TEXT: Record<string, string> = {
   order_cancelled: "Cancelled orders",
@@ -30,6 +32,7 @@ const EXCLUSION_TEXT: Record<string, string> = {
   weight_invalid: "Weight could not be read",
   nothing_to_ship: "Nothing to ship (e.g. gift cards only)",
   sku_unknown: "A product has no weight on file",
+  value_out_of_range: "A value was too long or too large to store",
   no_packages: "No packages",
   service_not_on_rate_card: "Service is not on your rate card",
   zone_unresolved: "Destination not covered by the zone chart",
@@ -43,15 +46,15 @@ const EXCLUSION_TEXT: Record<string, string> = {
 
 const WARNING_TEXT: Record<string, string> = {
   dimensions_missing: "No dimensions, so dimensional weight was not checked",
-  dim_divisor_missing: "Rate card states no DIM divisor for the service",
-  zip_list_missing: "A ZIP list the rules need was not available for the date",
-  unverified_rule_applied: "A surcharge rule whose source is not verified was applied",
+  dim_divisor_missing: "The rate card does not say how to compute dimensional weight for the service",
+  zip_list_missing: "A surcharge could not be confirmed for the address and is shown as an estimate",
+  unverified_rule_applied: "A surcharge whose source is still being confirmed was applied as an estimate",
   zone_chart_missing: "No zone chart for the carrier",
-  rule_overridden: "A customer exception was applied",
-  override_not_applicable: "A customer exception did not fit the rule",
+  rule_overridden: "A pricing exception agreed with your 3PL was applied",
+  override_not_applicable: "A pricing exception did not fit the charge it was set for",
   assumed_inputs: "Priced on assumed inputs",
-  rule_reference_cycle: "A rule depends on another dependent rule",
-  rate_card_not_effective: "Rate card not in effect",
+  rule_reference_cycle: "A surcharge could not be decided because of how it is configured",
+  rate_card_not_effective: "No rates in effect on the date",
 };
 
 export interface RunProvenance {
@@ -61,6 +64,11 @@ export interface RunProvenance {
   pricingBasis: "ship_date" | "fixed_date";
   asOfDate: string | null;
   serviceOverrideName: string | null;
+  /** The override covered every shipment (a what-if), not only the unmapped ones. */
+  overrideAllServices: boolean;
+  /** What was assumed where the file was silent (null = not applicable). */
+  residentialDefault: boolean | null;
+  originZipDefault: string | null;
   finishedAt: string | null;
   exportHref: string | null;
 }
@@ -68,38 +76,35 @@ export interface RunProvenance {
 export function RunHeadline({ summary, provenance }: { summary: BulkSummary; provenance: RunProvenance }) {
   const caveats: string[] = [];
   const exposure = summary.exposure;
-  if (exposure.unresolved.shipments > 0) caveats.push(`Up to ${money(exposure.unresolved.amount)} in surcharges across ${n(exposure.unresolved.shipments)} shipments could not be decided and is not included.`);
-  if (exposure.conditional.shipments > 0) caveats.push(`Up to ${money(exposure.conditional.amount)} across ${n(exposure.conditional.shipments)} shipments may be added after shipping (address corrections and similar) and is not included.`);
-  if (summary.assumptions.packagesWithoutDimensions > 0) caveats.push(`${n(summary.assumptions.packagesWithoutDimensions)} packages had no dimensions, so dimensional weight was not checked; those prices may be low.`);
-  if (summary.assumptions.residential > 0) caveats.push(`${n(summary.assumptions.residential)} shipments were priced on an assumed residential/business status.`);
-  if (summary.assumptions.weight > 0) caveats.push(`${n(summary.assumptions.weight)} shipments were priced on weights derived from product weights.`);
-  if (summary.assumptions.originZip > 0) caveats.push(`${n(summary.assumptions.originZip)} shipments were priced from an assumed origin ZIP.`);
-  if (summary.loadIssues.length) caveats.push(`${n(summary.loadIssues.length)} surcharge rules could not be applied; totals omit them.`);
+  if (exposure.unresolved.shipments > 0) caveats.push(`Up to ${money(exposure.unresolved.amount)} in surcharges across ${plural(exposure.unresolved.shipments, "shipment")} could not be decided and is not included.`);
+  if (exposure.conditional.shipments > 0) caveats.push(`Up to ${money(exposure.conditional.amount)} across ${plural(exposure.conditional.shipments, "shipment")} may be added after shipping (address corrections and similar) and is not included.`);
+  const noDims = summary.warnings.find((w) => w.code === "dimensions_missing")?.shipments ?? 0;
+  if (noDims > 0) caveats.push(`${plural(noDims, "shipment")} had no package dimensions on a service that prices by dimensional weight, so it was not checked; those prices may be low.`);
+  if (summary.assumptions.residential > 0) caveats.push(`${plural(summary.assumptions.residential, "shipment")} ${summary.assumptions.residential === 1 ? "was" : "were"} priced assuming ${provenance.residentialDefault === false ? "business" : "home"} deliveries (the file does not say).`);
+  if (summary.assumptions.weight > 0) caveats.push(`${plural(summary.assumptions.weight, "shipment")} ${summary.assumptions.weight === 1 ? "was" : "were"} priced on weights derived from product weights.`);
+  if (summary.assumptions.originZip > 0) caveats.push(`${plural(summary.assumptions.originZip, "shipment")} ${summary.assumptions.originZip === 1 ? "was" : "were"} priced assuming ${provenance.originZipDefault ? `they ship from ZIP ${provenance.originZipDefault}` : "an origin ZIP"} (the file does not say).`);
+  if (summary.loadIssues.length) caveats.push(`${plural(summary.loadIssues.length, "surcharge rule")} could not be applied; totals omit ${summary.loadIssues.length === 1 ? "it" : "them"}.`);
   const basedOn = `Based on ${n(summary.modeled.orders)} of ${n(summary.imported.orders)} orders (${summary.coverage.ordersPct}%)`;
   const rates = provenance.pricingBasis === "fixed_date" ? `rates in effect on ${provenance.asOfDate ? formatDate(provenance.asOfDate) : "the chosen date"}` : "rates in effect on each ship date";
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat label="Estimated shipping cost per order" value={money(summary.averages.expectedPerOrder)} note={basedOn} />
-        <Stat label="Per package" value={money(summary.averages.expectedPerPackage)} note={`${n(summary.modeled.packages)} packages modeled`} />
-        <Stat label="Projected shipping spend" value={money(summary.totals.expected)} note={`${money(summary.totals.definite)} from your rate card · ${money(summary.totals.estimated)} based on assumptions`} />
+        <Stat label="Per package" value={money(summary.averages.expectedPerPackage)} note={`${plural(summary.modeled.packages, "package")} modeled`} />
+        <Stat label="Projected shipping spend" value={summary.modeled.orders ? money(summary.totals.expected) : "—"} note={summary.modeled.orders ? `for the ${n(summary.modeled.orders)} orders that could be priced: ${money(summary.totals.definite)} from your rate card · ${money(summary.totals.estimated)} based on assumptions` : "no orders could be priced"} />
         <Stat label="Orders modeled" value={`${summary.coverage.ordersPct}%`} note={`${n(summary.modeled.orders)} of ${n(summary.imported.orders)} orders`} />
       </div>
       <p className="text-sm text-muted">
         {provenance.datasetName ? `${provenance.datasetName} · ` : ""}
         {provenance.rateCardName}, {rates}
-        {provenance.serviceOverrideName ? ` · priced on ${provenance.serviceOverrideName}` : ""}
+        {provenance.serviceOverrideName ? ` · ${provenance.overrideAllServices ? "every shipment" : "shipments whose service was not mapped"} priced on ${provenance.serviceOverrideName}` : ""}
         {provenance.finishedAt ? ` · priced ${formatDate(provenance.finishedAt)}` : ""}. Estimates, not an invoice.
-        {provenance.exportHref ? (
-          <>
-            {" "}
-            <Link href={provenance.exportHref} className="font-medium text-accent-text hover:underline">
-              Download the shipment-level CSV
-            </Link>
-            .
-          </>
-        ) : null}
       </p>
+      {provenance.exportHref ? (
+        <a href={provenance.exportHref} download className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+          Download the shipment-level CSV
+        </a>
+      ) : null}
       {caveats.length ? (
         <Alert tone="info">
           <ul className="list-disc space-y-1 pl-5">
@@ -187,20 +192,18 @@ export function RunBreakdowns({ summary }: { summary: BulkSummary }) {
   );
 }
 
-export function RunExclusions({ summary, fixHref }: { summary: BulkSummary; fixHref: string | null }) {
+export function RunExclusions({ summary, fixHref, staff }: { summary: BulkSummary; fixHref: string | null; staff: boolean }) {
   if (!summary.exclusions.length && !summary.warnings.length && !summary.loadIssues.length) return null;
   return (
     <Card className="space-y-4">
       <div>
         <CardTitle>What was not priced, and why</CardTitle>
-        <CardDescription>
-          These orders stay in the total count but not in the averages.{" "}
-          {fixHref ? (
-            <Link href={fixHref} className="font-medium text-accent-text hover:underline">
-              Fix the file mapping
-            </Link>
-          ) : null}
-        </CardDescription>
+        <CardDescription>These orders stay in the total count but not in the averages.</CardDescription>
+        {fixHref ? (
+          <Link href={fixHref} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+            Review how the file was read
+          </Link>
+        ) : null}
       </div>
       {summary.exclusions.length ? (
         <ul className="space-y-2 text-sm">
@@ -208,7 +211,7 @@ export function RunExclusions({ summary, fixHref }: { summary: BulkSummary; fixH
             <li key={e.reason} className="flex flex-wrap items-baseline justify-between gap-2">
               <span>{EXCLUSION_TEXT[e.reason] ?? e.reason}</span>
               <span className="tabular text-muted">
-                {n(e.orders)} orders ({e.ordersPct}%) · {n(e.shipments)} shipments
+                {plural(e.orders, "order")} ({e.ordersPct}%) · {plural(e.shipments, "shipment")}
               </span>
             </li>
           ))}
@@ -216,7 +219,7 @@ export function RunExclusions({ summary, fixHref }: { summary: BulkSummary; fixH
       ) : null}
       {summary.pricedButExcluded.shipments > 0 ? (
         <p className="text-sm text-muted">
-          {n(summary.pricedButExcluded.shipments)} shipments priced fine ({money(summary.pricedButExcluded.expected)}) but belong to orders left out because another shipment of the same order could not be priced.
+          {plural(summary.pricedButExcluded.shipments, "shipment")} priced fine ({money(summary.pricedButExcluded.expected)}) but belong to orders left out because another shipment of the same order could not be priced.
         </p>
       ) : null}
       {summary.warnings.length ? (
@@ -225,7 +228,7 @@ export function RunExclusions({ summary, fixHref }: { summary: BulkSummary; fixH
           <ul className="space-y-1 text-muted">
             {summary.warnings.map((w) => (
               <li key={`${w.code}:${w.ruleKey ?? ""}`}>
-                {WARNING_TEXT[w.code] ?? w.code}: {n(w.shipments)} shipments
+                {WARNING_TEXT[w.code] ?? w.code}: {plural(w.shipments, "shipment")}
               </li>
             ))}
           </ul>
@@ -233,12 +236,16 @@ export function RunExclusions({ summary, fixHref }: { summary: BulkSummary; fixH
       ) : null}
       {summary.loadIssues.length ? (
         <Alert tone="warning">
-          <p className="font-medium">Some surcharge rules could not be applied</p>
-          <ul className="mt-1 list-disc pl-5">
-            {summary.loadIssues.map((i) => (
-              <li key={i}>{i}</li>
-            ))}
-          </ul>
+          <p className="font-medium">{plural(summary.loadIssues.length, "surcharge rule")} could not be applied, so these prices may be low</p>
+          {staff ? (
+            <ul className="mt-1 list-disc pl-5">
+              {summary.loadIssues.map((i) => (
+                <li key={i}>{i}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1">Ask your 3PL to confirm before relying on these figures.</p>
+          )}
         </Alert>
       ) : null}
     </Card>
@@ -249,7 +256,10 @@ export interface ShipmentRowView {
   rowNo: number;
   externalOrderId: string;
   externalShipmentId: string | null;
+  /** The file's ship date (or order date); `pricedOn` is the date whose rates priced it. */
   shipDate: string | null;
+  pricedOn: string | null;
+  inTotals: boolean;
   destinationZip: string | null;
   zone: string | null;
   serviceName: string | null;
@@ -263,7 +273,7 @@ export interface ShipmentRowView {
   unresolved: string;
 }
 
-export function ShipmentsTable({ rows, page, pageSize, total, hrefFor, status }: { rows: ShipmentRowView[]; page: number; pageSize: number; total: number; hrefFor: (page: number, status: string) => string; status: string }) {
+export function ShipmentsTable({ rows, page, pageSize, total, hrefFor, status, pricedButExcluded }: { rows: ShipmentRowView[]; page: number; pageSize: number; total: number; hrefFor: (page: number, status: string) => string; status: string; pricedButExcluded: number }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   return (
     <Card className="space-y-3">
@@ -285,8 +295,8 @@ export function ShipmentsTable({ rows, page, pageSize, total, hrefFor, status }:
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-muted">
-              {["Order", "Shipment", "Ship date", "To", "Zone", "Service", "Billable lb", "Estimated", "Status"].map((h) => (
-                <th key={h} className="py-1 pr-3 font-medium whitespace-nowrap">
+              {["Order", "Shipment", "Ship date", "Rates of", "To", "Zone", "Service", "Billable weight (lb)", "Estimated", "Status"].map((h, i) => (
+                <th key={h} className={`py-1 pr-3 font-medium whitespace-nowrap ${i === 0 ? "sticky left-0 bg-raised" : ""}`}>
                   {h}
                 </th>
               ))}
@@ -295,17 +305,23 @@ export function ShipmentsTable({ rows, page, pageSize, total, hrefFor, status }:
           <tbody className="divide-y divide-line">
             {rows.map((r) => (
               <tr key={r.rowNo}>
-                <td className="py-2 pr-3 whitespace-nowrap">{r.externalOrderId}</td>
+                <td className="sticky left-0 bg-raised py-2 pr-3 whitespace-nowrap">{r.externalOrderId}</td>
                 <td className="py-2 pr-3 whitespace-nowrap text-muted">{r.externalShipmentId ?? "—"}</td>
                 <td className="py-2 pr-3 whitespace-nowrap">{r.shipDate ?? "—"}</td>
+                <td className="py-2 pr-3 whitespace-nowrap text-muted">{r.pricedOn ?? "—"}</td>
                 <td className="py-2 pr-3">{r.destinationZip ?? "—"}</td>
                 <td className="py-2 pr-3">{r.zone ?? "—"}</td>
                 <td className="py-2 pr-3">{r.serviceName ?? "—"}</td>
                 <td className="tabular py-2 pr-3 whitespace-nowrap">{r.billableLb?.join(" + ") ?? "—"}</td>
                 <td className="tabular py-2 pr-3 whitespace-nowrap">{r.status === "ok" ? money(r.expected) : "—"}</td>
                 <td className="py-2 pr-3">
-                  {r.status === "ok" ? (
+                  {r.status === "ok" && r.inTotals ? (
                     <Badge tone="success">Priced</Badge>
+                  ) : r.status === "ok" ? (
+                    <span className="inline-flex flex-wrap items-center gap-1">
+                      <Badge tone="neutral">Priced, not in totals</Badge>
+                      <span className="text-xs text-muted">Another shipment of this order could not be priced</span>
+                    </span>
                   ) : (
                     <span className="inline-flex flex-wrap items-center gap-1">
                       <Badge tone="warning">Not priced</Badge>
@@ -317,7 +333,9 @@ export function ShipmentsTable({ rows, page, pageSize, total, hrefFor, status }:
             ))}
           </tbody>
         </table>
+        {!rows.length ? <p className="py-3 text-sm text-muted">No shipments match this filter.</p> : null}
       </div>
+      {pricedButExcluded > 0 ? <p className="text-sm text-muted">{plural(pricedButExcluded, "shipment")} priced but not in the totals above: another shipment of the same order could not be priced. The CSV marks them with in_totals = no.</p> : null}
       {pages > 1 ? (
         <nav className="flex items-center justify-between text-sm" aria-label="Shipments pages">
           {page > 1 ? (

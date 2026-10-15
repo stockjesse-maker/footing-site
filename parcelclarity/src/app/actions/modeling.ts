@@ -11,14 +11,16 @@ import { getContext, requireUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/permissions";
 import { fieldErrors, uuidSchema } from "@/lib/auth/validation";
 import { ORDER_FILE_LIMITS, ParseError, detectFileKind, parseTables, type Table } from "@/lib/import/parse-table";
-import { priceBatchCore, createBatchCaches, type ProjectRecord, type RunProgress, type RunRecord } from "@/lib/modeling/run";
+import { BatchRetryError, priceBatchCore, createBatchCaches, type ProjectRecord, type RunProgress, type RunRecord } from "@/lib/modeling/run";
+import { decimalText, weightToLb } from "@/lib/orders/cells";
 import { detectOrderFile } from "@/lib/orders/mapping";
 import { orderMappingSchema, runSettingsSchema } from "@/lib/orders/mapping-schema";
 import { buildMaterialisePayloads } from "@/lib/orders/materialise";
-import type { OrderMapping, SkuProfileInput } from "@/lib/orders/types";
+import type { OrderMapping, OrderValidationReport, SkuProfileInput } from "@/lib/orders/types";
 import { applyOrderMapping } from "@/lib/orders/validate";
 import { loadServiceCatalog } from "@/lib/pricing/catalog";
 import { calculatorRequestSchema } from "@/lib/pricing/calculator-schema";
+import { customerSafe } from "@/lib/pricing/customer-safe";
 import { loadPricingContext } from "@/lib/pricing/snapshot";
 import { RATE_LIMITED_MESSAGE, withinRateLimit } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
@@ -118,12 +120,13 @@ interface DatasetRow {
   file_id: string;
   status: string;
   mapping: OrderMapping | null;
+  validation: OrderValidationReport | null;
   shared_with_brand: boolean;
 }
 
 async function loadDataset(datasetId: string, m: ModelingContext) {
   const supabase = await createClient();
-  const { data } = await supabase.from("order_datasets").select("id, tenant_id, brand_id, file_id, status, mapping, shared_with_brand").eq("id", datasetId).maybeSingle();
+  const { data } = await supabase.from("order_datasets").select("id, tenant_id, brand_id, file_id, status, mapping, validation, shared_with_brand").eq("id", datasetId).maybeSingle();
   const ds = data as DatasetRow | null;
   if (!ds || ds.tenant_id !== m.tenantId || ds.brand_id !== m.brandId) return null;
   return { supabase, ds };
@@ -137,11 +140,19 @@ async function loadDatasetTables(supabase: Awaited<ReturnType<typeof createClien
   return parseTables(bytes, detectFileKind(file.filename, file.mime_type, bytes), ORDER_FILE_LIMITS);
 }
 
+/** Every product weight of the brand: the Data API returns at most 1,000 rows per request, so the list is paged in a stable order and a failed page is an error, never "no products". */
 async function loadSkuProfiles(supabase: Awaited<ReturnType<typeof createClient>>, brandId: string): Promise<SkuProfileInput[]> {
-  const { data } = await supabase.from("sku_profiles").select("sku, unit_weight, weight_unit, length_in, width_in, height_in").eq("brand_id", brandId).limit(20000);
-  return (data ?? []).map((p) => ({
+  const PAGE = 1000;
+  const rows: { sku: string; unit_weight: string | number; weight_unit: string; length_in: string | number | null; width_in: string | number | null; height_in: string | number | null }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase.from("sku_profiles").select("sku, unit_weight, weight_unit, length_in, width_in, height_in").eq("brand_id", brandId).order("sku_normalized").range(from, from + PAGE - 1);
+    if (error) throw new Error(`product weights could not be read: ${error.message}`);
+    rows.push(...(data ?? []));
+    if (!data || data.length < PAGE) break;
+  }
+  return rows.map((p) => ({
     sku: String(p.sku),
-    unitWeightLb: p.weight_unit === "oz" ? String(Number(p.unit_weight) / 16) : String(p.unit_weight),
+    unitWeightLb: decimalText(weightToLb(String(p.unit_weight), p.weight_unit === "oz" ? "oz" : "lb"), 10),
     lengthIn: p.length_in === null ? null : String(p.length_in),
     widthIn: p.width_in === null ? null : String(p.width_in),
     heightIn: p.height_in === null ? null : String(p.height_in),
@@ -165,7 +176,12 @@ export async function saveOrderMapping(datasetId: string, mappingJson: unknown, 
     return { ok: false, message: err instanceof ParseError ? err.message : GENERIC_FAILURE };
   }
   if (!tables) return { ok: false, message: "The uploaded file is no longer available." };
-  const skuProfiles = parsed.data.useSkuProfiles ? await loadSkuProfiles(supabase, m.brandId) : [];
+  let skuProfiles: SkuProfileInput[] = [];
+  try {
+    skuProfiles = parsed.data.useSkuProfiles ? await loadSkuProfiles(supabase, m.brandId) : [];
+  } catch {
+    return { ok: false, message: "Product weights could not be read; try again." };
+  }
   const result = applyOrderMapping(tables, parsed.data, { skuProfiles });
   const { error } = await supabase
     .from("order_datasets")
@@ -183,8 +199,13 @@ export async function materialiseDataset(datasetId: string, brandId?: string): P
   const loaded = await loadDataset(datasetId, m);
   if (!loaded) return { ok: false, message: "Orders file not found." };
   const { supabase, ds } = loaded;
-  if (ds.status !== "validated" || !ds.mapping) return { ok: false, message: "Review and save the mapping first." };
+  if (!["validated", "materialising"].includes(ds.status) || !ds.mapping || !ds.validation) return { ok: false, message: "Review and save the mapping first." };
   if (!(await withinRateLimit(supabase, "modeling.materialise", 20, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
+  // A preparation that was interrupted (a closed tab, an error in a later chunk) is rolled back and started over.
+  if (ds.status === "materialising") {
+    const { error } = await supabase.rpc("reset_order_dataset", { p_dataset: datasetId });
+    if (error) return { ok: false, message: GENERIC_FAILURE };
+  }
 
   let tables;
   try {
@@ -193,10 +214,24 @@ export async function materialiseDataset(datasetId: string, brandId?: string): P
     return { ok: false, message: err instanceof ParseError ? err.message : GENERIC_FAILURE };
   }
   if (!tables) return { ok: false, message: "The uploaded file is no longer available." };
-  const skuProfiles = ds.mapping.useSkuProfiles ? await loadSkuProfiles(supabase, m.brandId) : [];
+  let skuProfiles: SkuProfileInput[] = [];
+  try {
+    skuProfiles = ds.mapping.useSkuProfiles ? await loadSkuProfiles(supabase, m.brandId) : [];
+  } catch {
+    return { ok: false, message: "Product weights could not be read; try again." };
+  }
   const result = applyOrderMapping(tables, ds.mapping, { skuProfiles });
   if (!result.report.ok) return { ok: false, message: "The file no longer validates; review the mapping." };
+  // What gets prepared must be what the customer checked: product weights may have changed since.
+  const approved = ds.validation;
+  const countsDiffer = (Object.keys(result.report.counts) as (keyof typeof result.report.counts)[]).some((k) => result.report.counts[k] !== approved.counts?.[k]);
+  if (countsDiffer || result.report.modelableOrders !== approved.modelableOrders) {
+    return { ok: false, message: "The file reads differently now (product weights changed since it was checked). Save and check it again before preparing it." };
+  }
 
+  const rollBack = async () => {
+    await supabase.rpc("reset_order_dataset", { p_dataset: datasetId });
+  };
   for (const payload of buildMaterialisePayloads(result.orders)) {
     const { error } = await supabase.rpc("materialise_order_rows", {
       p_dataset: datasetId,
@@ -205,10 +240,16 @@ export async function materialiseDataset(datasetId: string, brandId?: string): P
       p_shipments: payload.shipments,
       p_packages: payload.packages,
     });
-    if (error) return { ok: false, message: error.message.includes("not ready") ? "This file has already been processed." : GENERIC_FAILURE };
+    if (error) {
+      await rollBack();
+      return { ok: false, message: error.message.includes("not ready") ? "This file has already been processed." : error.message.includes("at most") ? "This file is too large to prepare; split the export by month." : GENERIC_FAILURE };
+    }
   }
   const { error: finError } = await supabase.rpc("finalize_order_dataset", { p_dataset: datasetId });
-  if (finError) return { ok: false, message: GENERIC_FAILURE };
+  if (finError) {
+    await rollBack();
+    return { ok: false, message: GENERIC_FAILURE };
+  }
   revalidateModeling(m);
   return { ok: true };
 }
@@ -218,18 +259,23 @@ export async function discardDataset(datasetId: string, brandId?: string): Promi
   if (!m || !uuidSchema.safeParse(datasetId).success) return { ok: false, message: "Not found." };
   const supabase = await createClient();
   const { error } = await supabase.rpc("discard_order_dataset", { p_dataset: datasetId });
-  if (error) return { ok: false, message: error.message.includes("used by a scenario") ? "This file is used by a saved scenario; archive the scenario first." : "Orders file not found." };
+  if (error) {
+    if (error.message.includes("used by a scenario")) return { ok: false, message: "This file is used by a saved scenario; archive the scenario first." };
+    if (error.message.includes("run in progress")) return { ok: false, message: "A model is still running on this file; cancel it first." };
+    return { ok: false, message: "Orders file not found." };
+  }
   revalidateModeling(m);
-  return { ok: true };
+  redirect(m.basePath);
 }
 
 /** Staff only: make a dataset they prepared visible to the customer. */
 export async function shareDataset(datasetId: string, shared: boolean, brandId: string): Promise<{ ok: boolean; message?: string }> {
   const m = await modelingContext(brandId);
   if (!m || !m.staff || !uuidSchema.safeParse(datasetId).success) return { ok: false, message: "Not found." };
-  const supabase = await createClient();
-  const { data, error } = await supabase.from("order_datasets").update({ shared_with_brand: shared }).eq("id", datasetId).eq("brand_id", m.brandId).select("id");
-  if (error || !data?.length) return { ok: false, message: "Orders file not found." };
+  const loaded = await loadDataset(datasetId, m);
+  if (!loaded) return { ok: false, message: "Orders file not found." };
+  const { error } = await loaded.supabase.rpc("set_dataset_sharing", { p_dataset: datasetId, p_shared: shared });
+  if (error) return { ok: false, message: "Orders file not found." };
   revalidateModeling(m);
   return { ok: true };
 }
@@ -237,6 +283,16 @@ export async function shareDataset(datasetId: string, shared: boolean, brandId: 
 // ---------------------------------------------------------------------------
 // Scenarios and runs
 // ---------------------------------------------------------------------------
+/** Non-secret form values echoed back on a failed submit, so the form never silently resets the as-of date or the assumptions. */
+function runFormValues(formData: FormData): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of ["rateCardId", "pricingBasis", "asOfDate", "serviceOverrideId", "overrideAllServices", "residentialDefault", "originZipDefault", "name"]) {
+    const v = formData.get(key);
+    if (typeof v === "string") out[key] = v.slice(0, 200);
+  }
+  return out;
+}
+
 function readRunSettings(formData: FormData) {
   return runSettingsSchema.safeParse({
     pricingBasis: formData.get("pricingBasis") ?? "fixed_date",
@@ -253,16 +309,17 @@ function readRunSettings(formData: FormData) {
 export async function createBulkScenario(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const m = await modelingContext(formData.get("brandId"));
   if (!m) return { ok: false, message: "You don't have permission to model costs for this customer." };
+  const values = runFormValues(formData);
   const ids = z.object({ datasetId: uuidSchema, rateCardId: uuidSchema, name: z.string().trim().max(160) }).safeParse({ datasetId: formData.get("datasetId"), rateCardId: formData.get("rateCardId"), name: formData.get("name") ?? "" });
   const settings = readRunSettings(formData);
-  if (!ids.success) return { ok: false, message: "Choose a rate card." };
-  if (!settings.success) return { ok: false, errors: fieldErrors(settings.error) };
-  if (settings.data.pricingBasis === "fixed_date" && !settings.data.asOfDate) return { ok: false, errors: { asOfDate: "Choose the date whose rates to use." } };
+  if (!ids.success) return { ok: false, message: "Choose a rate card.", values };
+  if (!settings.success) return { ok: false, errors: fieldErrors(settings.error), values };
+  if (settings.data.pricingBasis === "fixed_date" && !settings.data.asOfDate) return { ok: false, errors: { asOfDate: "Choose the date whose rates to use." }, values };
 
   const supabase = await createClient();
-  if (!(await withinRateLimit(supabase, "modeling.run", 60, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
+  if (!(await withinRateLimit(supabase, "modeling.run", 60, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE, values };
   const { data: ds } = await supabase.from("order_datasets").select("id, name, brand_id, status").eq("id", ids.data.datasetId).maybeSingle();
-  if (!ds || ds.brand_id !== m.brandId || ds.status !== "ready") return { ok: false, message: "The orders file is not ready." };
+  if (!ds || ds.brand_id !== m.brandId || ds.status !== "ready") return { ok: false, message: "The orders file is not ready.", values };
   const name = ids.data.name || `${ds.name} · ${settings.data.serviceOverrideId && settings.data.overrideAllServices ? "one service" : "services in file"} · ${settings.data.pricingBasis === "fixed_date" ? `rates as of ${settings.data.asOfDate}` : "rates on each ship date"}`;
 
   const { data: project, error } = await supabase
@@ -270,10 +327,10 @@ export async function createBulkScenario(_prev: ActionState, formData: FormData)
     .insert({ tenant_id: m.tenantId, brand_id: m.brandId, kind: "bulk", name: name.slice(0, 160), dataset_id: ds.id, rate_card_id: ids.data.rateCardId })
     .select("id")
     .single();
-  if (error || !project) return { ok: false, message: error?.code === "42501" ? "That rate card is not assigned to this customer." : GENERIC_FAILURE };
+  if (error || !project) return { ok: false, message: error?.code === "42501" ? "That rate card is not assigned to this customer." : GENERIC_FAILURE, values };
 
   const started = await startRun(supabase, project.id, settings.data);
-  if (!started.ok) return { ok: false, message: started.message };
+  if (!started.ok) return { ok: false, message: started.message, values };
   redirect(`${m.basePath}/runs/${started.runId}`);
 }
 
@@ -292,6 +349,7 @@ async function startRun(supabase: Awaited<ReturnType<typeof createClient>>, proj
     if (msg.includes("not available on")) return { ok: false, message: "That service is not on the customer's rate card." };
     if (msg.includes("as-of date")) return { ok: false, message: "Choose the date whose rates to use." };
     if (msg.includes("not ready")) return { ok: false, message: "The orders file is not ready." };
+    if (msg.includes("different settings")) return { ok: false, message: "A run with different settings is still in progress; wait for it to finish or cancel it first." };
     return { ok: false, message: GENERIC_FAILURE };
   }
   return { ok: true, runId: String(data) };
@@ -301,14 +359,16 @@ async function startRun(supabase: Awaited<ReturnType<typeof createClient>>, proj
 export async function rerunScenario(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const m = await modelingContext(formData.get("brandId"));
   if (!m) return { ok: false, message: "You don't have permission to model costs for this customer." };
+  const values = runFormValues(formData);
   const projectId = String(formData.get("projectId") ?? "");
   const settings = readRunSettings(formData);
-  if (!uuidSchema.safeParse(projectId).success) return { ok: false, message: GENERIC_FAILURE };
-  if (!settings.success) return { ok: false, errors: fieldErrors(settings.error) };
+  if (!uuidSchema.safeParse(projectId).success) return { ok: false, message: GENERIC_FAILURE, values };
+  if (!settings.success) return { ok: false, errors: fieldErrors(settings.error), values };
+  if (settings.data.pricingBasis === "fixed_date" && !settings.data.asOfDate) return { ok: false, errors: { asOfDate: "Choose the date whose rates to use." }, values };
   const supabase = await createClient();
-  if (!(await withinRateLimit(supabase, "modeling.run", 60, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
+  if (!(await withinRateLimit(supabase, "modeling.run", 60, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE, values };
   const started = await startRun(supabase, projectId, settings.data);
-  if (!started.ok) return { ok: false, message: started.message };
+  if (!started.ok) return { ok: false, message: started.message, values };
   redirect(`${m.basePath}/runs/${started.runId}`);
 }
 
@@ -335,10 +395,17 @@ export async function advanceRun(runId: string, brandId?: string): Promise<Advan
     return { ok: true, progress };
   } catch (err) {
     const message = err instanceof Error ? err.message : "unknown error";
-    // Authorization and data problems cannot be retried into success; everything else can.
-    const permanent = /unavailable \(rate_card_not_found\)|does not start at the cursor|needs \d+ results/.test(message);
-    if (permanent) await supabase.rpc("fail_simulation_run", { p_run: runId, p_error: message });
-    return { ok: false, message: permanent ? "The run could not continue: the rate card is no longer available to this customer." : "The run paused; it will resume automatically.", retryable: !permanent };
+    // A load that failed (an outage, a timeout) is retried. Authorization problems, data the functions
+    // refuse and deterministic engine errors cannot be retried into success and fail the run honestly.
+    if (err instanceof BatchRetryError) return { ok: false, message: "The run paused; it will resume automatically.", retryable: true };
+    const cardGone = /unavailable \(rate_card_not_found\)/.test(message);
+    const permanent = cardGone || err instanceof RangeError || /does not start at the cursor|needs \d+ results|does not belong to this run|does not cover the window|does not reconcile|run not found/.test(message);
+    if (permanent) await supabase.rpc("fail_simulation_run", { p_run: runId, p_error: message.slice(0, 500) });
+    return {
+      ok: false,
+      message: cardGone ? "The run could not continue: the rate card is no longer available to this customer." : permanent ? "The run could not continue because of an internal error; nothing from it is shown as a result." : "The run paused; it will resume automatically.",
+      retryable: !permanent,
+    };
   }
 }
 
@@ -378,8 +445,10 @@ export async function shareScenario(projectId: string, shared: boolean, brandId:
   const m = await modelingContext(brandId);
   if (!m || !m.staff || !uuidSchema.safeParse(projectId).success) return { ok: false, message: "Not found." };
   const supabase = await createClient();
-  const { data, error } = await supabase.from("simulation_projects").update({ shared_with_brand: shared }).eq("id", projectId).eq("brand_id", m.brandId).select("id");
-  if (error || !data?.length) return { ok: false, message: "Scenario not found." };
+  const { data: project } = await supabase.from("simulation_projects").select("id, brand_id").eq("id", projectId).maybeSingle();
+  if (!project || project.brand_id !== m.brandId) return { ok: false, message: "Scenario not found." };
+  const { error } = await supabase.rpc("set_scenario_sharing", { p_project: projectId, p_shared: shared });
+  if (error) return { ok: false, message: "Scenario not found." };
   revalidateModeling(m);
   return { ok: true };
 }
@@ -413,7 +482,9 @@ export async function saveSingleScenario(request: unknown, name: string, brandId
     packages: req.packages.map((p) => ({ weight: p.weight, weightUnit: p.weightUnit, length: p.length, width: p.width, height: p.height, declaredValue: p.declaredValue, packageType: p.packageType, flags: p.flags })),
     options: { signature: req.signature, saturdayDelivery: req.saturdayDelivery },
   };
-  const result = calculateShipment(input, loaded.snapshot.context);
+  // The stored copy is readable by the customer whenever the scenario is theirs or shared, so it is the
+  // customer-safe projection; staff re-price the stored input in the calculator for the full references.
+  const result = customerSafe(calculateShipment(input, loaded.snapshot.context));
   const { data, error } = await supabase.rpc("save_single_simulation", {
     p_brand: m.brandId,
     p_rate_card: req.rateCardId,
@@ -468,11 +539,18 @@ export async function uploadSkuProfiles(_prev: ActionState, formData: FormData):
   if (cSku === -1 || cWeight === -1) return { ok: false, errors: { file: "Expected columns: sku, weight (and optionally unit, length, width, height)." } };
   const headerUnit: "lb" | "oz" | "g" | "kg" = headers[cWeight]?.includes("grams") ? "g" : headers[cWeight]?.endsWith("_oz") ? "oz" : "lb";
 
-  const rows: z.infer<typeof skuRowSchema>[] = [];
+  const MAX_ROWS = 20000;
+  const bySku = new Map<string, z.infer<typeof skuRowSchema>>();
   const problems: string[] = [];
-  for (let i = 1; i < table.rows.length && rows.length < 20000; i++) {
+  let duplicates = 0;
+  let beyondCap = 0;
+  for (let i = 1; i < table.rows.length; i++) {
     const r = table.rows[i]!;
     if (r.every((c) => c === "")) continue;
+    if (bySku.size >= MAX_ROWS) {
+      beyondCap++;
+      continue;
+    }
     const unitCell = cUnit === -1 ? "" : (r[cUnit] ?? "").trim().toLowerCase();
     const unit: "lb" | "oz" | "g" | "kg" = /^(oz|ozs|ounces?)$/.test(unitCell) ? "oz" : /^(lbs?|pounds?)$/.test(unitCell) ? "lb" : /^(g|grams?)$/.test(unitCell) ? "g" : /^(kg|kilograms?)$/.test(unitCell) ? "kg" : headerUnit;
     const raw = (r[cWeight] ?? "").trim().replace(/,/g, "");
@@ -481,7 +559,7 @@ export async function uploadSkuProfiles(_prev: ActionState, formData: FormData):
       continue;
     }
     // Metric units are converted to pounds (six decimals, half up); lb/oz are kept as given.
-    const weightLb = unit === "g" ? (Number(raw) / 453.59237).toFixed(6) : unit === "kg" ? ((Number(raw) * 1000) / 453.59237).toFixed(6) : null;
+    const weightLb = unit === "g" || unit === "kg" ? decimalText(weightToLb(raw, unit), 6) : null;
     const dims = [cL, cW, cH].map((c) => (c === -1 ? "" : (r[c] ?? "").trim()));
     const dimsGiven = dims.filter(Boolean).length;
     if (dimsGiven !== 0 && dimsGiven !== 3) {
@@ -500,9 +578,14 @@ export async function uploadSkuProfiles(_prev: ActionState, formData: FormData):
       problems.push(`Row ${i + 1}: ${candidate.error.issues[0]?.path.join(".")} is not valid.`);
       continue;
     }
-    rows.push(candidate.data);
+    // The same SKU twice (or differing only in case or spacing): the last row wins, as it would in a spreadsheet.
+    const key = candidate.data.sku.trim().toLowerCase();
+    if (bySku.has(key)) duplicates++;
+    bySku.set(key, candidate.data);
   }
+  const rows = [...bySku.values()];
   if (!rows.length) return { ok: false, errors: { file: problems[0] ?? "No product rows were found." } };
+  if (beyondCap) return { ok: false, errors: { file: `This file has more than ${MAX_ROWS.toLocaleString("en-US")} products; split it before uploading.` } };
 
   for (let i = 0; i < rows.length; i += 500) {
     const { error } = await supabase
@@ -511,7 +594,8 @@ export async function uploadSkuProfiles(_prev: ActionState, formData: FormData):
     if (error) return { ok: false, message: GENERIC_FAILURE };
   }
   revalidateModeling(m);
-  return { ok: true, message: `${rows.length} product weights saved${problems.length ? `; ${problems.length} rows skipped (first: ${problems[0]})` : "."}` };
+  const notes = [duplicates ? `${duplicates} duplicate SKUs merged (last row wins)` : null, problems.length ? `${problems.length} rows skipped (first: ${problems[0]})` : null].filter(Boolean);
+  return { ok: true, message: `${rows.length} product weights saved${notes.length ? `; ${notes.join("; ")}` : "."}` };
 }
 
 /** 3PL setting: the warehouse ZIP assumed when an order file carries no origin. */

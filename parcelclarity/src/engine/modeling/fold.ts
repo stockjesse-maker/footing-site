@@ -56,6 +56,7 @@ export function emptyPartial(): PartialSummary {
     assumptions: { residential: 0, originZip: 0, weight: 0, dimensions: 0, packagesWithoutDimensions: 0 },
     unresolvedBy: { dimensions_missing: { shipments: 0, amount: ZERO }, zip_list_missing: { shipments: 0, amount: ZERO }, other: { shipments: 0, amount: ZERO } },
     exposureShipments: { conditional: 0, unresolved: 0 },
+    loadIssues: [],
   };
 }
 

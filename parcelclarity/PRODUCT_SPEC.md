@@ -32,10 +32,10 @@ A 3PL is a tenant; a tenant has many brands; a brand has many users. A user may 
 | Accounts | Email/password auth, confirmation, reset, sessions | 1 | Done |
 | Accounts | Roles, invitations, suspension, revocation, audit log | 1 | Done |
 | Accounts | Tenant/brand isolation by RLS with tests | 1 | Done |
-| Portal | 3PL portal shell + overview; brand portal shell (Overview, Model Costs, Reports, Account) | 1 | Done (Model Costs/Reports are empty states) |
+| Portal | 3PL portal shell + overview; brand portal shell (Overview, Model Costs, Reports, Account) | 1 | Done (Reports holds the run comparison; PDF reports are Milestone 6) |
 | Rate cards | CSV/XLSX import, validation preview, admin approval, versioning, overrides | 2 | **Done** (3PL side; fictional data only) |
 | Engine | Deterministic shipping charge engine: DIM, billable weight, zones, brackets, minimums, surcharges with precedence and effective dates | 2 | **Done** (validated on fictional fixtures; not on real cards) |
-| Modeling | Single shipment calculator; bulk order modeling (avg cost per order); manual forecasting; scenarios | 3 | Not started |
+| Modeling | Single shipment calculator; bulk order modeling (avg cost per order); manual forecasting; scenarios | 3 | **Done** except manual forecasting from assumptions (folded into 4, which supplies the packaging/storage assumptions it needs); fictional data only |
 | Processing | Pick/pack, packaging, receiving, storage, returns, minimums; all-in cost per order | 4 | Not started |
 | Risk | Reweight/WMS adjustment-risk module with confidentiality controls | 5 | Not started |
 | Reports | Branded PDF reports; white-label branding; exports | 6 | Not started |

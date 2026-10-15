@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, useTransition, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useTransition, type FormEvent, type ReactNode } from "react";
 import { priceShipment, type CalculatorRequest, type CalculatorResponse } from "@/app/actions/calculator";
 import { saveSingleScenario } from "@/app/actions/modeling";
+import { useLocalToday } from "@/components/forms/local-today";
 import type { ResultAudience } from "@/components/pricing/calculation-result";
 import { CalculationResult, ESTIMATE_NOTICE, formatDecimal, formatMoney } from "@/components/pricing/calculation-result";
 import { Alert } from "@/components/ui/alert";
@@ -94,13 +95,14 @@ function cleanZip(raw: string): string | null {
   return /^\d{5}$/.test(v) ? v : null;
 }
 
-/** Today's date in the browser's local calendar; the server renders an empty value to avoid a hydration mismatch. */
-function localToday(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+/** The inputs a result rests on, echoed in plain words so an assumption left at its default is visible. */
+function describeRequest(r: CalculatorRequest): string {
+  const destination = r.destinationZone ? `zone ${r.destinationZone}` : (r.destinationZip ?? "?");
+  const packages = r.packages.map((p) => `${formatDecimal(p.weight)} ${p.weightUnit}${p.length && p.width && p.height ? ` (${formatDecimal(p.length)}×${formatDecimal(p.width)}×${formatDecimal(p.height)} in)` : ", no dimensions"}`).join("; ");
+  const options = [r.residential ? "home delivery" : "business delivery", r.signature !== "none" ? `${r.signature.replace(/_/g, " ")} signature` : null, r.saturdayDelivery ? "Saturday delivery" : null].filter(Boolean).join(", ");
+  return `From ${r.originZip} to ${destination} · ${options} · ${r.packages.length === 1 ? "1 package" : `${r.packages.length} packages`}: ${packages}.`;
 }
-const subscribeNever = () => () => {};
-const useLocalToday = () => useSyncExternalStore(subscribeNever, localToday, () => "");
 
 function effectivity(v: { effectiveDate: string | null; expirationDate: string | null }): string {
   if (!v.effectiveDate) return "dates set at activation";
@@ -259,7 +261,11 @@ function billableLbCell(result: ShipmentCalculation): string {
   return result.packages.length === 1 ? formatDecimal(first.billableLb) : `${result.packages.length} pkgs`;
 }
 
-function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
+function ComparisonList({ results, audience, cardName, effectiveDate }: { results: ShipmentCalculation[]; audience: ResultAudience; cardName: string; effectiveDate: string | null }) {
+  const labels =
+    audience === "brand"
+      ? { expected: "Estimated total", definite: "From your rate card", estimated: "Based on assumptions", conditional: "May be added after shipping" }
+      : { expected: "Expected", definite: "Definite", estimated: "Estimated", conditional: "Possible adjustments" };
   const sorted = [...results].sort((a, b) => {
     if (a.status !== b.status) return a.status === "ok" ? -1 : 1;
     return Number(a.totals.expected.amount) - Number(b.totals.expected.amount) || (a.service?.serviceName ?? "").localeCompare(b.service?.serviceName ?? "");
@@ -271,10 +277,10 @@ function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
         <span>Service</span>
         <span>Status</span>
         <span>Billable lb (1 pkg)</span>
-        <span>Expected</span>
-        <span>Definite</span>
-        <span>Estimated</span>
-        <span>Possible adjustments</span>
+        <span>{labels.expected}</span>
+        <span>{labels.definite}</span>
+        <span>{labels.estimated}</span>
+        <span>{labels.conditional}</span>
       </div>
       {sorted.map((r) => {
         const ok = r.status === "ok";
@@ -289,19 +295,19 @@ function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
                   <Badge tone={ok ? "success" : "warning"}>{ok ? "Priced" : "Unavailable"}</Badge>
                 </span>
                 <CompareCell label="Billable lb (1 pkg)">{ok ? billableLbCell(r) : "—"}</CompareCell>
-                <CompareCell label="Expected" emphasis>
+                <CompareCell label={labels.expected} emphasis>
                   {ok ? formatMoney(r.totals.expected) : "—"}
                 </CompareCell>
-                <CompareCell label="Definite">{ok ? formatMoney(r.totals.definite) : "—"}</CompareCell>
-                <CompareCell label="Estimated">{ok ? formatMoney(r.totals.estimated) : "—"}</CompareCell>
-                <CompareCell label="Possible adjustments">{ok ? formatMoney(r.totals.conditionalExposure) : "—"}</CompareCell>
+                <CompareCell label={labels.definite}>{ok ? formatMoney(r.totals.definite) : "—"}</CompareCell>
+                <CompareCell label={labels.estimated}>{ok ? formatMoney(r.totals.estimated) : "—"}</CompareCell>
+                <CompareCell label={labels.conditional}>{ok ? formatMoney(r.totals.conditionalExposure) : "—"}</CompareCell>
               </span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-5 shrink-0 text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none">
                 <path d="m6 9 6 6 6-6" />
               </svg>
             </summary>
             <div className="border-t border-line px-5 py-5 sm:px-6">
-              <CalculationResult result={r} />
+              <CalculationResult result={r} audience={audience} cardName={cardName} effectiveDate={effectiveDate} />
             </div>
           </details>
         );
@@ -317,6 +323,7 @@ function ComparisonList({ results }: { results: ShipmentCalculation[] }) {
 interface PricedRun {
   results: ShipmentCalculation[];
   version: NonNullable<CalculatorResponse["version"]> | null;
+  effectiveDate: string | null;
   issues: string[];
   cardName: string;
   shipDate: string;
@@ -448,7 +455,14 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
     const built = buildRequest();
     if (!built.ok) {
       setErrors(built.errors);
-      setMessage("Check the highlighted fields.");
+      const count = Object.keys(built.errors).length;
+      setMessage(`Fix the ${count === 1 ? "field" : `${count} fields`} marked below.`);
+      // On a phone the form is several screens tall: bring the first problem into view and hand it focus.
+      requestAnimationFrame(() => {
+        const first = document.querySelector<HTMLElement>('form [aria-invalid="true"]');
+        first?.scrollIntoView({ block: "center" });
+        first?.focus();
+      });
       return;
     }
     setErrors({});
@@ -465,7 +479,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
         setMessage(response.message ?? "Something went wrong. Please try again.");
         return;
       }
-      setRun({ results: response.results, version: response.version ?? null, cardName, shipDate: requestShipDate, issues: response.issues ?? [], request: built.request });
+      setRun({ results: response.results, version: response.version ?? null, effectiveDate: response.effectiveDate ?? null, cardName, shipDate: requestShipDate, issues: response.issues ?? [], request: built.request });
     });
   };
 
@@ -553,7 +567,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
           <fieldset className="space-y-4">
             <legend className="text-sm font-semibold">Service and options</legend>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field id={`${idPrefix}-service`} label="Service" hint={services.length ? undefined : "No services on this version yet."}>
+              <Field id={`${idPrefix}-service`} label="Service" hint={services.length ? undefined : audience === "staff" ? "No services on this version yet." : "No services are available for this ship date."}>
                 {(aria) => (
                   <Select {...aria} value={serviceValue} onChange={(e) => setService(e.target.value)}>
                     <option value="*">Compare all services</option>
@@ -610,17 +624,23 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
             </h2>
             <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
               <span>{run.cardName}</span>
-              {run.version ? (
+              {audience === "staff" && run.version ? (
                 <>
                   <span aria-hidden="true">·</span>
                   <span>Version {run.version.versionNumber}</span>
                   <Badge tone={statusTone(run.version.status)}>{run.version.status}</Badge>
                   <span>{effectivity(run.version)}</span>
                 </>
+              ) : run.effectiveDate ? (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>rates effective {formatDate(run.effectiveDate)}</span>
+                </>
               ) : null}
               <span aria-hidden="true">·</span>
               <span>Ship date {formatDate(run.shipDate)}</span>
             </p>
+            <p className="mt-1 text-sm text-muted">{describeRequest(run.request)}</p>
           </div>
           {run.issues.length ? (
             <Alert tone="warning">
@@ -630,15 +650,16 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
                   <li key={issue}>{issue}</li>
                 ))}
               </ul>
-              <p className="mt-1">The quote below omits them; fix the rules before relying on it.</p>
+              <p className="mt-1">{audience === "staff" ? "The quote below omits them; fix the rules before relying on it." : "The estimate below omits them; ask your 3PL before relying on it."}</p>
             </Alert>
           ) : null}
           {run.results.length === 1 && run.results[0] ? (
-            <CalculationResult result={run.results[0]} audience={audience} cardName={run.cardName} effectiveDate={run.version?.effectiveDate ?? null} />
+            <CalculationResult result={run.results[0]} audience={audience} cardName={run.cardName} effectiveDate={run.effectiveDate} />
           ) : (
-            <ComparisonList results={run.results} />
+            <ComparisonList results={run.results} audience={audience} cardName={run.cardName} effectiveDate={run.effectiveDate} />
           )}
           {canSave && run.results.length === 1 && run.results[0]?.status === "ok" ? <SaveScenarioForm request={run.request} brandId={brandId} /> : null}
+          {canSave && run.results.length > 1 ? <p className="text-sm text-muted">To save a result as a scenario, choose one service above and calculate again.</p> : null}
         </section>
       ) : null}
     </div>
@@ -653,27 +674,31 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
 function SaveScenarioForm({ request, brandId }: { request: CalculatorRequest; brandId?: string }) {
   const id = useId();
   const [name, setName] = useState("");
+  const [savedAs, setSavedAs] = useState<string | null>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [pending, startTransition] = useTransition();
+  const saved = savedAs !== null && savedAs === name.trim();
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (saved) return;
     startTransition(async () => {
       const response = await saveSingleScenario(request, name, brandId);
+      if (response.ok) setSavedAs(name.trim());
       setMessage(response.ok ? { ok: true, text: "Saved. Find it under Saved scenarios." } : { ok: false, text: response.message ?? "The scenario could not be saved." });
     });
   };
   return (
     <Card>
       <CardTitle>Save this result as a scenario</CardTitle>
-      <CardDescription>Keep it to compare later. It stays priced at today&apos;s rates; re-price it any time.</CardDescription>
+      <CardDescription>Keep it to compare later. It is priced for the ship date you entered ({formatDate(request.shipDate)}) and does not change afterwards.</CardDescription>
       <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end" noValidate>
         <div className="flex-1">
           <Field id={`${id}-name`} label="Scenario name">
             {(aria) => <Input {...aria} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Typical 3 lb order to the West Coast" maxLength={160} required />}
           </Field>
         </div>
-        <Button type="submit" loading={pending} disabled={!name.trim()}>
-          Save scenario
+        <Button type="submit" loading={pending} disabled={!name.trim() || saved}>
+          {saved ? "Saved" : "Save scenario"}
         </Button>
       </form>
       {message ? (

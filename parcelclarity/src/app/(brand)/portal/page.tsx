@@ -34,7 +34,7 @@ export default async function BrandOverview({ searchParams }: { searchParams: Pr
           </h2>
           <div className="grid gap-4 sm:grid-cols-3">
             <Stat label="Estimated shipping cost per order" value={summary.averages.expectedPerOrder ? formatMoney({ amount: summary.averages.expectedPerOrder, currency: "USD" }) : "—"} note={`${summary.modeled.orders.toLocaleString("en-US")} of ${summary.imported.orders.toLocaleString("en-US")} orders (${summary.coverage.ordersPct}%)`} />
-            <Stat label="Projected shipping spend" value={formatMoney({ amount: summary.totals.expected, currency: "USD" })} note="for the orders in that file" />
+            <Stat label="Projected shipping spend" value={summary.modeled.orders ? formatMoney({ amount: summary.totals.expected, currency: "USD" }) : "—"} note={summary.modeled.orders ? `for the ${summary.modeled.orders.toLocaleString("en-US")} of ${summary.imported.orders.toLocaleString("en-US")} orders that could be priced` : "no orders could be priced"} />
             <Stat label="Fulfillment cost per order" value="—" note="Processing fees arrive in a later release." />
           </div>
           <p className="text-sm text-muted">

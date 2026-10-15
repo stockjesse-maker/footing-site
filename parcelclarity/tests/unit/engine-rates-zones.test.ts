@@ -368,7 +368,7 @@ describe("calculateShipment: unavailable paths", () => {
     const before = calculateShipment(ground({ shipDate: "2026-10-14" }), baseOnly(dated));
     expect(before.status).toBe("unavailable");
     expect(before.unavailableReason).toBe("rate_card_not_effective");
-    expect(before.unavailableMessage).toBe(`Rate card "${CARD_NAME}" version 1 is not in effect on 2026-10-14 (effective 2026-10-15 to 2026-10-20).`);
+    expect(before.unavailableMessage).toBe(`Rate card "${CARD_NAME}" has no rates in effect on 2026-10-14 (this version is effective 2026-10-15 to 2026-10-20).`);
     expect(before.service).toBeNull();
     expect(before.packages).toEqual([]);
 
@@ -380,7 +380,7 @@ describe("calculateShipment: unavailable paths", () => {
 
     const after = calculateShipment(ground({ shipDate: "2026-10-21" }), baseOnly(dated));
     expect(after.unavailableReason).toBe("rate_card_not_effective");
-    expect(after.unavailableMessage).toBe(`Rate card "${CARD_NAME}" version 1 is not in effect on 2026-10-21 (effective 2026-10-15 to 2026-10-20).`);
+    expect(after.unavailableMessage).toBe(`Rate card "${CARD_NAME}" has no rates in effect on 2026-10-21 (this version is effective 2026-10-15 to 2026-10-20).`);
   });
 
   it("an open-ended card (no expiration) prices any later date and names only the effective date when too early", () => {
@@ -388,7 +388,7 @@ describe("calculateShipment: unavailable paths", () => {
     expect(calculateShipment(ground({ shipDate: "2099-12-31" }), baseOnly(open)).status).toBe("ok");
     const early = calculateShipment(ground({ shipDate: "2025-12-31" }), baseOnly(open));
     expect(early.unavailableReason).toBe("rate_card_not_effective");
-    expect(early.unavailableMessage).toBe(`Rate card "${CARD_NAME}" version 1 is not in effect on 2025-12-31 (effective 2026-01-01).`);
+    expect(early.unavailableMessage).toBe(`Rate card "${CARD_NAME}" has no rates in effect on 2025-12-31 (this version is effective 2026-01-01).`);
   });
 
   it("invalid_input: zero weight", () => {
@@ -567,7 +567,7 @@ describe("calculateShipment: base bracket, minimum charge and zone entered direc
       chargeClass: "definite",
       counted: true,
       packageIndex: 0,
-      explanation: `Zone 2, 1.0 lb billable (bracket 0.0–1.0 lb), rate card "${CARD_NAME}" v1.`,
+      explanation: `Zone 2, 1.0 lb billable (bracket 0.0–1.0 lb), rate card "${CARD_NAME}".`,
       basis: `rate_card:fixture-card-v1:${GROUND}:2:1lb`,
       rule: null,
     });
@@ -706,7 +706,7 @@ describe("calculateShipment: base bracket, minimum charge and zone entered direc
     expect(fifteen.lines[0]).toMatchObject({
       label: "USPS Ground Advantage base rate",
       amount: { amount: "6.30", currency: "USD" },
-      explanation: `Zone 5, 15.0 oz billable (bracket 12.0–15.999 oz) from origin 900, rate card "${CARD_NAME}" v1.`,
+      explanation: `Zone 5, 15.0 oz billable (bracket 12.0–15.999 oz) from origin 900, rate card "${CARD_NAME}".`,
       basis: `rate_card:fixture-card-v1:${USPS_GA}:5:15.999oz`,
     });
     expect(fifteen.totals.definite.amount).toBe("6.30");

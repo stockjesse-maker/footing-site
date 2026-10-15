@@ -48,8 +48,30 @@ language sql stable security definer set search_path = '' as $$
   select app.has_tenant_permission(p_tenant, 'simulation.run');
 $$;
 
-revoke all on function app.can_model_brand(uuid, uuid), app.modelable_brand_ids(), app.is_tenant_staff(uuid) from public, anon;
-grant execute on function app.can_model_brand(uuid, uuid), app.modelable_brand_ids(), app.is_tenant_staff(uuid) to authenticated, service_role;
+-- What the RLS policies let the caller see of staff-prepared data: shared with the brand, or the caller is staff.
+create function app.modeling_visible(p_tenant uuid, p_shared boolean) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select coalesce(p_shared, true) or app.is_tenant_staff(p_tenant);
+$$;
+
+revoke all on function app.can_model_brand(uuid, uuid), app.modelable_brand_ids(), app.is_tenant_staff(uuid), app.modeling_visible(uuid, boolean) from public, anon;
+grant execute on function app.can_model_brand(uuid, uuid), app.modelable_brand_ids(), app.is_tenant_staff(uuid), app.modeling_visible(uuid, boolean) to authenticated, service_role;
+
+-- Order files may be larger than pricing documents (15 MB; pricing files keep 5 MB).
+alter table public.uploaded_files drop constraint uploaded_files_byte_size_check;
+alter table public.uploaded_files add constraint uploaded_files_byte_size_check
+  check (byte_size > 0 and byte_size <= case when purpose = 'order_import' then 15728640 else 5242880 end);
+
+-- Database-side cap on uploads per user and hour, so the server action's limit cannot be bypassed through the Data API.
+create function app.limit_file_inserts() returns trigger
+language plpgsql security definer set search_path = '' as $$
+begin
+  if not public.check_rate_limit('files.insert', 120, 3600) then
+    raise exception 'too many uploads; try again later' using errcode = '53400';
+  end if;
+  return new;
+end $$;
+create trigger uploaded_files_rate_limit before insert on public.uploaded_files for each row execute function app.limit_file_inserts();
 
 -- ---------------------------------------------------------------------------
 -- Product weights: unit weight/dimensions per SKU, for order files without package weights
@@ -291,6 +313,8 @@ create table public.simulation_results (
   -- Dictionary-encoded lines: [ruleIndex, amountCents, status, class, packageIndex] against run.reference_data.rules.
   lines                jsonb not null default '[]'::jsonb,
   warning_codes        text[] not null default '{}',
+  -- Set at finish: the row belongs to a modeled order (every shipment priced, order not cancelled) and is summed into the totals.
+  in_totals            boolean not null default false,
   constraint sres_run foreign key (run_id, tenant_id, brand_id) references public.simulation_runs (id, tenant_id, brand_id) on delete cascade,
   unique (run_id, shipment_id),
   unique (run_id, row_no)
@@ -334,6 +358,9 @@ begin
       perform app.write_audit(new.tenant_id, new.brand_id, 'modeling.dataset_' || new.status, 'order_dataset', new.id::text,
         jsonb_build_object('name', new.name, 'orders', new.order_count, 'shipments', new.shipment_count, 'packages', new.package_count));
     end if;
+    if tg_op = 'UPDATE' and new.shared_with_brand is distinct from old.shared_with_brand then
+      perform app.write_audit(new.tenant_id, new.brand_id, 'modeling.dataset_' || case when new.shared_with_brand then 'shared' else 'unshared' end, 'order_dataset', new.id::text, '{}'::jsonb);
+    end if;
   elsif tg_table_name = 'simulation_projects' then
     if tg_op = 'INSERT' then
       perform app.write_audit(new.tenant_id, new.brand_id, 'modeling.scenario_created', 'simulation_project', new.id::text,
@@ -359,6 +386,26 @@ end $$;
 create trigger order_datasets_audit after update on public.order_datasets for each row execute function app.audit_modeling();
 create trigger simulation_projects_audit after insert or update on public.simulation_projects for each row execute function app.audit_modeling();
 create trigger simulation_runs_audit after insert or update on public.simulation_runs for each row execute function app.audit_modeling();
+
+-- A scenario is visible when it is, and when the orders file it models is (staff see everything of their tenant).
+create function app.project_visible(p_project uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.simulation_projects p
+                 left join public.order_datasets d on d.id = p.dataset_id
+                 where p.id = p_project
+                   and app.modeling_visible(p.tenant_id, p.shared_with_brand)
+                   and app.modeling_visible(p.tenant_id, coalesce(d.shared_with_brand, true)));
+$$;
+
+-- An order file is readable by the brand once a dataset built on it is shared (evaluated outside the
+-- file policy so order_datasets' own policy, which reads uploaded_files, does not recurse into it).
+create function app.order_file_shared(p_file uuid) returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.order_datasets d where d.file_id = p_file and d.shared_with_brand);
+$$;
+
+revoke all on function app.project_visible(uuid), app.order_file_shared(uuid) from public, anon;
+grant execute on function app.project_visible(uuid), app.order_file_shared(uuid) to authenticated, service_role;
 
 -- ---------------------------------------------------------------------------
 -- Row Level Security
@@ -400,6 +447,7 @@ create policy simulation_projects_read on public.simulation_projects for select 
 create policy simulation_projects_insert on public.simulation_projects for insert to authenticated
   with check (app.can_model_brand(tenant_id, brand_id) and created_by = (select auth.uid()) and archived_at is null
               and exists (select 1 from public.brand_rate_card_assignments a
+                          join public.rate_cards c on c.id = a.rate_card_id and c.status = 'active'
                           where a.brand_id = simulation_projects.brand_id and a.rate_card_id = simulation_projects.rate_card_id and a.unassigned_at is null)
               and (dataset_id is null or exists (select 1 from public.order_datasets d where d.id = dataset_id and d.brand_id = simulation_projects.brand_id and d.status = 'ready')));
 create policy simulation_projects_update on public.simulation_projects for update to authenticated
@@ -407,15 +455,18 @@ create policy simulation_projects_update on public.simulation_projects for updat
   with check (app.can_model_brand(tenant_id, brand_id));
 
 create policy simulation_runs_read on public.simulation_runs for select to authenticated using (project_id in (select p.id from public.simulation_projects p));
-create policy simulation_run_contexts_read on public.simulation_run_contexts for select to authenticated using (run_id in (select r.id from public.simulation_runs r));
+create policy simulation_run_contexts_read on public.simulation_run_contexts for select to authenticated
+  using (app.is_tenant_staff(tenant_id) and run_id in (select r.id from public.simulation_runs r));
 create policy simulation_results_read on public.simulation_results for select to authenticated using (run_id in (select r.id from public.simulation_runs r));
 
 -- Brands may now upload order files for themselves; pricing files stay manager-only.
 drop policy files_read on public.uploaded_files;
 drop policy files_insert on public.uploaded_files;
+-- An order file follows its dataset: the uploader and staff always, the brand once a dataset on it is shared.
 create policy files_read on public.uploaded_files for select to authenticated
   using ((purpose <> 'order_import' and app.can_manage_pricing(tenant_id))
-         or (purpose = 'order_import' and brand_id is not null and app.can_model_brand(tenant_id, brand_id)));
+         or (purpose = 'order_import' and brand_id is not null and app.can_model_brand(tenant_id, brand_id)
+             and (app.is_tenant_staff(tenant_id) or uploaded_by = (select auth.uid()) or app.order_file_shared(id))));
 create policy files_insert on public.uploaded_files for insert to authenticated
   with check (uploaded_by = (select auth.uid())
               and ((purpose = 'order_import' and brand_id is not null and app.can_model_brand(tenant_id, brand_id))
@@ -428,8 +479,8 @@ grant insert (brand_id) on public.uploaded_files to authenticated;
 grant select on public.sku_profiles, public.order_datasets, public.orders, public.order_lines, public.shipments, public.packages,
                 public.simulation_projects, public.simulation_runs, public.simulation_run_contexts, public.simulation_results to authenticated;
 grant insert (tenant_id, brand_id, sku, unit_weight, weight_unit, length_in, width_in, height_in, packaging_type, source), update (sku, unit_weight, weight_unit, length_in, width_in, height_in, packaging_type, source), delete on public.sku_profiles to authenticated;
-grant insert (tenant_id, brand_id, file_id, name, detected), update (name, status, mapping, validation, detected, shared_with_brand) on public.order_datasets to authenticated;
-grant insert (tenant_id, brand_id, kind, name, description, dataset_id, rate_card_id), update (name, description, archived_at, shared_with_brand) on public.simulation_projects to authenticated;
+grant insert (tenant_id, brand_id, file_id, name, detected), update (name, status, mapping, validation, detected) on public.order_datasets to authenticated;
+grant insert (tenant_id, brand_id, kind, name, description, dataset_id, rate_card_id), update (name, description, archived_at) on public.simulation_projects to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- Dataset lifecycle functions
@@ -444,9 +495,16 @@ declare
   v_orders integer; v_lines integer; v_shipments integer; v_packages integer;
 begin
   select * into v_ds from public.order_datasets where id = p_dataset for update;
-  if not found or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
+  if not found or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) or not app.modeling_visible(v_ds.tenant_id, v_ds.shared_with_brand) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
   if v_ds.status not in ('validated', 'materialising') then raise exception 'dataset is not ready to be materialised (status %)', v_ds.status using errcode = 'P0001'; end if;
   if jsonb_typeof(p_orders) <> 'array' or jsonb_array_length(p_orders) > 10000 then raise exception 'orders must be an array of at most 10000' using errcode = 'P0001'; end if;
+  if jsonb_typeof(p_lines) <> 'array' or jsonb_array_length(p_lines) > 100000 or jsonb_typeof(p_shipments) <> 'array' or jsonb_array_length(p_shipments) > 20000
+     or jsonb_typeof(p_packages) <> 'array' or jsonb_array_length(p_packages) > 50000 then
+    raise exception 'chunk too large' using errcode = 'P0001';
+  end if;
+  if (select count(*) from public.shipments where dataset_id = p_dataset) + jsonb_array_length(p_shipments) > 250000 then
+    raise exception 'an orders file may hold at most 250000 shipments' using errcode = 'P0001';
+  end if;
   perform set_config('app.modeling_rpc', 'on', true);
   if v_ds.status = 'validated' then update public.order_datasets set status = 'materialising' where id = p_dataset; end if;
 
@@ -492,7 +550,7 @@ declare
   v_orders integer; v_lines integer; v_shipments integer; v_packages integer;
 begin
   select * into v_ds from public.order_datasets where id = p_dataset for update;
-  if not found or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
+  if not found or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) or not app.modeling_visible(v_ds.tenant_id, v_ds.shared_with_brand) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
   if v_ds.status <> 'materialising' then raise exception 'dataset is not being materialised (status %)', v_ds.status using errcode = 'P0001'; end if;
   select count(*) into v_orders from public.orders where dataset_id = p_dataset;
   select count(*) into v_lines from public.order_lines where dataset_id = p_dataset;
@@ -503,7 +561,8 @@ begin
   if (select max(row_no) from public.shipments where dataset_id = p_dataset) <> v_shipments then raise exception 'shipment row numbers are not dense' using errcode = 'P0001'; end if;
   perform set_config('app.modeling_rpc', 'on', true);
   update public.order_datasets
-     set status = 'ready', order_count = v_orders, line_count = v_lines, shipment_count = v_shipments, package_count = v_packages, materialised_at = now()
+     set status = 'ready', order_count = v_orders, line_count = v_lines, shipment_count = v_shipments, package_count = v_packages, materialised_at = now(),
+         row_count = coalesce((v_ds.validation #>> '{counts,rows}')::integer, 0)
    where id = p_dataset;
   return jsonb_build_object('orders', v_orders, 'lines', v_lines, 'shipments', v_shipments, 'packages', v_packages);
 end $$;
@@ -513,13 +572,59 @@ language plpgsql security definer set search_path = '' as $$
 declare v_ds public.order_datasets%rowtype;
 begin
   select * into v_ds from public.order_datasets where id = p_dataset for update;
-  if not found or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
-  if exists (select 1 from public.simulation_projects p where p.dataset_id = p_dataset and p.archived_at is null) then
+  if not found or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) or not app.modeling_visible(v_ds.tenant_id, v_ds.shared_with_brand) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
+  if v_ds.status = 'discarded' then return; end if;
+  -- Discarding deletes the rows every run on this file points at, so a scenario still in use, a scenario
+  -- the caller cannot see (staff-private) or a run in progress all block it.
+  if exists (select 1 from public.simulation_projects p where p.dataset_id = p_dataset and (p.archived_at is null or not app.modeling_visible(p.tenant_id, p.shared_with_brand))) then
     raise exception 'dataset is used by a scenario' using errcode = 'P0001';
+  end if;
+  if exists (select 1 from public.simulation_runs r join public.simulation_projects p on p.id = r.project_id where p.dataset_id = p_dataset and r.status in ('queued', 'running')) then
+    raise exception 'dataset has a run in progress' using errcode = 'P0001';
   end if;
   perform set_config('app.modeling_rpc', 'on', true);
   update public.order_datasets set status = 'discarded' where id = p_dataset;
   delete from public.orders where dataset_id = p_dataset; -- cascades to lines, shipments, packages
+end $$;
+
+-- A materialisation that failed half-way (a later chunk or the finalisation) is rolled back to 'validated'
+-- so it can be prepared again or discarded; nothing else may touch a dataset in that state.
+create function public.reset_order_dataset(p_dataset uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare v_ds public.order_datasets%rowtype;
+begin
+  select * into v_ds from public.order_datasets where id = p_dataset for update;
+  if not found or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) or not app.modeling_visible(v_ds.tenant_id, v_ds.shared_with_brand) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
+  if v_ds.status <> 'materialising' then raise exception 'dataset is not being materialised (status %)', v_ds.status using errcode = 'P0001'; end if;
+  perform set_config('app.modeling_rpc', 'on', true);
+  delete from public.orders where dataset_id = p_dataset;
+  update public.order_datasets set status = 'validated' where id = p_dataset;
+end $$;
+
+-- Sharing is a staff decision: the flags are not writable through the Data API. Sharing a bulk scenario
+-- also shares the orders file it models, because its results cannot be read without the rows.
+create function public.set_dataset_sharing(p_dataset uuid, p_shared boolean) returns void
+language plpgsql security definer set search_path = '' as $$
+declare v_ds public.order_datasets%rowtype;
+begin
+  select * into v_ds from public.order_datasets where id = p_dataset for update;
+  if not found or not app.is_tenant_staff(v_ds.tenant_id) or not app.can_model_brand(v_ds.tenant_id, v_ds.brand_id) then raise exception 'dataset not found' using errcode = 'P0002'; end if;
+  if v_ds.status = 'discarded' then raise exception 'dataset is discarded' using errcode = 'P0001'; end if;
+  perform set_config('app.modeling_rpc', 'on', true);
+  update public.order_datasets set shared_with_brand = p_shared where id = p_dataset and shared_with_brand is distinct from p_shared;
+end $$;
+
+create function public.set_scenario_sharing(p_project uuid, p_shared boolean) returns void
+language plpgsql security definer set search_path = '' as $$
+declare v_p public.simulation_projects%rowtype;
+begin
+  select * into v_p from public.simulation_projects where id = p_project for update;
+  if not found or not app.is_tenant_staff(v_p.tenant_id) or not app.can_model_brand(v_p.tenant_id, v_p.brand_id) then raise exception 'scenario not found' using errcode = 'P0002'; end if;
+  update public.simulation_projects set shared_with_brand = p_shared where id = p_project and shared_with_brand is distinct from p_shared;
+  if p_shared and v_p.dataset_id is not null then
+    perform set_config('app.modeling_rpc', 'on', true);
+    update public.order_datasets set shared_with_brand = true where id = v_p.dataset_id and not shared_with_brand;
+  end if;
 end $$;
 
 -- ---------------------------------------------------------------------------
@@ -541,8 +646,10 @@ begin
   end if;
   if v_p.kind <> 'bulk' or v_p.archived_at is not null then raise exception 'scenario cannot be run' using errcode = 'P0001'; end if;
   select * into v_ds from public.order_datasets where id = v_p.dataset_id;
+  if not found or not app.modeling_visible(v_ds.tenant_id, v_ds.shared_with_brand) then raise exception 'scenario not found' using errcode = 'P0002'; end if;
   if v_ds.status <> 'ready' or v_ds.brand_id <> v_p.brand_id then raise exception 'orders file is not ready' using errcode = 'P0001'; end if;
-  if not exists (select 1 from public.brand_rate_card_assignments a where a.brand_id = v_p.brand_id and a.rate_card_id = v_p.rate_card_id and a.unassigned_at is null) then
+  if not exists (select 1 from public.brand_rate_card_assignments a join public.rate_cards c on c.id = a.rate_card_id and c.status = 'active'
+                 where a.brand_id = v_p.brand_id and a.rate_card_id = v_p.rate_card_id and a.unassigned_at is null) then
     raise exception 'rate card is not assigned to this customer' using errcode = 'P0001';
   end if;
   if p_pricing_basis not in ('ship_date', 'fixed_date') then raise exception 'invalid pricing basis' using errcode = 'P0001'; end if;
@@ -558,8 +665,17 @@ begin
     raise exception 'that service is not available on the customer''s rate card' using errcode = 'P0001';
   end if;
 
-  select id into v_live from public.simulation_runs where project_id = p_project and status in ('queued', 'running') limit 1;
+  -- A live run is resumed only when it was started with these settings; different settings never silently attach.
+  select id into v_live from public.simulation_runs
+   where project_id = p_project and status in ('queued', 'running')
+     and pricing_basis = p_pricing_basis and as_of_date is not distinct from p_as_of_date
+     and service_override_id is not distinct from p_service_override and unmapped_policy = p_unmapped_policy
+     and assumptions = coalesce(p_assumptions, '{}'::jsonb)
+   limit 1;
   if v_live is not null then return v_live; end if;
+  if exists (select 1 from public.simulation_runs where project_id = p_project and status in ('queued', 'running')) then
+    raise exception 'a run with different settings is already in progress' using errcode = 'P0001';
+  end if;
 
   select count(*) into v_total from public.shipments where dataset_id = v_p.dataset_id;
   insert into public.simulation_runs (project_id, tenant_id, brand_id, kind, status, pricing_basis, as_of_date, service_override_id, unmapped_policy, assumptions, total_shipments)
@@ -575,18 +691,20 @@ declare
   v_r public.simulation_runs%rowtype;
   v_ds uuid;
   v_to bigint;
+  v_limit integer;
   v_rows jsonb;
 begin
   select * into v_r from public.simulation_runs where id = p_run;
-  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
+  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
   if v_r.status <> 'running' then return jsonb_build_object('status', v_r.status, 'fromRow', v_r.next_row_no, 'toRow', v_r.next_row_no - 1, 'shipments', '[]'::jsonb); end if;
   select p.dataset_id into v_ds from public.simulation_projects p where p.id = v_r.project_id;
+  v_limit := least(greatest(coalesce(p_limit, 1), 1), 500);
   -- Window end: the last shipment of the order that contains row (cursor + limit - 1), so orders are never split.
   select coalesce(max(s2.row_no), v_r.next_row_no - 1) into v_to
   from public.shipments s1
   join public.shipments s2 on s2.order_id = s1.order_id
-  where s1.dataset_id = v_ds and s1.row_no = least(v_r.next_row_no + greatest(p_limit, 1) - 1, v_r.total_shipments);
-  if v_to < v_r.next_row_no then v_to := least(v_r.next_row_no + greatest(p_limit, 1) - 1, v_r.total_shipments); end if;
+  where s1.dataset_id = v_ds and s1.row_no = least(v_r.next_row_no + v_limit - 1, v_r.total_shipments);
+  if v_to < v_r.next_row_no then v_to := least(v_r.next_row_no + v_limit - 1, v_r.total_shipments); end if;
 
   select coalesce(jsonb_agg(jsonb_build_object(
       'shipmentId', s.id, 'orderId', o.id, 'rowNo', s.row_no, 'externalOrderId', o.external_order_id, 'externalShipmentId', s.external_shipment_id,
@@ -602,7 +720,8 @@ begin
   into v_rows
   from public.shipments s join public.orders o on o.id = s.order_id
   where s.dataset_id = v_ds and s.row_no between v_r.next_row_no and v_to;
-  return jsonb_build_object('status', v_r.status, 'fromRow', v_r.next_row_no, 'toRow', v_to, 'total', v_r.total_shipments, 'shipments', v_rows);
+  -- The partial summary travels with the cursor it belongs to, so a caller never folds onto a stale copy.
+  return jsonb_build_object('status', v_r.status, 'fromRow', v_r.next_row_no, 'toRow', v_to, 'total', v_r.total_shipments, 'shipments', v_rows, 'partialSummary', v_r.partial_summary);
 end $$;
 
 -- Commits one priced window. Idempotent: a window already behind the cursor is acknowledged, not re-applied.
@@ -610,10 +729,11 @@ create function public.advance_simulation_run(p_run uuid, p_from_row bigint, p_t
 language plpgsql security definer set search_path = '' as $$
 declare
   v_r public.simulation_runs%rowtype;
+  v_ds uuid;
   v_n integer;
 begin
   select * into v_r from public.simulation_runs where id = p_run for update;
-  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
+  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
   if v_r.status <> 'running' then
     return jsonb_build_object('applied', false, 'status', v_r.status, 'nextRow', v_r.next_row_no, 'processed', v_r.processed_shipments, 'total', v_r.total_shipments);
   end if;
@@ -622,6 +742,17 @@ begin
   end if;
   if p_from_row <> v_r.next_row_no or p_to_row < p_from_row or p_to_row > v_r.total_shipments then
     raise exception 'window %–% does not start at the cursor %', p_from_row, p_to_row, v_r.next_row_no using errcode = 'P0001';
+  end if;
+  -- Every result must name a shipment of this run's orders file at its own row number (never another file's row).
+  select p.dataset_id into v_ds from public.simulation_projects p where p.id = v_r.project_id;
+  if exists (select 1 from jsonb_to_recordset(p_results) as x(shipment_id uuid, order_id uuid, row_no bigint)
+             left join public.shipments s on s.id = x.shipment_id and s.order_id = x.order_id and s.row_no = x.row_no and s.dataset_id = v_ds
+             where x.row_no between p_from_row and p_to_row and s.id is null) then
+    raise exception 'a result does not belong to this run' using errcode = 'P0001';
+  end if;
+  -- Rows are dense and each shipment is folded once, so a partial that covers the window has seen exactly p_to_row shipments.
+  if (p_partial #>> '{shipments,seen}')::bigint is distinct from p_to_row then
+    raise exception 'partial summary does not cover the window (seen %, window ends at %)', p_partial #>> '{shipments,seen}', p_to_row using errcode = 'P0001';
   end if;
 
   insert into public.simulation_results (run_id, tenant_id, brand_id, shipment_id, order_id, row_no, status, unavailable_reason, rate_card_version_id, ship_date, zone, service_id,
@@ -655,7 +786,7 @@ declare
   v_def numeric(14,2); v_est numeric(14,2); v_exp numeric(14,2); v_cond numeric(14,2); v_unr numeric(14,2);
 begin
   select * into v_r from public.simulation_runs where id = p_run for update;
-  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
+  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
   if v_r.status <> 'running' then raise exception 'run is %', v_r.status using errcode = 'P0001'; end if;
   if v_r.processed_shipments <> v_r.total_shipments then raise exception 'run has % of % shipments priced', v_r.processed_shipments, v_r.total_shipments using errcode = 'P0001'; end if;
 
@@ -682,6 +813,7 @@ begin
     raise exception 'summary does not reconcile with stored results (orders % / shipments % / expected %)', v_mo, v_ms, v_exp using errcode = 'P0001';
   end if;
 
+  update public.simulation_results r set in_totals = true where r.run_id = p_run and r.order_id in (select order_id from _mo);
   update public.simulation_runs
      set status = 'completed', summary = p_summary, reference_data = p_reference_data, engine_version = p_engine_version,
          modeled_orders = v_mo, modeled_shipments = v_ms, modeled_packages = v_mp, ok_shipments = v_ok, unavailable_shipments = v_un,
@@ -696,7 +828,7 @@ language plpgsql security definer set search_path = '' as $$
 declare v_r public.simulation_runs%rowtype;
 begin
   select * into v_r from public.simulation_runs where id = p_run for update;
-  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
+  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
   if v_r.status <> 'running' then return; end if;
   update public.simulation_runs set status = 'failed', error = left(coalesce(p_error, 'unknown error'), 1000), finished_at = now() where id = p_run;
 end $$;
@@ -706,7 +838,7 @@ language plpgsql security definer set search_path = '' as $$
 declare v_r public.simulation_runs%rowtype;
 begin
   select * into v_r from public.simulation_runs where id = p_run for update;
-  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
+  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
   if v_r.status <> 'running' then return; end if;
   update public.simulation_runs set status = 'cancelled', finished_at = now() where id = p_run;
 end $$;
@@ -720,10 +852,11 @@ declare
 begin
   select tenant_id into v_tenant from public.brands where id = p_brand;
   if v_tenant is null or not app.can_model_brand(v_tenant, p_brand) then raise exception 'customer not found' using errcode = 'P0002'; end if;
-  if not exists (select 1 from public.brand_rate_card_assignments a where a.brand_id = p_brand and a.rate_card_id = p_rate_card and a.unassigned_at is null) then
+  if not exists (select 1 from public.brand_rate_card_assignments a join public.rate_cards c on c.id = a.rate_card_id and c.status = 'active'
+                 where a.brand_id = p_brand and a.rate_card_id = p_rate_card and a.unassigned_at is null) then
     raise exception 'rate card is not assigned to this customer' using errcode = 'P0001';
   end if;
-  if pg_column_size(p_result) > 262144 then raise exception 'result too large' using errcode = 'P0001'; end if;
+  if pg_column_size(p_result) > 262144 or pg_column_size(p_input) > 16384 then raise exception 'result too large' using errcode = 'P0001'; end if;
   insert into public.simulation_projects (tenant_id, brand_id, kind, name, rate_card_id) values (v_tenant, p_brand, 'single', p_name, p_rate_card) returning id into v_project;
   insert into public.simulation_runs (project_id, tenant_id, brand_id, kind, status, pricing_basis, as_of_date, total_shipments, processed_shipments, next_row_no, single_input, single_result, engine_version, finished_at)
   values (v_project, v_tenant, p_brand, 'single', 'completed', 'fixed_date', (p_input ->> 'shipDate')::date, 1, 1, 2, p_input, p_result, p_engine_version, now());
@@ -738,6 +871,8 @@ grant execute on function public.materialise_order_rows(uuid, jsonb, jsonb, json
   public.start_simulation_run(uuid, text, date, uuid, text, jsonb), public.simulation_batch_input(uuid, integer),
   public.advance_simulation_run(uuid, bigint, bigint, jsonb, jsonb, jsonb), public.finish_simulation_run(uuid, jsonb, jsonb, text),
   public.fail_simulation_run(uuid, text), public.cancel_simulation_run(uuid), public.save_single_simulation(uuid, uuid, text, jsonb, jsonb, text) to authenticated;
+revoke all on function public.reset_order_dataset(uuid), public.set_dataset_sharing(uuid, boolean), public.set_scenario_sharing(uuid, boolean) from public, anon;
+grant execute on function public.reset_order_dataset(uuid), public.set_dataset_sharing(uuid, boolean), public.set_scenario_sharing(uuid, boolean) to authenticated;
 
 -- ---------------------------------------------------------------------------
 -- pricing_rules_for_card: brand-safe labels whenever a brand is being priced (even by staff), ids for
@@ -820,7 +955,8 @@ begin
   if v_brand is not null then
     select coalesce(jsonb_agg(jsonb_build_object(
         'id', o.id, 'ruleKey', r.rule_key, 'mode', o.mode, 'amount', o.amount::text, 'percent', o.percent::text,
-        'effectiveDate', o.effective_date::text, 'expirationDate', o.expiration_date::text, 'reference', o.reference
+        'effectiveDate', o.effective_date::text, 'expirationDate', o.expiration_date::text,
+        'reference', case when not v_brand_view then o.reference else 'Your 3PL''s approved pricing configuration' end
       ) order by r.rule_key, o.effective_date), '[]'::jsonb)
     into v_overrides
     from public.customer_surcharge_overrides o

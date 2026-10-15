@@ -92,10 +92,21 @@ export function parseWeightUnitCell(raw: string): WeightUnitInFile | null | "inv
   return "invalid";
 }
 
+/**
+ * Commas are accepted as thousands separators only ("1,250"); a decimal comma ("2,5") is refused
+ * rather than read as 25, because a silent 10× error is worse than an unreadable cell.
+ */
+function stripThousands(t: string): string | "invalid" {
+  if (!t.includes(",")) return t;
+  return /^\d{1,3}(,\d{3})+(\.\d+)?(\s*[a-z]+\.?)?$/.test(t) ? t.replace(/,/g, "") : "invalid";
+}
+
 /** "3", "3.5 lb", "12oz", "500 g", "1,250 g" → value and the unit the cell itself states, if any. */
 export function parseWeightCell(raw: string): { value: string; unit: WeightUnitInFile | null } | null | "invalid" {
-  const t = raw.trim().toLowerCase().replace(/,/g, "");
-  if (!t) return null;
+  const t0 = raw.trim().toLowerCase();
+  if (!t0) return null;
+  const t = stripThousands(t0);
+  if (t === "invalid") return "invalid";
   const m = /^(\d+(?:\.\d+)?|\.\d+)\s*([a-z]+)?\.?$/.exec(t);
   if (!m) return "invalid";
   const unit = m[2] === undefined ? null : parseWeightUnitCell(m[2]);
@@ -130,19 +141,24 @@ export function parseDimension(raw: string): string | null | "invalid" {
 
 /** Money with at most two decimals (declared value), non-negative. */
 export function parseDeclaredValue(raw: string): string | null | "invalid" {
-  const t = raw.trim().replace(/^\$|usd/gi, "").replace(/,/g, "").trim();
-  if (!t) return null;
-  return /^\d+(\.\d{1,2})?$/.test(t) ? t : "invalid";
+  const t0 = raw.trim().replace(/^\$|usd/gi, "").trim();
+  if (!t0) return null;
+  const t = stripThousands(t0);
+  if (t === "invalid") return "invalid";
+  return /^\d+(\.\d{1,2})?$/.test(t) && Number(t) < 1e10 ? t : "invalid";
 }
 
 /** A whole, non-negative unit count ("2", "2.0"). */
 export function parseUnits(raw: string): number | null | "invalid" {
-  const t = raw.trim().replace(/,/g, "");
-  if (!t) return null;
+  const t0 = raw.trim();
+  if (!t0) return null;
+  const t = stripThousands(t0);
+  if (t === "invalid") return "invalid";
   const m = /^(\d+)(?:\.0+)?$/.exec(t);
   if (!m) return "invalid";
   const n = Number(m[1]);
-  return Number.isSafeInteger(n) ? n : "invalid";
+  // Stored as a PostgreSQL integer.
+  return Number.isSafeInteger(n) && n <= 2147483647 ? n : "invalid";
 }
 
 export function parseCountry(raw: string): "US" | null | "other" {
@@ -155,7 +171,7 @@ export function parseCountry(raw: string): "US" | null | "other" {
 export function isCancelledCell(raw: string): boolean {
   const t = raw.trim().toLowerCase();
   if (!t) return false;
-  if (/^(cancelled|canceled|cancel|yes|y|true)$/.test(t)) return true;
+  if (/^(cancelled|canceled|cancel|yes|y|true|1)$/.test(t)) return true;
   return classifyDateCell(t) !== null;
 }
 

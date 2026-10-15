@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { VerificationBadge } from "@/components/pricing/rule-form";
 import { formatDate } from "@/lib/format/date";
 import { Alert } from "@/components/ui/alert";
@@ -44,6 +44,26 @@ const CHARGE_CLASS: Record<ChargeClass, { label: string; tone: "success" | "warn
   definite: { label: "Definite", tone: "success" },
   estimated: { label: "Estimated", tone: "warning" },
   conditional: { label: "Conditional", tone: "neutral" },
+};
+
+/** Customers read the same classes in the vocabulary the model results use. */
+const BRAND_CHARGE_CLASS: Record<ChargeClass, { label: string; tone: "success" | "warning" | "neutral" }> = {
+  definite: { label: "From your rate card", tone: "success" },
+  estimated: { label: "Based on assumptions", tone: "warning" },
+  conditional: { label: "May be added after shipping", tone: "neutral" },
+};
+
+/**
+ * Customer-facing notes: plain words, no codes or keys. Codes absent here are configuration
+ * matters for the 3PL (a rule chain, a missing divisor or zone chart) that a customer cannot act
+ * on; they are summarised in one line instead.
+ */
+const BRAND_WARNING: Partial<Record<WarningCode, { title: string; text: string }>> = {
+  assumed_inputs: { title: "Some inputs were assumed", text: "Parts of this price rest on assumed inputs and are shown as estimates." },
+  dimensions_missing: { title: "No dimensions given", text: "Dimensional weight was not checked, so this price may be low for a large, light package." },
+  rule_overridden: { title: "Pricing exception applied", text: "A pricing exception agreed with your 3PL was applied to this shipment." },
+  zip_list_missing: { title: "A surcharge could not be confirmed", text: "One surcharge could not be confirmed for this address and is shown as an estimate." },
+  rate_card_not_effective: { title: "No rates for this date", text: "Your rate card has no rates in effect on this ship date." },
 };
 
 const NOT_COUNTED: Record<LineStatus, string> = {
@@ -143,7 +163,17 @@ function packageLabel(index: number | null): string {
 // Sections
 // ---------------------------------------------------------------------------
 
-function TotalsRow({ totals }: { totals: ShipmentCalculation["totals"] }) {
+function TotalsRow({ totals, audience }: { totals: ShipmentCalculation["totals"]; audience: ResultAudience }) {
+  if (audience === "brand") {
+    return (
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat label="Estimated total" value={formatMoney(totals.expected)} note="What your rate card says plus charges based on assumptions. An estimate, not an invoice." />
+        <Stat label="From your rate card" value={formatMoney(totals.definite)} note="Follows directly from your rate card and its published terms." />
+        <Stat label="Based on assumptions" value={formatMoney(totals.estimated)} note="Rests on something assumed, for example missing dimensions." />
+        <Stat label="May be added after shipping (up to)" value={formatMoney(totals.conditionalExposure)} note="Adjustments that may or may not occur (address corrections and similar). Not in the total." />
+      </div>
+    );
+  }
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <Stat label="Expected shipping cost" value={formatMoney(totals.expected)} note="Definite plus estimated charges. Best single estimate, not an invoice." />
@@ -154,10 +184,10 @@ function TotalsRow({ totals }: { totals: ShipmentCalculation["totals"] }) {
   );
 }
 
-function BillableWeights({ result }: { result: ShipmentCalculation }) {
+function BillableWeights({ result, uid }: { result: ShipmentCalculation; uid: string }) {
   return (
-    <section aria-labelledby="calc-weights-heading" className="space-y-3">
-      <SectionHeading id="calc-weights-heading">Billable weight</SectionHeading>
+    <section aria-labelledby={`${uid}-weights`} className="space-y-3">
+      <SectionHeading id={`${uid}-weights`}>Billable weight</SectionHeading>
       <Card className="divide-y divide-line p-0 sm:p-0">
         {result.packages.map((p) => {
           const input = result.input.packages[p.packageIndex];
@@ -205,7 +235,7 @@ function ZoneLine({ zone }: { zone: NonNullable<ShipmentCalculation["zone"]> }) 
 }
 
 function ChargeLineRow({ line, audience }: { line: ChargeLine; audience: ResultAudience }) {
-  const cls = CHARGE_CLASS[line.chargeClass];
+  const cls = (audience === "brand" ? BRAND_CHARGE_CLASS : CHARGE_CLASS)[line.chargeClass];
   const struck = !line.counted && (line.status === "included" || line.status === "waived");
   return (
     <li className="flex items-start justify-between gap-4 py-3">
@@ -226,7 +256,7 @@ function ChargeLineRow({ line, audience }: { line: ChargeLine; audience: ResultA
   );
 }
 
-function ItemizedCharges({ result, audience }: { result: ShipmentCalculation; audience: ResultAudience }) {
+function ItemizedCharges({ result, audience, uid }: { result: ShipmentCalculation; audience: ResultAudience; uid: string }) {
   const packageCount = Math.max(result.packages.length, result.input.packages.length);
   const groups: { index: number | null; lines: ChargeLine[] }[] = [];
   for (let i = 0; i < packageCount; i++) {
@@ -237,8 +267,8 @@ function ItemizedCharges({ result, audience }: { result: ShipmentCalculation; au
   if (shipmentLines.length) groups.push({ index: null, lines: shipmentLines });
 
   return (
-    <section aria-labelledby="calc-lines-heading" className="space-y-3">
-      <SectionHeading id="calc-lines-heading">Itemized charges</SectionHeading>
+    <section aria-labelledby={`${uid}-lines`} className="space-y-3">
+      <SectionHeading id={`${uid}-lines`}>Itemized charges</SectionHeading>
       <Card className="divide-y divide-line p-0 sm:p-0">
         {groups.map((g) => (
           <div key={g.index ?? "shipment"} className="px-5 py-4 sm:px-6">
@@ -255,10 +285,35 @@ function ItemizedCharges({ result, audience }: { result: ShipmentCalculation; au
   );
 }
 
-function Warnings({ warnings }: { warnings: ShipmentCalculation["warnings"] }) {
+function Warnings({ warnings, audience, uid }: { warnings: ShipmentCalculation["warnings"]; audience: ResultAudience; uid: string }) {
+  if (audience === "brand") {
+    const seen = new Set<WarningCode>();
+    const shown = warnings.filter((w) => BRAND_WARNING[w.code] && !seen.has(w.code) && seen.add(w.code));
+    const other = warnings.some((w) => !BRAND_WARNING[w.code]);
+    if (!shown.length && !other) return null;
+    return (
+      <section aria-labelledby={`${uid}-warnings`} className="space-y-3">
+        <SectionHeading id={`${uid}-warnings`}>Notes</SectionHeading>
+        <ul className="space-y-2">
+          {shown.map((w) => (
+            <li key={w.code}>
+              <Alert tone="warning" title={BRAND_WARNING[w.code]!.title}>
+                {BRAND_WARNING[w.code]!.text}
+              </Alert>
+            </li>
+          ))}
+          {other ? (
+            <li>
+              <Alert tone="info">Some charges are estimates because part of the pricing configuration could not be applied; ask your 3PL to confirm them.</Alert>
+            </li>
+          ) : null}
+        </ul>
+      </section>
+    );
+  }
   return (
-    <section aria-labelledby="calc-warnings-heading" className="space-y-3">
-      <SectionHeading id="calc-warnings-heading">Warnings</SectionHeading>
+    <section aria-labelledby={`${uid}-warnings`} className="space-y-3">
+      <SectionHeading id={`${uid}-warnings`}>Warnings</SectionHeading>
       <ul className="space-y-2">
         {warnings.map((w, i) => (
           <li key={`${w.code}-${w.ruleKey ?? ""}-${i}`}>
@@ -276,20 +331,21 @@ function Warnings({ warnings }: { warnings: ShipmentCalculation["warnings"] }) {
   );
 }
 
-/** For customers: the plain provenance line (rate card name and version come from the caller, never ids). */
-function BrandReferences({ cardName, effectiveDate }: { cardName: string; effectiveDate: string | null }) {
+/** For customers: the plain provenance line (rate card name and dates come from the caller, never ids). */
+function BrandReferences({ cardName, effectiveDate, shipDate }: { cardName: string; effectiveDate: string | null; shipDate: string | null }) {
   return (
     <p className="text-sm text-muted">
       Priced on your rate card <span className="font-medium text-fg">{cardName}</span>
-      {effectiveDate ? ` (rates effective ${formatDate(effectiveDate)})` : ""}.
+      {effectiveDate ? ` (rates effective ${formatDate(effectiveDate)})` : ""}
+      {shipDate ? ` for a ship date of ${formatDate(shipDate)}` : ""}.
     </p>
   );
 }
 
-function References({ references }: { references: ShipmentCalculation["references"] }) {
+function References({ references, uid }: { references: ShipmentCalculation["references"]; uid: string }) {
   return (
-    <section aria-labelledby="calc-refs-heading" className="space-y-3">
-      <SectionHeading id="calc-refs-heading">References</SectionHeading>
+    <section aria-labelledby={`${uid}-refs`} className="space-y-3">
+      <SectionHeading id={`${uid}-refs`}>References</SectionHeading>
       <Card className="space-y-5 text-sm">
         <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
           <Detail label="Rate card">
@@ -352,22 +408,25 @@ function References({ references }: { references: ShipmentCalculation["reference
 // Result
 // ---------------------------------------------------------------------------
 
-export function CalculationResult({ result, audience = "staff", cardName, effectiveDate }: { result: ShipmentCalculation; audience?: ResultAudience; cardName?: string; effectiveDate?: string | null }) {
+export function CalculationResult({ result, audience = "staff", cardName, effectiveDate, shipDate }: { result: ShipmentCalculation; audience?: ResultAudience; cardName?: string; effectiveDate?: string | null; shipDate?: string | null }) {
   const unavailable = result.status === "unavailable";
+  // Section ids are unique per result, so several results on one page (the comparison) stay distinct for assistive technology.
+  const uid = useId();
   return (
     <div className="space-y-6">
       {unavailable ? (
         <Alert tone="warning" title="No price available">
-          {result.unavailableMessage ?? "The engine could not price this shipment from the rate card."}
-          {result.unavailableReason ? (
+          {audience === "brand"
+            ? `${result.unavailableReason ? UNAVAILABLE[result.unavailableReason] : "This shipment could not be priced"}. This combination is not available on your rate card; contact your 3PL if you expected a price.`
+            : (result.unavailableMessage ?? "The engine could not price this shipment from the rate card.")}
+          {result.unavailableReason && audience === "staff" ? (
             <span className="mt-1 block text-xs text-muted">
-              {UNAVAILABLE[result.unavailableReason]}
-              {audience === "staff" ? ` · ${result.unavailableReason}` : ""}
+              {UNAVAILABLE[result.unavailableReason]} · {result.unavailableReason}
             </span>
           ) : null}
         </Alert>
       ) : (
-        <TotalsRow totals={result.totals} />
+        <TotalsRow totals={result.totals} audience={audience} />
       )}
       {!unavailable && isPositive(result.totals.unresolved) ? (
         <Alert>
@@ -376,11 +435,11 @@ export function CalculationResult({ result, audience = "staff", cardName, effect
       ) : null}
       <p className="text-sm text-muted">{ESTIMATE_NOTICE}</p>
 
-      {result.packages.length ? <BillableWeights result={result} /> : null}
+      {result.packages.length ? <BillableWeights result={result} uid={uid} /> : null}
       {result.zone ? <ZoneLine zone={result.zone} /> : null}
-      {result.lines.length ? <ItemizedCharges result={result} audience={audience} /> : null}
-      {result.warnings.length ? <Warnings warnings={result.warnings} /> : null}
-      {audience === "brand" ? <BrandReferences cardName={cardName ?? "your rate card"} effectiveDate={effectiveDate ?? null} /> : <References references={result.references} />}
+      {result.lines.length ? <ItemizedCharges result={result} audience={audience} uid={uid} /> : null}
+      {result.warnings.length ? <Warnings warnings={result.warnings} audience={audience} uid={uid} /> : null}
+      {audience === "brand" ? <BrandReferences cardName={cardName ?? "your rate card"} effectiveDate={effectiveDate ?? null} shipDate={shipDate ?? null} /> : <References references={result.references} uid={uid} />}
     </div>
   );
 }

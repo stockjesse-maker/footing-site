@@ -50,7 +50,7 @@ export function AppShell({ homeHref, workspaceName, workspaceCaption, nav, userL
 
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="safe-top sticky top-0 z-20 flex items-center justify-between border-b border-line bg-bg/90 px-4 py-3 backdrop-blur md:hidden">
-          <Link href={homeHref} aria-label="ParcelClarity home">
+          <Link href={homeHref} aria-label="ParcelClarity home" className="inline-flex min-h-11 items-center">
             <Logo className="[&_span]:text-base" />
           </Link>
           <p className="max-w-[45%] truncate text-sm font-medium text-muted">{workspaceName}</p>

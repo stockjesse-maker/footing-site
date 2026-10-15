@@ -370,6 +370,15 @@ describe("finalizeSummary", () => {
     expect(s.dictionary).not.toBe(dictionary);
   });
 
+  it("lists orders the fold never saw (nothing to ship) as excluded, so modeled plus excluded reconciles to imported", () => {
+    const p = foldBatch(start(), ALL);
+    const s = finalizeSummary(p, { rows: 14, orders: 8, shipments: 8, packages: 11 }, [], "2.2.0");
+    const excluded = s.exclusions.reduce((n, e) => n + e.orders, 0);
+    expect(s.modeled.orders + excluded).toBe(8);
+    expect(s.exclusions.find((e) => e.reason === "nothing_to_ship")).toEqual({ reason: "nothing_to_ship", orders: 2, shipments: 0, ordersPct: "25.0" });
+    expect(s.coverage.ordersPct).toBe("37.5");
+  });
+
   it("rounds one-decimal percentages HALF_UP", () => {
     const p = foldBatch(start(), [A, C, D]);
     const s = finalizeSummary(p, { rows: 3, orders: 3, shipments: 4, packages: 4 }, [], "2.2.0");

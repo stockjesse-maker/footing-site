@@ -445,7 +445,8 @@ describe("review fixes: brand exceptions, hidden notes, archived cards, atomic z
     // brandA holds a markup_percent exception on northwind.residential from 2026-06-01 (created above).
     type Payload = { overrides: { id: string; ruleKey: string; mode: string; percent: string | null }[] };
     const [a] = await asUser<{ r: Payload }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-08-01') as r", [cardId]);
-    expect(a!.r.overrides).toEqual([expect.objectContaining({ ruleKey: "northwind.residential", mode: "markup_percent", percent: "10.0000", amount: null, effectiveDate: "2026-06-01", expirationDate: null, reference: "Addendum" })]);
+    // The exception itself reaches the brand's calculation; the 3PL's note about it ("Addendum") does not.
+    expect(a!.r.overrides).toEqual([expect.objectContaining({ ruleKey: "northwind.residential", mode: "markup_percent", percent: "10.0000", amount: null, effectiveDate: "2026-06-01", expirationDate: null, reference: "Your 3PL's approved pricing configuration" })]);
     expect(a!.r.overrides[0]!.id).toMatch(/^[0-9a-f-]{36}$/); // pinned by bulk runs
     const [early] = await asUser<{ r: Payload }>(w.brandA.admin.id, "select public.pricing_rules_for_card($1, '2026-03-01') as r", [cardId]);
     expect(early!.r.overrides).toEqual([]);

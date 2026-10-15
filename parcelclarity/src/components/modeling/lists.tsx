@@ -22,7 +22,7 @@ const DATASET_STATUS: Record<string, { label: string; tone: "neutral" | "accent"
 export function runStateLabel(run: RunListRow, now = Date.now()): { label: string; tone: "neutral" | "accent" | "success" | "warning" | "danger" } {
   if (run.status === "running") {
     const stale = now - new Date(run.last_progress_at).getTime() > 2 * 60_000;
-    return stale ? { label: "Paused", tone: "warning" } : { label: "Pricing…", tone: "accent" };
+    return stale ? { label: "Paused · open to continue", tone: "warning" } : { label: "Pricing…", tone: "accent" };
   }
   if (run.status === "completed") return { label: "Done", tone: "success" };
   if (run.status === "failed") return { label: "Could not finish", tone: "danger" };
@@ -77,7 +77,11 @@ export function ScenarioList({ projects, basePath, brandId, staff, compareHref }
               </Link>
               <p className="text-sm text-muted">
                 {p.kind === "single" ? "Single shipment" : "Orders file"} · {p.rate_cards?.name ?? "rate card"} · {formatDate(p.created_at)}
-                {run?.status === "completed" && run.kind === "bulk" && run.modeled_orders !== null ? ` · ${run.modeled_orders.toLocaleString("en-US")} orders modeled · ${formatMoney({ amount: String(run.total_expected ?? "0.00"), currency: "USD" })}` : ""}
+                {run?.status === "completed" && run.kind === "bulk" && run.modeled_orders !== null && run.summary
+                  ? run.modeled_orders > 0
+                    ? ` · estimated ${formatMoney({ amount: String(run.total_expected ?? "0.00"), currency: "USD" })} for ${run.modeled_orders.toLocaleString("en-US")} of ${run.summary.imported.orders.toLocaleString("en-US")} orders`
+                    : " · no orders could be priced"
+                  : ""}
                 {staff && !p.shared_with_brand ? " · private to your team" : ""}
               </p>
             </div>

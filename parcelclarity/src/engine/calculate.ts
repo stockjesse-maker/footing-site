@@ -214,7 +214,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
   const baseAssumed = assumed.weight || assumed.dimensions || assumed.originZip ? true : false;
 
   if (input.shipDate < card.effectiveDate || (card.expirationDate && input.shipDate > card.expirationDate)) {
-    return unavailable(input, ctx, "rate_card_not_effective", `Rate card "${card.rateCardName}" version ${card.versionNumber} is not in effect on ${input.shipDate} (effective ${card.effectiveDate}${card.expirationDate ? ` to ${card.expirationDate}` : ""}).`);
+    return unavailable(input, ctx, "rate_card_not_effective", `Rate card "${card.rateCardName}" has no rates in effect on ${input.shipDate} (this version is effective ${card.effectiveDate}${card.expirationDate ? ` to ${card.expirationDate}` : ""}).`);
   }
 
   const service: ServiceTerms | undefined = card.services.find((s) => s.carrierCode === input.carrierCode && s.serviceCode === input.serviceCode);
@@ -259,7 +259,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
   }
 
   // 4. Surcharge applicability: first pass, then rules conditioned on other rules, then conflicts.
-  const evalCtx: EvaluationContext = { shipment: input, zone: zone.zone, packages, zipLists: indexZipLists(ctx.zipLists, input.shipDate), applied: null };
+  const evalCtx: EvaluationContext = { shipment: input, zone: zone.zone, packages, zipLists: indexZipLists(ctx.zipLists, input.shipDate), ruleNames: new Map(ctx.rules.map((r) => [r.key, r.name])), applied: null };
   const ordered = [...rules].sort((a, b) => categoryRank(input.carrierCode, a.category) - categoryRank(input.carrierCode, b.category) || compareKeys(a.key, b.key));
   const firstPass = ordered.filter((r) => !r.conditions.some(referencesRule));
   const secondPass = ordered.filter((r) => r.conditions.some(referencesRule));
@@ -363,7 +363,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
       counted: true,
       status: "charged",
       packageIndex: p.index,
-      explanation: `Zone ${zone.zone}, ${fmt(found.comparedWeight, 3)} ${found.row.weightUnit} billable (bracket ${fmt(dec(found.row.weightMin), 3)}–${fmt(dec(found.row.weightMax), 3)} ${found.row.weightUnit})${found.originScope === "any_origin" ? "" : ` from origin ${found.originScope === "origin_5" ? input.originZip : input.originZip.slice(0, 3)}`}, rate card "${card.rateCardName}" v${card.versionNumber}.${baseAssumed ? ` Based on assumed ${[assumed.weight ? "weight" : null, assumed.dimensions ? "dimensions" : null, assumed.originZip ? "origin" : null].filter(Boolean).join(" and ")}, so this is an estimate.` : ""}`,
+      explanation: `Zone ${zone.zone}, ${fmt(found.comparedWeight, 3)} ${found.row.weightUnit} billable (bracket ${fmt(dec(found.row.weightMin), 3)}–${fmt(dec(found.row.weightMax), 3)} ${found.row.weightUnit})${found.originScope === "any_origin" ? "" : ` from origin ${found.originScope === "origin_5" ? input.originZip : input.originZip.slice(0, 3)}`}, rate card "${card.rateCardName}".${baseAssumed ? ` Based on assumed ${[assumed.weight ? "weight" : null, assumed.dimensions ? "dimensions" : null, assumed.originZip ? "origin" : null].filter(Boolean).join(" and ")}, so this is an estimate.` : ""}`,
       basis: `rate_card:${card.versionId}:${service.serviceId}:${found.row.zone}:${found.row.weightMax}${found.row.weightUnit}`,
       rule: null,
     });
@@ -513,7 +513,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
   for (const c of candidates) {
     if (c.outcome !== "unknown" || suppressed(c)) continue;
     const missing = c.rule.conditions.flatMap(listKeysOf).filter((k) => !evalCtx.zipLists.has(k));
-    for (const k of missing) warn({ code: "zip_list_missing", ruleKey: c.rule.key, message: `${c.rule.name} depends on the ZIP code list "${k}", which is not loaded for this date; it is shown as an estimate.` });
+    for (const k of missing) warn({ code: "zip_list_missing", ruleKey: c.rule.key, message: `${c.rule.name} depends on a ZIP code list (${zipListName(ctx, k)}) that is not available for this date; it is shown as an estimate.` });
   }
 
   return {
@@ -580,4 +580,10 @@ function baseDescription(rule: SurchargeRule): string {
     case "base_plus_categories":
       return `base rate plus ${rule.base.categories.join(", ")}`;
   }
+}
+
+/** ZIP lists are named by their source reference (brand-safe label when a brand is priced), never by key. */
+function zipListName(ctx: PricingContext, key: string): string {
+  const list = ctx.zipLists.find((l) => l.key === key);
+  return list?.sourceReference ? `"${list.sourceReference}"` : "not on file";
 }

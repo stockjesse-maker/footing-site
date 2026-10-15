@@ -4,7 +4,7 @@
 
 ParcelClarity is a two-sided SaaS for third-party logistics providers (3PLs) and their ecommerce brand customers. A 3PL uploads its own **customer-facing** rate cards and fulfillment pricing; its brands get secure logins to model shipping and fulfillment cost per order. It never uses carrier buy rates.
 
-**Status: Milestones 1–2 of 9 are complete** (foundation, authentication, multi-tenant authorization, app shell; rate-card import, versioning, surcharge rules, customer exceptions and a deterministic pricing engine with a 3PL-side calculator). The brand-side simulators, fulfillment fees, adjustment risk, reports, billing and carrier intelligence are **not built yet**, and the engine has only been validated on fictional data. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for the honest, current picture.
+**Status: Milestones 1–3 of 9 are complete** (foundation, authentication, multi-tenant authorization, app shell; rate-card import, versioning, surcharge rules, customer exceptions and a deterministic pricing engine; the customer portal's single-shipment calculator, order-file bulk modeling with resumable runs, saved scenarios and comparisons, and the 3PL's "model on behalf of a customer" view). Fulfillment fees, adjustment risk, PDF reports, billing and carrier intelligence are **not built yet**, and the engine has only been validated on fictional data. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for the honest, current picture.
 
 > This app lives in the `parcelclarity/` folder of the repository. The repository root still holds an unrelated static website (GitHub Pages); nothing here touches it.
 
@@ -68,7 +68,7 @@ Local mail lands in `<stack dir>/mail/*.eml` (no real email is ever sent).
 |---|---|
 | `npm run dev` / `build` / `start` | Next.js development / production build / serve |
 | `npm run lint` / `typecheck` | ESLint / `tsc --noEmit` (strict) |
-| `npm test` | Unit tests incl. the pricing-engine golden dataset (no services needed) |
+| `npm test` | Unit tests incl. the pricing-engine golden dataset, order-file import and bulk summaries (no services needed) |
 | `npx tsx tests/fixtures/pricing/generate.mts` | Regenerates the fictional fixture rate card used by the golden tests |
 | `npm run test:db` | Authorization/RLS tests against real PostgreSQL + Supabase Auth schema (needs `stack:up`) |
 | `npm run test:e2e` | Playwright against the built app (needs `stack:up`) |
@@ -89,14 +89,16 @@ insert into public.platform_admins (user_id) select id from auth.users where ema
 ```
 src/app/            routes: (auth) pages, (tenant)/app = 3PL portal, (brand)/portal = customer portal, platform
 src/app/actions/    Server Actions (validated with Zod, authorized server-side, RLS-backed)
-src/components/     ui/ design system, forms/, shell/, team/, pricing/ (rate cards, rules, calculator)
-src/engine/         pure pricing engine (no framework imports; see PRICING_ENGINE.md)
+src/components/     ui/ design system, forms/, shell/, team/, pricing/ (rate cards, rules, calculator), modeling/ (order files, runs, results)
+src/engine/         pure pricing engine (no framework imports; see PRICING_ENGINE.md); engine/modeling folds bulk results
 src/lib/auth/       roles/permissions, session + data-access layer, validation
 src/lib/import/     spreadsheet parsing, rate-card mapping detection and validation (pure)
-src/lib/pricing/    loads a rate card + rules from the database into the engine's context
+src/lib/orders/     order-file detection, mapping, validation and row materialisation (pure)
+src/lib/modeling/   batch run core (time-boxed, resumable), list queries, page context for brand and on-behalf views
+src/lib/pricing/    loads a rate card + rules from the database into the engine's context (with a per-run cache)
 src/lib/supabase/   server client (user JWT only), session proxy helper
 src/proxy.ts        session refresh + optimistic redirect (NOT an authorization boundary)
 supabase/migrations SQL migrations (schema, RLS, functions)
-tests/              unit/, db/ (RLS), e2e/ (Playwright), fixtures/pricing (fictional golden dataset)
+tests/              unit/, db/ (RLS), e2e/ (Playwright), fixtures/pricing (fictional golden dataset), fixtures/modeling (order files)
 scripts/local-stack Docker-free Supabase-compatible stack
 ```

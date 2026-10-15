@@ -104,6 +104,7 @@ export interface ProjectListRow {
   archived_at: string | null;
   dataset_id: string | null;
   rate_cards: { name: string } | null;
+  order_datasets: { name: string } | null;
   simulation_runs: RunListRow[];
 }
 
@@ -121,6 +122,9 @@ export interface RunListRow {
   modeled_orders: number | null;
   total_expected: string | number | null;
   summary: BulkSummary | null;
+  service_override_id: string | null;
+  assumptions: { residentialDefault?: boolean | null; originZipDefault?: string | null; overrideAllServices?: boolean } | null;
+  shipping_services: { name: string } | null;
 }
 
 export async function loadModelingLists(supabase: SupabaseClient, brandId: string): Promise<{ datasets: DatasetListRow[]; projects: ProjectListRow[] }> {
@@ -128,7 +132,7 @@ export async function loadModelingLists(supabase: SupabaseClient, brandId: strin
     supabase.from("order_datasets").select("id, name, status, created_at, order_count, shipment_count, package_count, shared_with_brand").eq("brand_id", brandId).neq("status", "discarded").order("created_at", { ascending: false }).limit(50).overrideTypes<DatasetListRow[], { merge: false }>(),
     supabase
       .from("simulation_projects")
-      .select("id, kind, name, created_at, shared_with_brand, archived_at, dataset_id, rate_cards(name), simulation_runs(id, status, kind, pricing_basis, as_of_date, created_at, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary)")
+      .select("id, kind, name, created_at, shared_with_brand, archived_at, dataset_id, rate_cards(name), order_datasets(name), simulation_runs(id, status, kind, pricing_basis, as_of_date, created_at, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, service_override_id, assumptions, shipping_services(name))")
       .eq("brand_id", brandId)
       .is("archived_at", null)
       .order("created_at", { ascending: false })
@@ -144,7 +148,8 @@ export function latestCompletedBulkRun(projects: ProjectListRow[]): { project: P
   let best: { project: ProjectListRow; run: RunListRow } | null = null;
   for (const project of projects) {
     for (const run of project.simulation_runs) {
-      if (run.kind !== "bulk" || run.status !== "completed" || !run.summary) continue;
+      // A run in which nothing could be priced has no headline figure to show.
+      if (run.kind !== "bulk" || run.status !== "completed" || !run.summary || !run.summary.modeled.orders) continue;
       if (!best || (run.finished_at ?? run.created_at) > (best.run.finished_at ?? best.run.created_at)) best = { project, run };
     }
   }

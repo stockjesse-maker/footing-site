@@ -30,6 +30,8 @@ export const orderMappingSchema = z.object({
     units: col,
     packaging: col,
     cancelled: col,
+    requiresShipping: col.optional(),
+    packageCount: col.optional(),
   }),
   grouping: z.object({
     shipments: z.enum(["by_shipment_id", "one_per_order", "one_per_row"]),

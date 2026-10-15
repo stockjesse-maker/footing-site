@@ -1,5 +1,6 @@
 import path from "node:path";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+import { devices, expect, test, type Locator, type Page } from "@playwright/test";
 import { signIn, signUpAndConfirm, sql, uniqueEmail } from "./helpers";
 
 // Milestone 3 end to end: a brand customer uploads a FICTIONAL orders file, reviews how it was
@@ -133,8 +134,11 @@ test("the customer uploads the fixture orders file and reviews how it was read",
   // Rows, orders, shipments, packages and items are counted separately.
   await expect(page.getByText("24 orders · 25 shipments · 26 packages · 28 items from 28 rows")).toBeVisible();
   await expect(page.getByText("20 of 24 orders can be priced (83.3%)")).toBeVisible();
-  await expect(page.getByText("The shipping service in the file is not mapped")).toBeVisible();
-  await expect(page.getByText("No package weight.")).toBeVisible();
+  // Each issue row names the problem and, behind "Where", the orders and rows it was found in.
+  await expect(page.getByRole("cell", { name: /The shipping service in the file is not mapped/ })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /No package weight\./ })).toBeVisible();
+  await page.getByRole("cell", { name: /No package weight\./ }).getByText("Where").click();
+  await expect(page.getByText(/Order A-10\d\d(, row \d+)?: No package weight/).first()).toBeVisible();
   const [ds] = await sql<{ status: string }>("select status from public.order_datasets where id = $1", [state.datasetId]);
   expect(ds?.status).toBe("validated");
 
@@ -168,13 +172,15 @@ test("the model runs at today's rates and reports coverage, exclusions and estim
   for (const reason of ["Heavier than the rate card's top bracket", "Destination not covered by the zone chart", "Shipping service not mapped to one of your services", "No package weight", "No destination ZIP code", "Rows of the same package disagree on weight or size"]) {
     await expect(page.getByText(reason, { exact: true }).first()).toBeVisible();
   }
-  await expect(page.getByRole("link", { name: "Fix the file mapping" })).toHaveAttribute("href", `/portal/model/orders/${state.datasetId}`);
+  await expect(page.getByRole("link", { name: "Review how the file was read" })).toHaveAttribute("href", `/portal/model/orders/${state.datasetId}`);
   // Breakdowns and the surcharge table carry rule names, never keys or ids.
   await expect(page.getByRole("heading", { name: "By service" })).toBeVisible();
   await expect(page.getByText("Residential surcharge (your 3PL)")).toBeVisible();
   await expect(page.getByText(/e2e\.residential/)).toHaveCount(0);
   // The package without dimensions was priced on actual weight and flagged.
-  await expect(page.getByText("No dimensions, so dimensional weight was not checked: 1 shipments")).toBeVisible();
+  await expect(page.getByText("No dimensions, so dimensional weight was not checked: 1 shipment")).toBeVisible();
+  // The fixture carries a residential column, so nothing about home/business delivery was assumed.
+  await expect(page.getByText(/priced assuming (home|business) deliveries/)).toHaveCount(0);
   const [run] = await sql<{ status: string; modeled_orders: number; ok_shipments: number; unavailable_shipments: number; total_shipments: number }>("select status, modeled_orders, ok_shipments, unavailable_shipments, total_shipments from public.simulation_runs where id = $1", [state.runId]);
   // 25 shipments: 18 orders priced (19 shipments), 6 orders excluded (6 shipments).
   expect(run).toEqual({ status: "completed", modeled_orders: 18, ok_shipments: 19, unavailable_shipments: 6, total_shipments: 25 });
@@ -187,8 +193,12 @@ test("the model runs at today's rates and reports coverage, exclusions and estim
   expect(csv.status()).toBe(200);
   const body = await csv.text();
   expect(body.startsWith("# Estimates from")).toBe(true);
-  expect(body).toContain("order_id,shipment_id,ship_date");
-  expect(body.split("\r\n").filter((l) => l.startsWith("A-")).length).toBe(25);
+  expect(body).toContain("order_id,shipment_id,ship_date,rates_of,");
+  expect(body).toContain(",in_totals,reason");
+  const dataLines = body.split("\r\n").filter((l) => l.startsWith("A-"));
+  expect(dataLines.length).toBe(25);
+  // 19 priced shipments in 18 modeled orders: every priced row is in the totals here (no order lost a sibling shipment).
+  expect(dataLines.filter((l) => l.includes(",priced,yes,")).length).toBe(19);
   expect(body).not.toContain("e2e.residential");
 });
 
@@ -200,9 +210,20 @@ test("the customer saves a single shipment as a scenario and sees it on the over
   await expect(page.getByLabel("Version", { exact: true })).toHaveCount(0); // customers never pick versions
   await page.getByLabel("Origin ZIP").fill("90001");
   await page.getByLabel("Destination ZIP").fill("85001");
-  await page.getByLabel("Service", { exact: true }).selectOption({ label: "UPS Ground" });
   await page.getByLabel("Weight", { exact: true }).fill("3");
+  // Comparing every service (the default) renders the same customer view as a single service: no keys, ids, versions or verification state.
   await page.getByRole("button", { name: "Calculate", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /^Results: \d+ services$/ })).toBeVisible();
+  await page.locator("summary", { hasText: "UPS Ground" }).first().click();
+  await expect(page.getByText("Priced on your rate card").first()).toBeVisible();
+  await expect(page.getByText(/@v\d/)).toHaveCount(0);
+  await expect(page.getByText(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)).toHaveCount(0);
+  await expect(page.getByText(/^Version \d+$/)).toHaveCount(0);
+  await expect(page.getByText("References", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("Engine", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Service", { exact: true }).selectOption({ label: "UPS Ground" });
+  await page.getByRole("button", { name: "Calculate", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Result: UPS Ground" })).toBeVisible();
   await expect(page.getByText("Priced on your rate card")).toBeVisible();
   await expect(page.getByText(/@v\d/)).toHaveCount(0); // no rule keys for customers
   await expect(page.getByText("Engine", { exact: true })).toHaveCount(0);
@@ -271,4 +292,57 @@ test("another customer and another 3PL cannot reach the models by URL", async ({
     await expect(sp.getByText(state.brandName), p).toHaveCount(0);
   }
   await stranger.close();
+});
+
+// ---------------------------------------------------------------------------
+// 4. Phone layout and automated accessibility on the customer's modeling pages
+// ---------------------------------------------------------------------------
+test("the customer's modeling pages fit a phone, keep tap targets at 44px and pass automated accessibility checks", async ({ browser }) => {
+  const phone = await browser.newContext({ ...devices["iPhone 14"], baseURL: "http://localhost:3000" });
+  const page = await phone.newPage();
+  await signIn(page, state.brandAdminEmail);
+  await expect(page).toHaveURL(/\/portal$/);
+  const check = async (label: string) => {
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), `${label}: horizontal scroll`).toBe(true);
+    const sizes = await page.locator("input:not([type=hidden]), select, textarea").evaluateAll((els) => els.map((el) => parseFloat(getComputedStyle(el).fontSize)));
+    if (sizes.length) expect(Math.min(...sizes), `${label}: input font size`).toBeGreaterThanOrEqual(16);
+    // A radio or checkbox is tapped through its label, so the label's box is the target.
+    const smallTargets = await page.locator("button, a, input:not([type=hidden]), select, summary").evaluateAll((els) =>
+      els
+        .filter((el) => !el.classList.contains("sr-only"))
+        .map((el) => {
+          const type = (el as HTMLInputElement).type;
+          const target = (type === "radio" || type === "checkbox") && el.closest("label") ? el.closest("label")! : el;
+          return { el, rect: target.getBoundingClientRect() };
+        })
+        .filter(({ rect }) => rect.width > 0 && rect.height > 0 && rect.height < 44)
+        .map(({ el }) => el.outerHTML.slice(0, 100)),
+    );
+    expect(smallTargets, `${label}: touch targets under 44px`).toEqual([]);
+    const results = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+    const serious = results.violations.filter((v) => v.impact === "serious" || v.impact === "critical");
+    expect(serious.map((v) => `${label}: ${v.id} ${v.help}\n${v.nodes.map((n) => `  ${n.target.join(" ")} :: ${n.any[0]?.message ?? ""}`).join("\n")}`)).toEqual([]);
+  };
+  await page.goto("/portal/model");
+  await expect(page.getByRole("heading", { name: "Model Costs" })).toBeVisible();
+  await check("/portal/model");
+  await page.goto("/portal/model/calculator");
+  await page.getByLabel("Origin ZIP").fill("90001");
+  await page.getByLabel("Destination ZIP").fill("85001");
+  await page.getByLabel("Weight", { exact: true }).fill("3");
+  await page.getByRole("button", { name: "Calculate", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /^Results: \d+ services$/ })).toBeVisible();
+  await page.locator("summary", { hasText: "UPS Ground" }).first().click();
+  await expect(page.getByText("Priced on your rate card").first()).toBeVisible();
+  await check("/portal/model/calculator (comparison expanded)");
+  await page.goto(`/portal/model/orders/${state.datasetId}`);
+  await expect(page.getByText("Does this look right?")).toBeVisible();
+  await check("/portal/model/orders/[id]");
+  await page.goto(`/portal/model/runs/${state.runId}`);
+  await expect(page.getByText("Estimated shipping cost per order")).toBeVisible();
+  await check("/portal/model/runs/[id]");
+  await page.goto("/portal/reports");
+  await expect(page.getByRole("heading", { name: "Reports" })).toBeVisible();
+  await check("/portal/reports");
+  await phone.close();
 });

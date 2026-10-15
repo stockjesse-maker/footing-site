@@ -3,8 +3,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseTables } from "@/lib/import/parse-table";
 import type { ServiceCatalogEntry } from "@/lib/import/rate-card-mapping";
-import { parseOrderDate, parseZip, weightToLb } from "@/lib/orders/cells";
+import { isCancelledCell, parseDeclaredValue, parseOrderDate, parseUnits, parseWeightCell, parseZip, weightToLb } from "@/lib/orders/cells";
 import { detectOrderFile } from "@/lib/orders/mapping";
+import { orderMappingSchema } from "@/lib/orders/mapping-schema";
 import { buildMaterialisePayloads } from "@/lib/orders/materialise";
 import type { OrderMapping, ParsedOrder } from "@/lib/orders/types";
 import { applyOrderMapping } from "@/lib/orders/validate";
@@ -153,6 +154,102 @@ describe("Shopify order export (one row per line item, no weights)", () => {
     expect(report.counts).toEqual({ rows: 7, orders: 6, shipments: 5, packages: 5, lines: 7, units: 9 });
     expect(report.modelableOrders).toBe(4);
     expect(report.issuesByCode.find((i) => i.code === "weight_derived")).toMatchObject({ orders: 5 }); // #2001–#2004 and #2006 (its destination is missing, but its weight still derives)
+
+    // The mapping the server stores is the mapping the wizard approved: "requires shipping" is kept, so the gift-card order still ships nothing.
+    const stored = { ...orderMappingSchema.parse({ ...mapping, serviceMap: {} }), serviceMap: mapping.serviceMap };
+    expect(stored).toEqual(mapping);
+    const reapplied = applyOrderMapping(tables, stored, { skuProfiles: profiles });
+    expect(order(reapplied.orders, "#2005").shipments).toEqual([]);
+    expect(reapplied.report.counts).toEqual(report.counts);
+  });
+});
+
+describe("edge cases in the generic layout", () => {
+  const csv = (text: string) => parseTables(Buffer.from(text), "csv");
+  const mapFor = async (text: string, tweak: (m: OrderMapping) => OrderMapping = (m) => m) => {
+    const tables = await csv(text);
+    const mapping = tweak(detectOrderFile(tables, catalog).suggestion!);
+    return { tables, mapping };
+  };
+
+  it("reads the template's layout: items listed under a package on their own rows are not a second, weightless package", async () => {
+    const { tables, mapping } = await mapFor(
+      [
+        "order_id,shipment_id,order_date,origin_zip,destination_zip,residential,service,package_seq,weight,weight_unit,length,width,height,sku,units,packaging",
+        "T-1,S-1,2026-01-15,90001,85001,yes,UPS Ground,1,3.5,lb,10,8,6,SKU-A,2,box",
+        "T-1,S-1,,,,,,,,,,,,SKU-B,1,",
+        "",
+      ].join("\n"),
+    );
+    const { orders, report } = applyOrderMapping(tables, mapping);
+    expect(report.counts).toEqual({ rows: 2, orders: 1, shipments: 1, packages: 1, lines: 2, units: 3 });
+    expect(order(orders, "T-1").shipments[0]!.packages).toHaveLength(1);
+    expect(order(orders, "T-1").shipments[0]!.packages[0]).toMatchObject({ weight: "3.5", length: "10" });
+    expect(order(orders, "T-1").shipments[0]!.issues).not.toContain("weight_missing");
+    expect(report.modelableOrders).toBe(1);
+  });
+
+  it("without line columns, two identical package rows are two packages", async () => {
+    const { tables, mapping } = await mapFor(["order_id,order_date,destination_zip,service,weight", "P-1,2026-01-15,85001,UPS Ground,2", "P-1,2026-01-15,85001,UPS Ground,2", ""].join("\n"));
+    const { orders, report } = applyOrderMapping(tables, mapping);
+    expect(order(orders, "P-1").shipments[0]!.packages.map((p) => p.weight)).toEqual(["2", "2"]);
+    expect(report.issuesByCode.map((i) => i.code)).not.toContain("rows_collapsed_to_package");
+  });
+
+  it("a row without a shipment id continues the shipment above it, with a note", async () => {
+    const { tables, mapping } = await mapFor(["order_id,shipment_id,order_date,destination_zip,service,weight,sku,units", "D-1,S1,2026-01-15,85001,UPS Ground,2,SKU-A,1", "D-1,,2026-01-15,85001,UPS Ground,,SKU-B,1", ""].join("\n"));
+    const { orders, report } = applyOrderMapping(tables, mapping);
+    expect(order(orders, "D-1").shipments).toHaveLength(1);
+    expect(order(orders, "D-1").shipments[0]!.packages).toHaveLength(1);
+    expect(report.issuesByCode.find((i) => i.code === "shipment_id_missing")).toMatchObject({ severity: "warning", orders: 1, rows: 2 });
+  });
+
+  it("refuses to derive a weight from product weights when a line quantity could not be read", async () => {
+    const { tables, mapping } = await mapFor(["order_id,order_date,destination_zip,service,sku,units", "U-1,2026-01-15,85001,UPS Ground,SKU-A,1", "U-1,2026-01-15,85001,UPS Ground,SKU-B,two", ""].join("\n"), (m) => ({ ...m, useSkuProfiles: true }));
+    const profiles = [
+      { sku: "SKU-A", unitWeightLb: "1", lengthIn: null, widthIn: null, heightIn: null },
+      { sku: "SKU-B", unitWeightLb: "2", lengthIn: null, widthIn: null, heightIn: null },
+    ];
+    const { orders, report } = applyOrderMapping(tables, mapping, { skuProfiles: profiles });
+    expect(order(orders, "U-1").shipments[0]!.packages[0]!.weight).toBeNull();
+    expect(order(orders, "U-1").shipments[0]!.issues).toContain("weight_missing");
+    expect(report.modelableOrders).toBe(0);
+  });
+
+  it("refuses values the database cannot store instead of truncating them", async () => {
+    const longId = "X".repeat(121);
+    const { tables, mapping } = await mapFor(["order_id,order_date,destination_zip,service,weight", `${longId},2026-01-15,85001,UPS Ground,2`, "R-2,2026-01-15,85001,UPS Ground,1000000", ""].join("\n"));
+    const { orders, report } = applyOrderMapping(tables, mapping);
+    expect(order(orders, longId).issues).toContain("value_out_of_range");
+    expect(order(orders, "R-2").shipments[0]!.issues).toContain("value_out_of_range");
+    expect(report.modelableOrders).toBe(0);
+  });
+
+  it("records an issue's severity before the detail cap, so a blocking issue first seen late still reads as blocking", async () => {
+    const rows = ["order_id,order_date,destination_zip,service,weight"];
+    for (let i = 0; i < 520; i++) rows.push(`O-${i},2026-01-15,85001,UPS Ground,1`);
+    rows.push("BAD-1,2026-01-15,ABCDE,UPS Ground,1", "");
+    const { tables, mapping } = await mapFor(rows.join("\n"));
+    const { report } = applyOrderMapping(tables, mapping);
+    expect(report.issuesTruncated).toBe(true);
+    expect(report.issuesByCode.find((i) => i.code === "destination_invalid")).toMatchObject({ severity: "error", orders: 1 });
+  });
+});
+
+describe("cell parsers: commas and flags", () => {
+  it("reads thousands separators and refuses decimal commas rather than misreading them tenfold", () => {
+    expect(parseWeightCell("1,250 g")).toEqual({ value: "1250", unit: "g" });
+    expect(parseWeightCell("2,5")).toBe("invalid");
+    expect(parseUnits("1,000")).toBe(1000);
+    expect(parseUnits("2,5")).toBe("invalid");
+    expect(parseUnits("3000000000")).toBe("invalid");
+    expect(parseDeclaredValue("$1,250.50")).toBe("1250.50");
+    expect(parseDeclaredValue("12,50")).toBe("invalid");
+  });
+
+  it("treats 1 as a cancelled flag like yes and true", () => {
+    expect(isCancelledCell("1")).toBe(true);
+    expect(isCancelledCell("0")).toBe(false);
   });
 });
 
@@ -174,7 +271,10 @@ describe("ShipHero-style shipment export (one row per shipment)", () => {
     expect(order(orders, "SH-3003").shipments[0]!).toMatchObject({ serviceId: "svc-usps-ga", residential: true });
     expect(order(orders, "SH-3005").shipments[0]!.issues).toContain("package_count_mismatch");
     expect(report.modelableOrders).toBe(5);
-    expect(report.weights).toEqual({ count: 6, medianLb: "9", p90Lb: "40", over150Lb: 0 });
+    // Weights 0.75, 2, 3, 9, 12, 40: the median of an even count is the mean of the two middle values.
+    expect(report.weights).toEqual({ count: 6, medianLb: "6", p90Lb: "40", over150Lb: 0 });
+    // The approved mapping survives the schema the server applies to it, columns the wizard offers included (service ids are UUIDs in the app; the test catalog's are not).
+    expect(orderMappingSchema.parse({ ...mapping, serviceMap: {} })).toEqual({ ...mapping, serviceMap: {} });
     expect(report.derivation.shipments).toContain("shipment id");
   });
 });

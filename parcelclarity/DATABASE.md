@@ -52,9 +52,36 @@ PostgreSQL via Supabase. All schema changes are SQL migrations in `supabase/migr
 
 Triggers write `ratecard.created|updated|version_active|version_archived|version_discarded|version_ended|assigned|unassigned|override_created|override_ended` and `carrier_rule.published|retired|zip_list_published|zip_list_retired`. The user-callable `log_audit_event()` can no longer use the `ratecard.` or `carrier_rule.` namespaces, so these records cannot be forged by a member (`tests/db/audit.test.ts`).
 
+## Modeling tables (Milestone 3, `20261015000005_modeling.sql`)
+
+| Table | Purpose | Notes |
+|---|---|---|
+| `sku_profiles` | A brand's product weights/dimensions per SKU, for order files that carry no package weight | Unique per brand and SKU (case-insensitive); brand members and staff read/write their own brand's |
+| `order_datasets` | An uploaded orders file: uploaded → mapped → validated → materialising → ready (or discarded), with the detected structure, approved mapping, validation report and computed counts | Staff-created datasets are private until `shared_with_brand`; counts and the ready/discarded states are set only by functions (guard trigger) |
+| `orders`, `order_lines`, `shipments`, `packages` | The file as rows: orders (date, destination, origin, residential, cancelled, validation issue codes), lines (sku, units), shipments (dense dataset-wide `row_no`, service, ship date) and packages (weight, dimensions, derived flags) | Composite keys chain back to the dataset (and its brand); no direct write grants, only `materialise_order_rows()` |
+| `simulation_projects` | Saved scenarios: a single shipment or a bulk model on a dataset, bound to a rate card actively assigned to the brand (policy-enforced) | Staff-created scenarios are private until shared |
+| `simulation_runs` | One execution: pricing basis (`fixed_date` / `ship_date`), service override and unmapped policy, assumptions, durable batch cursor (`next_row_no`), running `partial_summary`, final `summary`, dictionary (`reference_data`) and **trusted totals computed in SQL** at finish | One live run per project (partial unique index); `last_progress_at` distinguishes paused from running |
+| `simulation_run_contexts` | What each ship date of a run was priced with: rate-card version, rule version ids, ZIP-list ids, override ids, load issues | Pinned for reproducibility even after versions are archived |
+| `simulation_results` | One row per shipment: status/reason, zone, service, billable weights, split totals, dictionary-encoded lines, warning codes | Written only by `advance_simulation_run()`; never free text |
+
+### Visibility rules for modeling data
+
+* `app.can_model_brand(tenant, brand)`: the brand's own members with `simulation.run`, or the tenant's staff with `simulation.run`; `app.modelable_brand_ids()` is the set form used by hoisted SELECT policies so a 20,000-row scan evaluates the permission once.
+* Brand members see their own brand's datasets, rows, scenarios, runs and results, and only those `shared_with_brand`; staff see everything of their tenant; `simulation_run_contexts` (pinned version ids, load diagnostics) are staff-only. Nobody else sees anything (`tests/db/modeling.test.ts`).
+* Order files (`uploaded_files.purpose = 'order_import'`) may be uploaded by brand members for their own brand and by staff on their behalf (up to 15 MB; pricing files keep 5 MB and stay manager-only). A file follows its dataset: the uploader and staff can read it, the brand once a dataset on it is shared (`app.order_file_shared`). Uploads are rate-limited in the database (120 per user per hour).
+* `shared_with_brand` is not writable through the Data API on either table; only the staff-only functions change it.
+
+### State transitions (functions only)
+
+`materialise_order_rows(dataset, orders, lines, shipments, packages)` (whole orders per chunk, one transaction; chunk and per-file caps), `finalize_order_dataset` (computes counts incl. the file's row count, requires dense row numbers), `reset_order_dataset` (rolls an interrupted materialisation back to *validated*), `discard_order_dataset` (refused while any scenario the caller cannot see, any unarchived scenario or a run in progress uses it), `set_dataset_sharing` / `set_scenario_sharing` (staff only; sharing a bulk scenario also shares its orders file), `start_simulation_run(project, basis, as_of, service_override, unmapped_policy, assumptions)` (validates every setting incl. an *active* assigned card; attaches to the live run only when the settings match, otherwise raises), `simulation_batch_input(run, limit ≤ 500)` (whole orders from the cursor with packages nested, plus the partial summary that belongs to that cursor), `advance_simulation_run(run, from, to, results, partial, contexts)` (idempotent: a window behind the cursor is acknowledged, a gap raises; every result must name this run's own shipment at its row number; the partial must have seen exactly `to` shipments), `finish_simulation_run(run, summary, reference_data, engine_version)` (recomputes modeled orders/shipments/packages and totals from the stored rows, refuses a summary that does not reconcile, marks the rows that are in the totals), `fail_simulation_run`, `cancel_simulation_run`, `save_single_simulation` (active assigned card, size caps). All `SECURITY DEFINER`, each authorising on the row it touches and on the visibility the RLS policies grant (`app.modeling_visible`, `app.project_visible`).
+
+### Audit
+
+Triggers write `modeling.dataset_ready|dataset_discarded|dataset_shared|dataset_unshared|scenario_created|scenario_shared|scenario_unshared|run_started|run_completed|run_failed|run_cancelled` with ids and counts only (never a summary); the `modeling.` namespace is not available to `log_audit_event()`. Shipment-level CSV exports log `export.run_results` through `log_audit_event()`.
+
 ## Planned tables (not yet created)
 
-Added by later milestones, each with RLS from day one: processing fee schedules / rules, order datasets, orders, order lines, shipments, packages, simulation projects / runs / results, adjustment records, saved scenarios, reports, subscriptions, usage records.
+Added by later milestones, each with RLS from day one: processing fee schedules / rules, adjustment records, reports, subscriptions, usage records.
 
 ## Isolation model
 
@@ -111,7 +138,7 @@ Default privileges for `anon`/`authenticated` on new `public` objects are revoke
 
 ## Audit events recorded
 
-`tenant.created|updated|status_changed`, `brand.created|updated|status_changed`, `membership.created|updated`, `invitation.created|accepted|revoked`. Application events via `log_audit_event` are limited to prefixes `simulation. scenario. report. export. ratecard. import. billing. adjustment. carrier_rule. session.` and require tenant membership.
+`tenant.created|updated|status_changed`, `brand.created|updated|status_changed`, `membership.created|updated`, `invitation.created|accepted|revoked`. Application events via `log_audit_event` are limited to prefixes `simulation. scenario. report. export. import. billing. adjustment. session.` (never `ratecard.`, `carrier_rule.` or `modeling.`, which are trigger-only) and require tenant membership.
 
 ## Reproducing the schema from scratch
 

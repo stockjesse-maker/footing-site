@@ -28,7 +28,8 @@ export interface ActiveVersion {
   status: string;
 }
 
-export type SnapshotError = "rate_card_not_found" | "no_version_in_effect" | "version_not_found";
+/** `load_failed` is a query or RPC error (an outage, a timeout): retryable, never a quote and never "not found". */
+export type SnapshotError = "rate_card_not_found" | "no_version_in_effect" | "version_not_found" | "load_failed";
 
 interface TermsRow {
   service_id: string;
@@ -121,7 +122,8 @@ export async function resolveVersion(
     ? query.eq("id", versionId)
     : query.eq("status", "active").lte("effective_date", shipDate).or(`expiration_date.is.null,expiration_date.gte.${shipDate}`);
   const { data, error } = await query.order("effective_date", { ascending: false }).limit(1).maybeSingle();
-  if (error || !data) return { ok: false, error: versionId ? "version_not_found" : "no_version_in_effect" };
+  if (error) return { ok: false, error: "load_failed" };
+  if (!data) return { ok: false, error: versionId ? "version_not_found" : "no_version_in_effect" };
   return {
     ok: true,
     version: { id: data.id, versionNumber: data.version_number, effectiveDate: data.effective_date, expirationDate: data.expiration_date, status: data.status },
@@ -129,13 +131,14 @@ export async function resolveVersion(
 }
 
 export async function loadServiceTerms(supabase: SupabaseClient, versionId: string): Promise<ServiceTerms[]> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("rate_card_service_terms")
     .select(
       "service_id, dim_divisor, dim_threshold_cubic_in, dimension_rounding, weight_rounding, min_billable_lb, dim_exempt, min_charge, included_surcharge_keys, excluded_surcharge_keys, zone_chart_key, zone_independent, surcharge_markup_percent, source_reference, shipping_services(id, carrier_code, code, name)",
     )
     .eq("version_id", versionId)
     .overrideTypes<TermsRow[], { merge: false }>();
+  if (error) throw new PricingLoadError(error.message);
   return (data ?? [])
     .filter((t) => t.shipping_services)
     .map((t) => ({
@@ -186,9 +189,24 @@ export interface LoadedSnapshot {
   pins: PricingPins;
 }
 
+/** A query failed while loading pricing data; the caller retries rather than pricing on partial data. */
+export class PricingLoadError extends Error {}
+
 export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOptions): Promise<{ ok: true; snapshot: LoadedSnapshot } | { ok: false; error: SnapshotError }> {
-  const { data: card } = await supabase.from("rate_cards").select("id, name, tenant_id, status").eq("id", opts.rateCardId).maybeSingle();
+  try {
+    return await loadPricingContextInner(supabase, opts);
+  } catch (err) {
+    if (err instanceof PricingLoadError) return { ok: false, error: "load_failed" };
+    throw err;
+  }
+}
+
+async function loadPricingContextInner(supabase: SupabaseClient, opts: LoadOptions): Promise<{ ok: true; snapshot: LoadedSnapshot } | { ok: false; error: SnapshotError }> {
+  const { data: card, error: cardError } = await supabase.from("rate_cards").select("id, name, tenant_id, status").eq("id", opts.rateCardId).maybeSingle();
+  if (cardError) return { ok: false, error: "load_failed" };
   if (!card) return { ok: false, error: "rate_card_not_found" };
+  // A retired card stays readable to staff (history) but is never priced for a customer.
+  if (opts.brandId && card.status !== "active") return { ok: false, error: "rate_card_not_found" };
 
   const resolved = await resolveVersion(supabase, card.id, opts.shipDate, opts.versionId);
   if (!resolved.ok) return resolved;
@@ -197,13 +215,14 @@ export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOpt
   const cached = opts.cache?.versions.get(version.id);
   let terms = cached ? cached.terms : await loadServiceTerms(supabase, version.id);
   if (opts.brandId) {
-    const { data: assignment } = await supabase
+    const { data: assignment, error: assignmentError } = await supabase
       .from("brand_rate_card_assignments")
       .select("allowed_service_ids")
       .eq("brand_id", opts.brandId)
       .eq("rate_card_id", card.id)
       .is("unassigned_at", null)
       .maybeSingle();
+    if (assignmentError) return { ok: false, error: "load_failed" };
     if (assignment?.allowed_service_ids?.length) {
       const allowed = new Set(assignment.allowed_service_ids as string[]);
       terms = terms.filter((t) => allowed.has(t.serviceId));
@@ -216,9 +235,10 @@ export async function loadPricingContext(supabase: SupabaseClient, opts: LoadOpt
     cached ? Promise.resolve({ data: cached.zones, error: null }) : supabase.rpc("rate_card_zones_json", { p_version: version.id }),
     supabase.rpc("pricing_rules_for_card", { p_rate_card: card.id, p_ship_date: opts.shipDate, p_brand: opts.brandId ?? null, p_known_lists: knownLists }),
   ]);
-  // A failed load is never priced as "no rules": the database refuses the call when the caller (or
-  // the brand being priced) has no right to this card, and anything else is an outage, not a quote.
-  if (rowsResult.error || zonesResult.error || rulesResult.error || !rulesResult.data) return { ok: false, error: "rate_card_not_found" };
+  // A failed load is never priced as "no rules": the database refuses the call (P0003) when the caller
+  // or the brand being priced has no right to this card; anything else is an outage, not a quote.
+  if (rulesResult.error?.code === "P0003") return { ok: false, error: "rate_card_not_found" };
+  if (rowsResult.error || zonesResult.error || rulesResult.error || !rulesResult.data) return { ok: false, error: "load_failed" };
   const rows = (rowsResult.data ?? []) as RateRow[];
   const zones = ((zonesResult.data ?? []) as ZoneRow[]).map((z) => ({ ...z, zoneChartKey: z.zoneChartKey ?? "default" }));
   if (opts.cache && !cached && !opts.serviceIds) opts.cache.versions.set(version.id, { terms: await loadServiceTerms(supabase, version.id), rows, zones });
@@ -291,7 +311,8 @@ function mapRules(payload: RulesPayload, serviceCodeById: Map<string, string>, i
     }
     const base = calculationBaseSchema.safeParse(v.base ?? { kind: "base_rate" });
     if (bad || !base.success) {
-      issues.push(`Rule ${v.key} v${v.version} has an invalid condition or base and was not applied.`);
+      // Rules are named, never keyed, in anything a customer may read.
+      issues.push(`The surcharge rule "${v.name}" has an invalid condition or base and was not applied.`);
       continue;
     }
     const serviceCodes = v.appliesToServiceIds ? v.appliesToServiceIds.map((id) => serviceCodeById.get(id)).filter((c): c is string => !!c) : null;

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { uploadOrderFile, uploadSkuProfiles } from "@/app/actions/modeling";
 import { ActionForm, SubmitButton } from "@/components/forms/action-form";
 import { FileField } from "@/components/pricing/file-field";
@@ -11,13 +10,10 @@ export function OrderUploadForm({ brandId, tenantName }: { brandId?: string; ten
   return (
     <Card>
       <CardTitle>Upload your orders</CardTitle>
-      <CardDescription>
-        A CSV or XLSX of past or projected orders. Shopify and ShipHero exports can be uploaded as they are; otherwise use the{" "}
-        <Link href="/api/templates/orders.csv" className="font-medium text-accent-text hover:underline">
-          orders template
-        </Link>
-        . Nothing is priced until you have reviewed how the file was read.
-      </CardDescription>
+      <CardDescription>A CSV or XLSX of past or projected orders. Shopify and ShipHero exports can be uploaded as they are; otherwise use the orders template. Nothing is priced until you have reviewed how the file was read.</CardDescription>
+      <a href="/api/templates/orders.csv" download className="mt-1 inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+        Download the orders template (CSV)
+      </a>
       <ActionForm action={uploadOrderFile} className="mt-4 space-y-4">
         {brandId ? <input type="hidden" name="brandId" value={brandId} /> : null}
         <FileField name="file" label="Orders file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hint={`Up to 15 MB. Prices come only from the rate card ${tenantName} assigned to you.`} />

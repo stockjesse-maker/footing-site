@@ -324,7 +324,7 @@ describe("condition types", () => {
     expect(l.chargeClass).toBe("estimated");
     expect(l.counted).toBe(false);
     expect(l.amount.amount).toBe("4.00");
-    expect(l.explanation).toContain('the ZIP list "test.das" is not loaded');
+    expect(l.explanation).toContain("a ZIP code list the rule needs is not available for this date");
     expect(totals(r)).toEqual({ definite: "10.00", estimated: "0.00", expected: "10.00", conditionalExposure: "0.00" });
     expect(warningCodes(r)).toEqual(["zip_list_missing"]);
   });
@@ -339,7 +339,7 @@ describe("condition types", () => {
     const l = lineFor(r, "das");
     expect(l.chargeClass).toBe("estimated");
     expect(l.counted).toBe(false);
-    expect(l.explanation).toContain('the ZIP list "test.das" is not loaded');
+    expect(l.explanation).toContain("a ZIP code list the rule needs is not available for this date");
     expect(warningCodes(r)).toEqual(["zip_list_missing"]);
   });
 

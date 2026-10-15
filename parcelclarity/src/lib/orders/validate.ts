@@ -32,7 +32,12 @@ const D = Decimal.clone({ precision: 28, rounding: Decimal.ROUND_HALF_UP });
 const PARCEL_MAX_LB = new D(150);
 
 /** Issues that leave an order unmodelable under the mapping's defaults (a run may still exclude more or fewer; a missing origin is supplied by the run's ship-from ZIP). */
-const BLOCKING: ReadonlySet<string> = new Set(["destination_missing", "destination_invalid", "destination_short", "destination_not_us", "weight_missing", "weight_invalid", "weight_unit_invalid", "service_unmapped", "service_missing", "no_packages", "nothing_to_ship", "order_inconsistent", "package_inconsistent", "origin_invalid", "order_cancelled", "sku_unknown"]);
+const BLOCKING: ReadonlySet<string> = new Set(["destination_missing", "destination_invalid", "destination_short", "destination_not_us", "weight_missing", "weight_invalid", "weight_unit_invalid", "service_unmapped", "service_missing", "no_packages", "nothing_to_ship", "order_inconsistent", "package_inconsistent", "origin_invalid", "order_cancelled", "sku_unknown", "value_out_of_range"]);
+
+/** Column limits of the stored rows (orders.external_order_id, order_lines.sku, …); a longer value is refused, never truncated. */
+const MAX_ID_CHARS = 120;
+const MAX_WEIGHT = new Decimal("1000000");
+const MAX_DIMENSION = new Decimal("1000000");
 
 const MESSAGES: Record<string, string> = {
   order_id_missing: "Row has no order id and was skipped.",
@@ -66,6 +71,7 @@ const MESSAGES: Record<string, string> = {
   shipment_id_missing: "Some rows of the order have no shipment id; they were read as one shipment.",
   sku_unknown: "A SKU has no product weight; the package weight could not be derived.",
   weight_derived: "Package weight derived from product weights (priced as an estimate).",
+  value_out_of_range: "A value is too long or too large to store (ids and SKUs up to 120 characters; weights and dimensions below 1,000,000).",
 };
 
 interface Row {
@@ -86,11 +92,16 @@ function toLbUnit(value: string, unit: WeightUnitInFile): { weight: string; weig
 export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: { skuProfiles?: SkuProfileInput[] } = {}): OrderImportResult {
   const issues: OrderIssue[] = [];
   const issueOrders = new Map<string, Set<string>>();
+  // Rows the issue covers (an order-level issue covers the order's rows), shipments it covers, and its severity: all counted before the detail cap.
   const issueRows = new Map<string, number>();
+  const issueShipments = new Map<string, number>();
+  const severityByCode = new Map<string, OrderIssue["severity"]>();
   let dropped = 0;
-  const report = (code: string, severity: OrderIssue["severity"], row?: number, orderId?: string, detail?: string) => {
+  const report = (code: string, severity: OrderIssue["severity"], row: number | undefined, orderId: string | undefined, detail: string | undefined, covers: { rows: number; shipments: number }) => {
     const message = detail ? `${MESSAGES[code] ?? code} ${detail}` : (MESSAGES[code] ?? code);
-    issueRows.set(code, (issueRows.get(code) ?? 0) + 1);
+    issueRows.set(code, (issueRows.get(code) ?? 0) + covers.rows);
+    issueShipments.set(code, (issueShipments.get(code) ?? 0) + covers.shipments);
+    if (!severityByCode.has(code) || severity === "error") severityByCode.set(code, severity);
     if (orderId) (issueOrders.get(code) ?? issueOrders.set(code, new Set()).get(code)!).add(orderId);
     if (issues.length >= MAX_ISSUES) {
       dropped++;
@@ -113,7 +124,7 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
     derivation: { shipments: "", packages: "", lines: "" },
     dateRange: { from: null, to: null },
   };
-  if (!table) return { orders: [], report: { ...empty, issues: [{ severity: "error", code: "sheet_missing", message: `Sheet "${mapping.sheet}" was not found.` }], issuesByCode: [{ code: "sheet_missing", severity: "error", orders: 0, rows: 0, message: "Sheet not found." }] } };
+  if (!table) return { orders: [], report: { ...empty, issues: [{ severity: "error", code: "sheet_missing", message: `Sheet "${mapping.sheet}" was not found.` }], issuesByCode: [{ code: "sheet_missing", severity: "error", orders: 0, rows: 0, shipments: 0, message: "Sheet not found." }] } };
 
   const cell = (row: Row, idx: number | null | undefined) => (idx === null || idx === undefined ? "" : (row.cells[idx] ?? "").trim());
 
@@ -127,7 +138,7 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
     const row: Row = { rowNo: i + 1, cells };
     const id = cell(row, c.orderId);
     if (!id) {
-      report("order_id_missing", "error", row.rowNo);
+      report("order_id_missing", "error", row.rowNo, undefined, undefined, { rows: 1, shipments: 0 });
       continue;
     }
     groups.set(id, [...(groups.get(id) ?? []), row]);
@@ -158,9 +169,10 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
   for (const [externalOrderId, rows] of groups) {
     const orderIssues = new Set<string>();
     const flag = (code: string, severity: OrderIssue["severity"] = "error", row?: number, detail?: string) => {
-      if (!orderIssues.has(code)) report(code, severity, row, externalOrderId, detail);
+      if (!orderIssues.has(code)) report(code, severity, row, externalOrderId, detail, { rows: rows.length, shipments: 0 });
       orderIssues.add(code);
     };
+    if (externalOrderId.length > MAX_ID_CHARS) flag("value_out_of_range", "error", rows[0]!.rowNo, "(order id)");
     const inconsistent = (what: string) => flag("order_inconsistent", "error", rows[0]!.rowNo, `(${what})`);
 
     const orderDate = firstOf(rows, c.orderDate, (raw) => {
@@ -211,6 +223,7 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
           flag("units_invalid", "warning", r.rowNo, `("${unitsRaw}")`);
           continue;
         }
+        if (sku && sku.length > MAX_ID_CHARS) flag("value_out_of_range", "error", r.rowNo, "(SKU)");
         const line = { lineNo: lines.length + 1, sku, units: units ?? 1 };
         lines.push(line);
         const requires = c.requiresShipping === null || c.requiresShipping === undefined ? null : parseRequiresShipping(cell(r, c.requiresShipping));
@@ -226,14 +239,20 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
       shipmentGroups = [];
     } else if (mapping.grouping.shipments === "one_per_row") shipmentGroups = rows.map((r) => [r]);
     else if (mapping.grouping.shipments === "by_shipment_id" && c.shipmentId !== null) {
+      // A row without a shipment id continues the shipment above it (exports often fill the id on the
+      // first row only); a leading blank row forms its own shipment.
       const byId = new Map<string, Row[]>();
       let blank = false;
+      let lastId = "";
       for (const r of rows) {
-        const id = cell(r, c.shipmentId);
-        if (!id) blank = true;
+        let id = cell(r, c.shipmentId);
+        if (!id) {
+          blank = true;
+          id = lastId;
+        } else lastId = id;
         byId.set(id, [...(byId.get(id) ?? []), r]);
       }
-      if (blank && byId.size > 1) flag("shipment_id_missing", "warning");
+      if (blank) flag("shipment_id_missing", "warning");
       shipmentGroups = [...byId.values()];
     } else shipmentGroups = [rows];
 
@@ -242,9 +261,11 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
       const seq = shipments.length + 1;
       const shipmentIssues = new Set<string>();
       const sflag = (code: string, severity: OrderIssue["severity"] = "error", row?: number, detail?: string) => {
-        if (!shipmentIssues.has(code) && !orderIssues.has(code)) report(code, severity, row, externalOrderId, detail);
+        if (!shipmentIssues.has(code) && !orderIssues.has(code)) report(code, severity, row, externalOrderId, detail, { rows: srows.length, shipments: 1 });
         shipmentIssues.add(code);
       };
+      const shipmentIdCell = c.shipmentId === null ? "" : cell(srows[0]!, c.shipmentId);
+      if (shipmentIdCell.length > MAX_ID_CHARS) sflag("value_out_of_range", "error", srows[0]!.rowNo, "(shipment id)");
       const shipDate = firstOf(srows, c.shipDate, (raw) => {
         const d = parseOrderDate(raw, mapping.dateFormat);
         if (d === "invalid") sflag("date_invalid", "warning", undefined, `("${raw}")`);
@@ -269,12 +290,22 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
       const packageRows = (() => {
         if (mapping.grouping.packages === "one_per_row") return srows.map((r) => [r]);
         if (mapping.grouping.packages === "one_per_shipment") return [srows];
+        // With line columns, rows that repeat a package's id or its weight/dimensions are the same package
+        // (one row per item); without them every row with package data is its own package. A row with
+        // no package data at all (an item listed under the package above, as the template allows) continues
+        // the previous package rather than becoming a weightless one.
+        const hasLineColumns = c.sku !== null || c.units !== null;
         const byKey = new Map<string, Row[]>();
+        let lastKey: string | null = null;
         for (const r of srows) {
           const id = cell(r, c.packageId);
           const signature = [cell(r, c.weight), cell(r, c.weightUnit), cell(r, c.length), cell(r, c.width), cell(r, c.height), cell(r, c.packaging)].join("|");
-          const key = id ? `id:${id}` : `sig:${signature}`;
+          let key: string;
+          if (id) key = `id:${id}`;
+          else if (signature === "|||||" && lastKey !== null) key = lastKey;
+          else key = hasLineColumns ? `sig:${signature}` : `row:${r.rowNo}`;
           byKey.set(key, [...(byKey.get(key) ?? []), r]);
+          lastKey = key;
         }
         return [...byKey.values()];
       })();
@@ -283,7 +314,7 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
       let collapsed = false;
       for (const prows of packageRows) {
         const first = prows.find((r) => cell(r, c.weight)) ?? prows[0]!;
-        if (prows.length > 1 && mapping.grouping.packages === "by_package_columns" && (c.sku !== null || c.units !== null)) collapsed = true;
+        if (prows.length > 1 && mapping.grouping.packages === "by_package_columns") collapsed = true;
         if (prows.length > 1 && cell(prows[0]!, c.packageId)) {
           const signatures = new Set(prows.map((r) => [cell(r, c.weight), cell(r, c.length), cell(r, c.width), cell(r, c.height)].join("|")).filter((s) => s !== "|||"));
           if (signatures.size > 1) sflag("package_inconsistent", "error", first.rowNo);
@@ -305,9 +336,12 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
               weightUnit = lb.weightUnit;
               if (lb.converted && !convertedNoted) {
                 convertedNoted = true;
-                report("weight_converted", "warning", first.rowNo);
+                report("weight_converted", "warning", first.rowNo, undefined, undefined, { rows: 1, shipments: 0 });
               }
-              if (/[1-9]/.test(weight)) {
+              if (/[1-9]/.test(weight) && (new D(weight).greaterThanOrEqualTo(MAX_WEIGHT) || new D(weight).toDecimalPlaces(6).isZero())) {
+                sflag("value_out_of_range", "error", first.rowNo, `(weight "${weightRaw}")`);
+                weight = null;
+              } else if (/[1-9]/.test(weight)) {
                 const inLb = weightToLb(weight, weightUnit);
                 packageWeightsLb.push(inLb);
                 if (inLb.greaterThan(PARCEL_MAX_LB)) {
@@ -320,7 +354,8 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
         }
         const dims = [c.length, c.width, c.height].map((idx) => {
           const raw = cell(first, idx);
-          const d = raw ? parseDimension(raw) : null;
+          let d = raw ? parseDimension(raw) : null;
+          if (d !== null && d !== "invalid" && (new D(d).greaterThanOrEqualTo(MAX_DIMENSION) || new D(d).toDecimalPlaces(4).isZero())) d = "invalid";
           if (d === "invalid") sflag("dimension_invalid", "warning", first.rowNo, `("${raw}")`);
           return d === "invalid" ? null : d;
         });
@@ -345,7 +380,9 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
       if (collapsed) sflag("rows_collapsed_to_package", "warning", srows[0]!.rowNo);
 
       // Derive a missing weight from product weights when the whole order ships as this one package.
-      if (mapping.useSkuProfiles && packages.length === 1 && packages[0]!.weight === null && shipmentGroups.length === 1 && shippable.length) {
+      if (mapping.useSkuProfiles && packages.length === 1 && packages[0]!.weight === null && shipmentGroups.length === 1 && shippable.length && orderIssues.has("units_invalid")) {
+        sflag("weight_missing", "error", undefined, "(a line quantity could not be read, so the weight could not be derived from product weights)");
+      } else if (mapping.useSkuProfiles && packages.length === 1 && packages[0]!.weight === null && shipmentGroups.length === 1 && shippable.length) {
         let total = new D(0);
         let known = true;
         for (const l of shippable) {
@@ -375,7 +412,7 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
         }
       }
       if (!packages.length) sflag("no_packages");
-      else if (packages.some((p) => p.weight === null) && !shipmentIssues.has("weight_invalid") && !shipmentIssues.has("sku_unknown")) sflag("weight_missing");
+      else if (packages.some((p) => p.weight === null) && !shipmentIssues.has("weight_invalid") && !shipmentIssues.has("sku_unknown") && !shipmentIssues.has("value_out_of_range")) sflag("weight_missing");
 
       if (c.packageCount !== null && c.packageCount !== undefined) {
         const declaredCount = parseUnits(cell(srows[0]!, c.packageCount));
@@ -426,10 +463,16 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
     units: orders.reduce((n, o) => n + (o.units ?? 0), 0),
   };
   const sortedLb = [...packageWeightsLb].sort((a, b) => a.comparedTo(b));
+  // The median averages the two middle values for an even count; p90 is nearest-rank.
+  const median = () => {
+    const n = sortedLb.length;
+    if (!n) return null;
+    return decimalText(n % 2 ? sortedLb[(n - 1) / 2]! : sortedLb[n / 2 - 1]!.plus(sortedLb[n / 2]!).div(2), 3);
+  };
   const quantile = (q: number) => (sortedLb.length ? decimalText(sortedLb[Math.min(sortedLb.length - 1, Math.floor(q * sortedLb.length))]!, 3) : null);
   const codes = [...new Set([...issueRows.keys()])];
   const issuesByCode = codes
-    .map((code) => ({ code, severity: (issues.find((i) => i.code === code)?.severity ?? "warning") as OrderIssue["severity"], orders: issueOrders.get(code)?.size ?? 0, rows: issueRows.get(code) ?? 0, message: MESSAGES[code] ?? code }))
+    .map((code) => ({ code, severity: severityByCode.get(code) ?? "warning", orders: issueOrders.get(code)?.size ?? 0, rows: issueRows.get(code) ?? 0, shipments: issueShipments.get(code) ?? 0, message: MESSAGES[code] ?? code }))
     .sort((a, b) => b.orders - a.orders || b.rows - a.rows || (a.code < b.code ? -1 : 1));
   const shipmentsHow =
     mapping.grouping.shipments === "by_shipment_id" ? "one shipment per distinct shipment id within an order"
@@ -452,7 +495,7 @@ export function applyOrderMapping(tables: Table[], mapping: OrderMapping, opts: 
       issues,
       issuesTruncated: dropped > 0,
       services: [...serviceCounts.entries()].map(([normalized, e]) => ({ text: e.text, normalized, rows: e.rows, mappedTo: mapping.serviceMap[normalized] ?? null })).sort((a, b) => b.rows - a.rows),
-      weights: { count: sortedLb.length, medianLb: quantile(0.5), p90Lb: quantile(0.9), over150Lb: over150 },
+      weights: { count: sortedLb.length, medianLb: median(), p90Lb: quantile(0.9), over150Lb: over150 },
       derivation: { shipments: shipmentsHow, packages: packagesHow, lines: linesHow },
       dateRange: { from: sortedDates[0] ?? null, to: sortedDates[sortedDates.length - 1] ?? null },
     },

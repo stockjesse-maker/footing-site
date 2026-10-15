@@ -267,7 +267,7 @@ describe("rule_applied companion rules", () => {
     expect(companion.chargeClass).toBe("estimated");
     expect(companion.counted).toBe(false);
     expect(companion.amount.amount).toBe("7.00");
-    expect(companion.explanation).toContain("it depends on lp, which could not be decided");
+    expect(companion.explanation).toContain("it depends on Rule lp, which could not be decided");
     // definite = base 10.00; unresolved = 100.00 + 7.00 = 107.00. Engine: unresolved 100.00, no peak_lp line.
     expect(totals(r)).toEqual({ definite: "10.00", estimated: "0.00", expected: "10.00", conditionalExposure: "0.00", unresolved: "107.00" });
   });

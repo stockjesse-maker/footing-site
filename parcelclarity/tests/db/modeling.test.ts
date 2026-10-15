@@ -64,7 +64,7 @@ function sampleRows(serviceId: string, opts: { cancelThird?: boolean } = {}) {
 
 async function materialise(userId: string, datasetId: string, rows: ReturnType<typeof sampleRows>) {
   await asUser(userId, "update public.order_datasets set status = 'mapped' where id = $1", [datasetId]);
-  await asUser(userId, "update public.order_datasets set status = 'validated', mapping = '{}' where id = $1", [datasetId]);
+  await asUser(userId, "update public.order_datasets set status = 'validated', mapping = '{}', validation = '{\"counts\": {\"rows\": 9}}' where id = $1", [datasetId]);
   await asUser(userId, "select public.materialise_order_rows($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb)", [datasetId, JSON.stringify(rows.orders), JSON.stringify(rows.lines), JSON.stringify(rows.shipments), JSON.stringify(rows.packages)]);
   const [counts] = await asUser<{ r: { orders: number; shipments: number; packages: number; lines: number } }>(userId, "select public.finalize_order_dataset($1) as r", [datasetId]);
   return counts!.r;
@@ -120,6 +120,10 @@ describe("product weights", () => {
 
 describe("order files", () => {
   it("brands upload order files for themselves only; pricing files stay with managers", async () => {
+    // Before a dataset exists only the uploader (and staff) can read the file; the brand's dataset shares it with the brand.
+    expect(await asUser(w.brandA.employee.id, "select id from public.uploaded_files where id = $1", [fileA])).toHaveLength(0);
+    expect(await asUser(w.brandA.admin.id, "select id from public.uploaded_files where id = $1", [fileA])).toHaveLength(1);
+    await createDataset(w.brandA.admin.id, w.t1.id, w.brandA.id, fileA, "Shares the file");
     expect(await asUser(w.brandA.employee.id, "select id from public.uploaded_files where id = $1", [fileA])).toHaveLength(1);
     await expectDenied(uploadFile(w.brandA.admin.id, w.t1.id, w.brandB.id, "order_import"), /row-level security/);
     await expectDenied(uploadFile(w.brandA.admin.id, w.t1.id, null, "rate_card"), /row-level security/);
@@ -131,7 +135,7 @@ describe("order files", () => {
 
   it("a brand's dataset is its own; staff-prepared datasets stay private until shared", async () => {
     const ds = await createDataset(w.brandA.admin.id, w.t1.id, w.brandA.id, fileA);
-    expect(ids(await asUser(w.brandA.employee.id, "select id from public.order_datasets"))).toEqual([ds]);
+    expect(ids(await asUser(w.brandA.employee.id, "select id from public.order_datasets where id = $1", [ds]))).toEqual([ds]);
     for (const user of [w.brandB.admin, w.brandC.admin, w.t2.admin, w.platformAdmin]) {
       expect(await asUser(user.id, "select id from public.order_datasets where id = $1", [ds]), user.email).toHaveLength(0);
     }
@@ -144,16 +148,45 @@ describe("order files", () => {
     const staffFile = await uploadFile(w.t1.admin.id, w.t1.id, w.brandA.id, "order_import", "prepared.csv");
     const staffDs = await createDataset(w.t1.admin.id, w.t1.id, w.brandA.id, staffFile, "Prepared by 3PL");
     expect(await asUser(w.brandA.admin.id, "select id from public.order_datasets where id = $1", [staffDs])).toHaveLength(0);
-    expect(await asUser(w.t1.admin.id, "update public.order_datasets set shared_with_brand = true where id = $1 returning id", [staffDs])).toHaveLength(1);
+    expect(await asUser(w.brandA.admin.id, "select id from public.uploaded_files where id = $1", [staffFile])).toHaveLength(0);
+    // Neither the lifecycle functions nor the sharing flag are reachable by the brand for a private dataset.
+    await expectDenied(asUser(w.brandA.admin.id, "select public.discard_order_dataset($1)", [staffDs]), /dataset not found/);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.materialise_order_rows($1, '[]', '[]', '[]', '[]')", [staffDs]), /dataset not found/);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.set_dataset_sharing($1, true)", [staffDs]), /dataset not found/);
+    await expectDenied(asUser(w.t1.admin.id, "update public.order_datasets set shared_with_brand = true where id = $1", [staffDs]), /permission denied/);
+    await asUser(w.t1.admin.id, "select public.set_dataset_sharing($1, true)", [staffDs]);
     expect(await asUser(w.brandA.admin.id, "select id from public.order_datasets where id = $1", [staffDs])).toHaveLength(1);
+    expect(await asUser(w.brandA.admin.id, "select id from public.uploaded_files where id = $1", [staffFile])).toHaveLength(1);
+    expect(await sql("select 1 from public.audit_events where action = 'modeling.dataset_shared' and entity_id = $1", [staffDs])).toHaveLength(1);
+    // Sharing a ready dataset works too (the status guard only blocks direct lifecycle edits).
+    const readyDs = await createDataset(w.t1.admin.id, w.t1.id, w.brandA.id, staffFile, "Ready and private");
+    await materialise(w.t1.admin.id, readyDs, sampleRows(upsGround));
+    expect(await asUser(w.brandA.admin.id, "select id from public.order_datasets where id = $1", [readyDs])).toHaveLength(0);
+    await asUser(w.t1.admin.id, "select public.set_dataset_sharing($1, true)", [readyDs]);
+    expect(await asUser(w.brandA.admin.id, "select id from public.orders where dataset_id = $1", [readyDs])).toHaveLength(3);
+  });
+
+  it("an interrupted preparation can be rolled back and prepared again", async () => {
+    const ds = await createDataset(w.brandA.admin.id, w.t1.id, w.brandA.id, fileA, "Interrupted");
+    await asUser(w.brandA.admin.id, "update public.order_datasets set status = 'mapped' where id = $1", [ds]);
+    await asUser(w.brandA.admin.id, "update public.order_datasets set status = 'validated', mapping = '{}', validation = '{\"counts\": {\"rows\": 9}}' where id = $1", [ds]);
+    const rows = sampleRows(upsGround);
+    await asUser(w.brandA.admin.id, "select public.materialise_order_rows($1, $2::jsonb, $3::jsonb, $4::jsonb, $5::jsonb)", [ds, JSON.stringify(rows.orders), JSON.stringify(rows.lines), JSON.stringify(rows.shipments), JSON.stringify(rows.packages)]);
+    expect((await asUser<{ status: string }>(w.brandA.admin.id, "select status from public.order_datasets where id = $1", [ds]))[0]?.status).toBe("materialising");
+    await expectDenied(asUser(w.brandB.admin.id, "select public.reset_order_dataset($1)", [ds]), /dataset not found/);
+    await asUser(w.brandA.admin.id, "select public.reset_order_dataset($1)", [ds]);
+    expect((await asUser<{ status: string }>(w.brandA.admin.id, "select status from public.order_datasets where id = $1", [ds]))[0]?.status).toBe("validated");
+    expect(await asUser(w.brandA.admin.id, "select id from public.orders where dataset_id = $1", [ds])).toHaveLength(0);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.reset_order_dataset($1)", [ds]), /not being materialised/);
+    expect(await materialise(w.brandA.admin.id, ds, rows)).toEqual({ orders: 3, shipments: 4, packages: 5, lines: 4 });
   });
 
   it("materialises whole orders in one transaction and computes the counts", async () => {
     const ds = await createDataset(w.brandA.admin.id, w.t1.id, w.brandA.id, fileA, "To materialise");
     const counts = await materialise(w.brandA.admin.id, ds, sampleRows(upsGround));
     expect(counts).toEqual({ orders: 3, shipments: 4, packages: 5, lines: 4 });
-    const [row] = await asUser<{ status: string; order_count: number; shipment_count: number; package_count: number; line_count: number }>(w.brandA.admin.id, "select status, order_count, shipment_count, package_count, line_count from public.order_datasets where id = $1", [ds]);
-    expect(row).toEqual({ status: "ready", order_count: 3, shipment_count: 4, package_count: 5, line_count: 4 });
+    const [row] = await asUser<{ status: string; order_count: number; shipment_count: number; package_count: number; line_count: number; row_count: number }>(w.brandA.admin.id, "select status, order_count, shipment_count, package_count, line_count, row_count from public.order_datasets where id = $1", [ds]);
+    expect(row).toEqual({ status: "ready", order_count: 3, shipment_count: 4, package_count: 5, line_count: 4, row_count: 9 });
     expect(await asUser(w.t1.employee.id, "select id from public.packages where dataset_id = $1", [ds])).toHaveLength(5);
     expect(await asUser(w.brandB.admin.id, "select id from public.shipments where dataset_id = $1", [ds])).toHaveLength(0);
     expect(await asUser(w.t2.admin.id, "select id from public.orders where dataset_id = $1", [ds])).toHaveLength(0);
@@ -200,8 +233,10 @@ describe("scenarios and runs", () => {
     await expectDenied(asUser(w.brandA.admin.id, "select public.start_simulation_run($1, 'fixed_date', '2026-03-01', $2, 'use_override', '{}')", [projectId, fedex]), /not available on the customer/);
     await expectDenied(asUser(w.brandA.admin.id, "select public.start_simulation_run($1, 'yesterday', '2026-03-01', null, 'exclude', '{}')", [projectId]), /invalid pricing basis/);
     const [r1] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'fixed_date', '2026-03-01', null, 'exclude', '{\"residentialDefault\": true}') as id", [projectId]);
-    const [r2] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'fixed_date', '2026-03-01', null, 'exclude', '{}') as id", [projectId]);
+    const [r2] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'fixed_date', '2026-03-01', null, 'exclude', '{\"residentialDefault\": true}') as id", [projectId]);
     expect(r2!.id).toBe(r1!.id);
+    // Different settings never silently attach to the live run.
+    await expectDenied(asUser(w.brandA.admin.id, "select public.start_simulation_run($1, 'fixed_date', '2026-03-01', null, 'exclude', '{}')", [projectId]), /different settings/);
     runId = r1!.id;
     const [run] = await asUser<{ status: string; total_shipments: number; next_row_no: number }>(w.brandA.employee.id, "select status, total_shipments, next_row_no::int from public.simulation_runs where id = $1", [runId]);
     expect(run).toEqual({ status: "running", total_shipments: 4, next_row_no: 1 });
@@ -224,21 +259,34 @@ describe("scenarios and runs", () => {
     await expectDenied(asUser(w.brandA.admin.id, "insert into public.simulation_results (run_id, tenant_id, brand_id, shipment_id, order_id, row_no, status) values ($1, $2, $3, $4, $5, 1, 'ok')", [runId, w.t1.id, w.brandA.id, s1.id, s1.order_id]), /permission denied/);
     // A window that does not start at the cursor, or with the wrong number of results, is refused.
     await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 2, 3, $2::jsonb, '{}', '[]')", [runId, JSON.stringify([result(s2a, "ok", "9.60"), result(s2b, "ok", "9.60")])]), /does not start at the cursor/);
-    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{}', '[]')", [runId, JSON.stringify([result(s1, "ok", "9.60")])]), /needs 3 results/);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"shipments\": {\"seen\": 3}}', '[]')", [runId, JSON.stringify([result(s1, "ok", "9.60")])]), /needs 3 results/);
     const contexts = JSON.stringify([{ ship_date: "2026-03-01", rate_card_version_id: versionId, rule_version_ids: [], zip_list_ids: [], override_ids: [], load_issues: [], unavailable_reason: null }]);
-    const [a1] = await asUser<{ r: { applied: boolean; nextRow: number; processed: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"step\": 1}', $3::jsonb) as r", [runId, JSON.stringify([result(s1, "ok", "9.60"), result(s2a, "ok", "10.09"), result(s2b, "unavailable", "0.00")]), contexts]);
+    const window1 = JSON.stringify([result(s1, "ok", "9.60"), result(s2a, "ok", "10.09"), result(s2b, "unavailable", "0.00")]);
+    // A partial that has not folded exactly this window is refused (a stale copy from a concurrent caller).
+    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"shipments\": {\"seen\": 2}}', $3::jsonb)", [runId, window1, contexts]), /does not cover the window/);
+    // A result naming another file's shipment is refused.
+    const otherDs = await createDataset(w.brandA.admin.id, w.t1.id, w.brandA.id, fileA, "Another file");
+    await materialise(w.brandA.admin.id, otherDs, sampleRows(upsGround));
+    const [foreign] = await asUser<{ id: string; order_id: string; row_no: number }>(w.brandA.admin.id, "select id, order_id, row_no from public.shipments where dataset_id = $1 and row_no = 1", [otherDs]);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"shipments\": {\"seen\": 3}}', $3::jsonb)", [runId, JSON.stringify([result(foreign!, "ok", "9.60"), result(s2a, "ok", "10.09"), result(s2b, "unavailable", "0.00")]), contexts]), /does not belong to this run/);
+    const [a1] = await asUser<{ r: { applied: boolean; nextRow: number; processed: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"step\": 1, \"shipments\": {\"seen\": 3}}', $3::jsonb) as r", [runId, window1, contexts]);
     expect(a1!.r).toMatchObject({ applied: true, nextRow: 4, processed: 3 });
     // The same window again (lost response, second tab): acknowledged, not re-applied.
-    const [again] = await asUser<{ r: { applied: boolean; nextRow: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"step\": 1}', $3::jsonb) as r", [runId, JSON.stringify([result(s1, "ok", "9.60"), result(s2a, "ok", "10.09"), result(s2b, "unavailable", "0.00")]), contexts]);
+    const [again] = await asUser<{ r: { applied: boolean; nextRow: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 3, $2::jsonb, '{\"step\": 1, \"shipments\": {\"seen\": 3}}', $3::jsonb) as r", [runId, window1, contexts]);
     expect(again!.r).toMatchObject({ applied: false, nextRow: 4 });
     expect(await asUser(w.brandA.admin.id, "select id from public.simulation_results where run_id = $1", [runId])).toHaveLength(3);
-    expect(await asUser(w.brandA.admin.id, "select id from public.simulation_run_contexts where run_id = $1", [runId])).toHaveLength(1);
+    // Pinned contexts are the 3PL's material: staff read them, the brand does not.
+    expect(await asUser(w.t1.employee.id, "select id from public.simulation_run_contexts where run_id = $1", [runId])).toHaveLength(1);
+    expect(await asUser(w.brandA.admin.id, "select id from public.simulation_run_contexts where run_id = $1", [runId])).toHaveLength(0);
     // Finishing early is refused.
     await expectDenied(asUser(w.brandA.admin.id, "select public.finish_simulation_run($1, '{}', '{}', '2.2.0')", [runId]), /3 of 4 shipments/);
-    const [a2] = await asUser<{ r: { applied: boolean; nextRow: number; processed: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 4, 4, $2::jsonb, '{\"step\": 2}', $3::jsonb) as r", [runId, JSON.stringify([result(s3, "ok", "19.69", 2)]), contexts]);
+    // The batch input carries the partial that belongs to its cursor.
+    const [b2] = await asUser<{ r: { fromRow: number; partialSummary: { step: number } } }>(w.brandA.admin.id, "select public.simulation_batch_input($1, 100) as r", [runId]);
+    expect(b2!.r).toMatchObject({ fromRow: 4, partialSummary: { step: 1 } });
+    const [a2] = await asUser<{ r: { applied: boolean; nextRow: number; processed: number } }>(w.brandA.admin.id, "select public.advance_simulation_run($1, 4, 4, $2::jsonb, '{\"step\": 2, \"shipments\": {\"seen\": 4}}', $3::jsonb) as r", [runId, JSON.stringify([result(s3, "ok", "19.69", 2)]), contexts]);
     expect(a2!.r).toMatchObject({ applied: true, nextRow: 5, processed: 4 });
     const [progress] = await asUser<{ processed_shipments: number; partial_summary: { step: number } }>(w.brandA.admin.id, "select processed_shipments, partial_summary from public.simulation_runs where id = $1", [runId]);
-    expect(progress).toEqual({ processed_shipments: 4, partial_summary: { step: 2 } });
+    expect(progress).toEqual({ processed_shipments: 4, partial_summary: { step: 2, shipments: { seen: 4 } } });
   });
 
   it("finishing recomputes the trusted figures and refuses a summary that disagrees", async () => {
@@ -251,6 +299,8 @@ describe("scenarios and runs", () => {
     expect(fin!.r).toEqual({ modeledOrders: 2, modeledShipments: 2, modeledPackages: 3, okShipments: 3, unavailableShipments: 1, expected: "29.29" });
     const [run] = await asUser<{ status: string; total_expected: string; modeled_orders: number; engine_version: string }>(w.brandA.employee.id, "select status, total_expected, modeled_orders, engine_version from public.simulation_runs where id = $1", [runId]);
     expect(run).toEqual({ status: "completed", total_expected: "29.29", modeled_orders: 2, engine_version: "2.2.0" });
+    // Rows of modeled orders are marked as part of the totals; O-2's priced shipment is not.
+    expect((await asUser<{ in_totals: boolean }>(w.brandA.employee.id, "select in_totals from public.simulation_results where run_id = $1 order by row_no", [runId])).map((r) => r.in_totals)).toEqual([true, false, false, true]);
     const [audit] = await sql<{ metadata: Record<string, unknown> }>("select metadata from public.audit_events where action = 'modeling.run_completed' and entity_id = $1", [runId]);
     expect(audit!.metadata).toMatchObject({ processed: 4, total: 4, ok: 3, unavailable: 1, modeled_orders: 2 });
     expect(JSON.stringify(audit!.metadata).length).toBeLessThan(1000);
@@ -267,7 +317,7 @@ describe("scenarios and runs", () => {
     const rows = await asUser<{ id: string; order_id: string; row_no: number }>(w.brandA.admin.id, "select id, order_id, row_no from public.shipments where dataset_id = $1 order by row_no", [ds]);
     const [p] = await asUser<{ id: string }>(w.brandA.admin.id, "insert into public.simulation_projects (tenant_id, brand_id, kind, name, dataset_id, rate_card_id) values ($1, $2, 'bulk', 'Cancelled test', $3, $4) returning id", [w.t1.id, w.brandA.id, ds, cardId]);
     const [r] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
-    await asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 4, $2::jsonb, '{}', '[]')", [r!.id, JSON.stringify(rows.map((s) => result(s, "ok", "9.60", s.row_no === 4 ? 2 : 1)))]);
+    await asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 4, $2::jsonb, '{\"shipments\": {\"seen\": 4}}', '[]')", [r!.id, JSON.stringify(rows.map((s) => result(s, "ok", "9.60", s.row_no === 4 ? 2 : 1)))]);
     const [fin] = await asUser<{ r: { modeledOrders: number; modeledShipments: number } }>(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0') as r", [r!.id, JSON.stringify({ modeled: { orders: 2, shipments: 3 }, totals: { expected: "28.80", definite: "28.80", estimated: "0.00" } })]);
     expect(fin!.r).toMatchObject({ modeledOrders: 2, modeledShipments: 3 });
 
@@ -279,11 +329,44 @@ describe("scenarios and runs", () => {
     const [r3] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
     await asUser(w.brandA.admin.id, "select public.cancel_simulation_run($1)", [r3!.id]);
     expect((await asUser<{ status: string }>(w.brandA.admin.id, "select status from public.simulation_runs where id = $1", [r3!.id]))[0]?.status).toBe("cancelled");
-    // The dataset cannot be discarded while a scenario uses it.
+    // The dataset cannot be discarded while a scenario uses it, nor while a staff-private scenario the brand cannot see does.
     await expectDenied(asUser(w.brandA.admin.id, "select public.discard_order_dataset($1)", [ds]), /used by a scenario/);
     await asUser(w.brandA.admin.id, "update public.simulation_projects set archived_at = now() where id = $1", [p!.id]);
+    const [staffP] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.simulation_projects (tenant_id, brand_id, kind, name, dataset_id, rate_card_id) values ($1, $2, 'bulk', 'Private, archived', $3, $4) returning id", [w.t1.id, w.brandA.id, ds, cardId]);
+    await asUser(w.t1.admin.id, "update public.simulation_projects set archived_at = now() where id = $1", [staffP!.id]);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.discard_order_dataset($1)", [ds]), /used by a scenario/);
+    await sql("delete from public.simulation_projects where id = $1", [staffP!.id]);
     await asUser(w.brandA.admin.id, "select public.discard_order_dataset($1)", [ds]);
     expect(await asUser(w.brandA.admin.id, "select id from public.orders where dataset_id = $1", [ds])).toHaveLength(0);
+  });
+
+  it("sharing a staff scenario is a staff decision and shares the orders file it models", async () => {
+    const staffFile = await uploadFile(w.t1.admin.id, w.t1.id, w.brandA.id, "order_import", "staff-run.csv");
+    const staffDs = await createDataset(w.t1.admin.id, w.t1.id, w.brandA.id, staffFile, "Staff run file");
+    await materialise(w.t1.admin.id, staffDs, sampleRows(upsGround));
+    const [p] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.simulation_projects (tenant_id, brand_id, kind, name, dataset_id, rate_card_id) values ($1, $2, 'bulk', 'Staff what-if', $3, $4) returning id", [w.t1.id, w.brandA.id, staffDs, cardId]);
+    expect(await asUser(w.brandA.admin.id, "select id from public.simulation_projects where id = $1", [p!.id])).toHaveLength(0);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.set_scenario_sharing($1, true)", [p!.id]), /scenario not found/);
+    await expectDenied(asUser(w.t1.admin.id, "update public.simulation_projects set shared_with_brand = true where id = $1", [p!.id]), /permission denied/);
+    // The brand cannot drive a run on a scenario it cannot see.
+    const [run] = await asUser<{ id: string }>(w.t1.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.simulation_batch_input($1, 10)", [run!.id]), /run not found/);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.cancel_simulation_run($1)", [run!.id]), /run not found/);
+    await asUser(w.t1.admin.id, "select public.cancel_simulation_run($1)", [run!.id]);
+    await asUser(w.t1.admin.id, "select public.set_scenario_sharing($1, true)", [p!.id]);
+    expect(await asUser(w.brandA.admin.id, "select id from public.simulation_projects where id = $1", [p!.id])).toHaveLength(1);
+    expect(await asUser(w.brandA.admin.id, "select id from public.order_datasets where id = $1", [staffDs])).toHaveLength(1);
+    expect(await asUser(w.brandA.admin.id, "select id from public.shipments where dataset_id = $1", [staffDs])).toHaveLength(4);
+    expect(await sql("select 1 from public.audit_events where action = 'modeling.scenario_shared' and entity_id = $1", [p!.id])).toHaveLength(1);
+  });
+
+  it("a retired rate card is no longer modeled on, even while its assignment stands", async () => {
+    await asUser(w.t1.admin.id, "update public.rate_cards set status = 'archived' where id = $1", [cardId]);
+    await expectDenied(asUser(w.brandA.admin.id, "insert into public.simulation_projects (tenant_id, brand_id, kind, name, dataset_id, rate_card_id) values ($1, $2, 'bulk', 'On a retired card', $3, $4)", [w.t1.id, w.brandA.id, datasetId, cardId]), /row-level security/);
+    const input = { shipDate: "2026-03-01", originZip: "90001", destinationZip: "85001", residential: true, carrierCode: "ups", serviceCode: "ground", packages: [{ weight: "1", weightUnit: "lb" }] };
+    await expectDenied(asUser(w.brandA.admin.id, "select public.save_single_simulation($1, $2, 'Retired', $3::jsonb, '{}', '2.2.0')", [w.brandA.id, cardId, JSON.stringify(input)]), /not assigned/);
+    await expectDenied(asUser(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}')", [projectId]), /not assigned/);
+    await asUser(w.t1.admin.id, "update public.rate_cards set status = 'active' where id = $1", [cardId]);
   });
 
   it("single-shipment scenarios are saved for assigned cards only", async () => {
