@@ -1,8 +1,11 @@
 import type { Table } from "../import/parse-table";
 import { suggestService, type ServiceCatalogEntry } from "../import/rate-card-mapping";
-import { cleanText, detectDateFormat, normalizeValue } from "./cells";
-import { flaggedMappingMessage, guardHeader, isAutoMappableMoneyHeader, isMoneyLikeHeader, moneyFieldOfHeader, normalizeGuardHeader, refusalMessage } from "./header-guard";
-import { sheetHeaders } from "./sheet";
+import { cleanText, detectDateFormat, enumValue, normalizeValue } from "./cells";
+import { NO_HEADER_ROW_MESSAGE } from "./copy";
+import { classifyHeader, flaggedMappingMessage, guardHeader, normalizeGuardHeader, refusalMessage, type HeaderInfo } from "./header-guard";
+import { jsonbSizeEstimate } from "./jsonb-size";
+import { detectHeaderRow, isBlankRow, sheetHeaders } from "./sheet";
+import { SYNONYMS, type PlainField } from "./synonyms";
 import {
   ADJUSTMENT_CAUSES,
   ADJUSTMENT_FIELDS,
@@ -34,10 +37,16 @@ import {
  * left unmapped and listed under "Columns we will ignore".
  */
 
-/** The stored mapping may not exceed 8 KB in the database; this is the budget the library enforces (conservatively). */
+/** The stored mapping may not exceed 8 KB (as jsonb) in the database; this is the budget the library enforces on its jsonb size estimate (conservatively). */
 export const MAPPING_MAX_BYTES = 7_000;
-/** Distinct values listed for the value-map steps (the mapping cannot hold more than this many in total anyway). */
+/** Distinct values listed for the value-map steps. */
 const MAX_DISTINCT = 500;
+/** Distinct cause (or reason) texts that get an entry of their own; the rest are stored under the default cause. */
+export const MAX_CAUSE_VALUES = 50;
+/** Columns listed under "Columns we will ignore" and "choose which amount this is" (the report is stored, so its lists are bounded). */
+export const MAX_LISTED_COLUMNS = 50;
+/** A header shown in a report is cut to this many characters. */
+export const REPORTED_HEADER_CHARS = 80;
 const SERVICE_CONFIDENCE = 0.75;
 
 /** Fields in the order they claim columns. */
@@ -104,12 +113,18 @@ export function carriersOf(catalog: ServiceCatalogEntry[]): { code: string; name
 }
 
 export function suggestCarrier(normalized: string, catalog: ServiceCatalogEntry[]): string | null {
+  // An empty key (a text with no letter or digit) matches nothing: it would match any carrier whose name normalises to nothing.
+  if (!normalized) return null;
   for (const c of carriersOf(catalog)) if (normalized === normalizeValue(c.code) || normalized === normalizeValue(c.name)) return c.code;
   return null;
 }
 
-/** Customers are matched by exact (normalised) name only: attributing history to the wrong customer is worse than asking. */
+/**
+ * Customers are matched by exact (normalised) name only: attributing history to the wrong customer is worse than asking. An empty key (a
+ * name written with no letter or digit we can read) matches nobody, however many customers' names normalise to nothing.
+ */
 export function suggestBrand(normalized: string, brands: BrandOption[]): string | null {
+  if (!normalized) return null;
   const hits = brands.filter((b) => normalizeValue(b.name) === normalized);
   return hits.length === 1 ? hits[0]!.id : null;
 }
@@ -137,7 +152,7 @@ export function emptyMapping(sheet: string, headerRow = 0): AdjustmentMapping {
   };
 }
 
-/** Counts the non-blank values of a column, keyed by normalised text, keeping the first spelling seen. */
+/** Counts the non-blank values of a column, keyed by normalised text, keeping the first spelling seen. A text with no letter or digit has no key and is not listed. */
 function countDistinct(rows: string[][], index: number | null): Map<string, { text: string; rows: number }> {
   const out = new Map<string, { text: string; rows: number }>();
   if (index === null) return out;
@@ -155,19 +170,32 @@ function countDistinct(rows: string[][], index: number | null): Map<string, { te
 
 const byRowsThenText = (a: DistinctValue, b: DistinctValue) => b.rows - a.rows || (a.text < b.text ? -1 : a.text > b.text ? 1 : 0);
 
-function toDistinct(map: Map<string, { text: string; rows: number }>, suggest: (normalized: string, text: string) => string | null): DistinctValue[] {
+function toDistinct(map: Map<string, { text: string; rows: number }>, suggest: (normalized: string, text: string) => string | null, limit = MAX_DISTINCT): DistinctValue[] {
   return [...map]
     .map(([normalized, e]) => ({ text: e.text, normalized, rows: e.rows, suggested: suggest(normalized, e.text) }))
     .sort(byRowsThenText)
-    .slice(0, MAX_DISTINCT);
+    .slice(0, limit);
+}
+
+/** A header as a report shows it: no control characters, at most 80 characters. */
+export const reportedHeader = (header: string): string => cleanText(header, REPORTED_HEADER_CHARS).text ?? "";
+
+/** The "Columns we will ignore" list: money-like columns first (they are the ones worth a look), then the rest, in file order, at most 50, headers cleaned and cut. */
+export function listIgnoredColumns(candidates: { index: number; header: string; moneyLike: boolean }[]): IgnoredColumn[] {
+  const ordered = [...candidates.filter((c) => c.moneyLike), ...candidates.filter((c) => !c.moneyLike)];
+  return ordered.slice(0, MAX_LISTED_COLUMNS).map((c) => ({ index: c.index, header: reportedHeader(c.header), moneyLike: c.moneyLike }));
 }
 
 export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContext, "catalog" | "brands">, sheetName?: string): AdjustmentDetection {
   const sheets: AdjustmentSheetInfo[] = tables.map((t) => {
-    const { headerRow, headers } = sheetHeaders(t);
-    return { name: t.name, headerRow, headers, rowCount: Math.max(0, t.rows.length - headerRow - 1) };
+    const { headerRow, headers, recognised } = sheetHeaders(t);
+    let rowCount = 0;
+    if (recognised) for (let r = headerRow + 1; r < t.rows.length; r++) if (!isBlankRow(t.rows[r]!)) rowCount++;
+    return { name: t.name, headerRow, headers, rowCount, recognised };
   });
-  const chosen = Math.max(0, tables.findIndex((t) => t.name === sheetName));
+  // The sheet asked for, else the first one with column names we can find (a workbook may start with a notes sheet).
+  const named = sheetName === undefined ? -1 : tables.findIndex((t) => t.name === sheetName);
+  const chosen = named >= 0 ? named : Math.max(0, sheets.findIndex((s) => s.recognised));
   const table = tables[chosen];
   const sheet = sheets[chosen];
   const noRows = (note: string): AdjustmentDetection => ({
@@ -182,9 +210,12 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
     notes: [note],
   });
   if (!table || !sheet) return noRows("The file has no rows.");
+  if (!sheet.recognised) return noRows(NO_HEADER_ROW_MESSAGE);
 
   const headers = sheet.headers;
-  const normalized = headers.map(normalizeGuardHeader);
+  // One pass per header: the normalisation and the guard run once, whatever the number of fields that look at it.
+  const infos: HeaderInfo[] = headers.map((h) => classifyHeader(h));
+  const normalized = infos.map((i) => i.normalized);
   const mapping = emptyMapping(table.name, sheet.headerRow);
   const used = new Set<number>();
   const notes: string[] = [];
@@ -193,10 +224,10 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
 
   // Plain fields: exact synonyms, headers the guard refuses are never claimed, amount-like headers never go to a plain field.
   for (const field of PLAIN_ORDER) {
-    const idx = headers.findIndex((h, i) => {
-      if (used.has(i) || !guardHeader(h).allowed || isMoneyLikeHeader(h)) return false;
-      const { base } = stripUnit(normalized[i]!);
-      return SYNONYMS[field].includes(normalized[i]!) || ((WEIGHT_FIELDS.includes(field) || DIMENSION_FIELDS.includes(field)) && SYNONYMS[field].includes(base));
+    const idx = infos.findIndex((info, i) => {
+      if (used.has(i) || !info.allowed || info.moneyLike) return false;
+      const { base } = stripUnit(info.normalized);
+      return SYNONYMS[field].includes(info.normalized) || ((WEIGHT_FIELDS.includes(field) || DIMENSION_FIELDS.includes(field)) && SYNONYMS[field].includes(base));
     });
     if (idx === -1) continue;
     mapping.columns[field] = idx;
@@ -207,24 +238,23 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
   }
 
   // Money fields: only customer-facing headers, and only when the header itself says which amount it is.
-  const amountColumnsNeedingChoice: { index: number; header: string }[] = [];
-  headers.forEach((h, i) => {
-    if (used.has(i) || !isAutoMappableMoneyHeader(h)) return;
-    const field = moneyFieldOfHeader(h);
+  const needingAll: { index: number; header: string }[] = [];
+  infos.forEach((info, i) => {
+    if (used.has(i) || !info.autoMappable) return;
+    const field = info.moneyField;
     if (field && mapping.columns[field] === null) {
       mapping.columns[field] = i;
       used.add(i);
-    } else amountColumnsNeedingChoice.push({ index: i, header: h });
+    } else needingAll.push({ index: i, header: headers[i]! });
   });
-  const needing = new Set(amountColumnsNeedingChoice.map((c) => c.index));
-  const ignoredColumns: IgnoredColumn[] = headers
-    .map((h, i) => ({ index: i, header: h, moneyLike: isMoneyLikeHeader(h) }))
-    .filter((c) => !used.has(c.index) && !needing.has(c.index));
+  const needing = new Set(needingAll.map((c) => c.index));
+  const amountColumnsNeedingChoice = needingAll.slice(0, MAX_LISTED_COLUMNS).map((c) => ({ index: c.index, header: reportedHeader(c.header) }));
+  const ignoredColumns = listIgnoredColumns(headers.map((h, i) => ({ index: i, header: h, moneyLike: infos[i]!.moneyLike })).filter((c) => !used.has(c.index) && !needing.has(c.index)));
 
   if (weightUnitFromHeader) mapping.weightUnit = weightUnitFromHeader;
   if (dimensionUnitFromHeader) mapping.dimensionUnit = dimensionUnitFromHeader;
 
-  const dataRows = table.rows.slice(sheet.headerRow + 1);
+  const dataRows = table.rows.slice(sheet.headerRow + 1).filter((r) => !isBlankRow(r));
   const cell = (r: string[], idx: number | null) => (idx === null ? "" : (r[idx] ?? "").trim());
   const dateCells = dataRows.flatMap((r) => [cell(r, mapping.columns.shipDate), cell(r, mapping.columns.adjustedOn)]).filter(Boolean).slice(0, 2000);
   const dates = detectDateFormat(dateCells);
@@ -234,10 +264,12 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
   const weightCellsStateUnit = dataRows.slice(0, 2000).some((r) => WEIGHT_FIELDS.some((f) => /[a-z]/i.test(cell(r, mapping.columns[f]))));
   const weightUnitMustBeChosen = hasWeight && mapping.columns.weightUnit === null && weightUnitFromHeader === null && !weightCellsStateUnit;
 
-  // Value maps.
+  // Value maps. The lists show every distinct value with what we would map it to; the suggested mapping keeps only the entries that
+  // apply would not work out by itself (compactMapping), so a file with hundreds of customers or reasons still fits the stored mapping.
   const typeValues = toDistinct(countDistinct(dataRows, mapping.columns.adjustmentType), (n) => suggestType(n));
   const causeSource = mapping.columns.cause ?? mapping.columns.reason;
-  const causeValues = toDistinct(countDistinct(dataRows, causeSource), (n) => suggestCause(n));
+  const causeCounts = countDistinct(dataRows, causeSource);
+  const causeValues = toDistinct(causeCounts, (n) => suggestCause(n), MAX_CAUSE_VALUES);
   const carrierValues = toDistinct(countDistinct(dataRows, mapping.columns.carrier), (n) => suggestCarrier(n, ctx.catalog));
   const customerValues = toDistinct(countDistinct(dataRows, mapping.columns.brand), (n) => suggestBrand(n, ctx.brands));
 
@@ -268,6 +300,7 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
   for (const v of carrierValues) mapping.carrierMap[v.normalized] = v.suggested;
   for (const v of serviceValues) mapping.serviceMap[v.normalized] = v.suggested;
   for (const v of customerValues) mapping.brandMap[v.normalized] = v.suggested;
+  const suggestion = compactMapping(mapping, ctx);
 
   if (mapping.columns.shipDate === null) notes.push("No ship date column was recognised; choose it below. Every row needs one.");
   if (mapping.columns.carrier === null && mapping.columns.service === null) notes.push("No carrier or service column was recognised; choose one. Every row needs a carrier.");
@@ -277,13 +310,16 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
   if (mapping.columns.originalCharge === null && mapping.columns.correctedCharge === null && mapping.columns.adjustmentFee === null) {
     notes.push("No customer charge column was recognised. Rows without amounts still count toward how often adjustments happen, but not toward how much they cost. Map a column only if it holds what the customer was charged.");
   }
-  if (amountColumnsNeedingChoice.length) notes.push("Some amount columns look like what the customer was charged but do not say whether they are the original charge, the corrected charge or the adjustment fee; choose below.");
+  if (needingAll.length) notes.push("Some amount columns look like what the customer was charged but do not say whether they are the original charge, the corrected charge or the adjustment fee; choose below.");
   if (ignoredColumns.some((c) => c.moneyLike)) notes.push("Amount-like columns that do not say they are charged to the customer are left out. Map one by hand only if you know it is what the customer was charged, never what a carrier billed you.");
-  if (typeValues.length + causeValues.length + carrierValues.length + serviceValues.length + customerValues.length >= MAX_DISTINCT) notes.push("The file has very many different values; the mapping may be too large to save. Tidy the values or split the file.");
+  if (causeCounts.size > MAX_CAUSE_VALUES) notes.push(`The file has ${causeCounts.size.toLocaleString("en-US")} different causes or reasons. The ${MAX_CAUSE_VALUES} most common are matched to a cause; the others are stored under the default cause.`);
+  if (typeValues.length >= MAX_DISTINCT || carrierValues.length >= MAX_DISTINCT || serviceValues.length >= MAX_DISTINCT || customerValues.length >= MAX_DISTINCT) {
+    notes.push("The file has very many different values, so only the most common are listed here. Values that are not listed are matched automatically or left unassigned.");
+  }
 
   return {
     sheets,
-    suggestion: mapping,
+    suggestion,
     dateFormatAmbiguous: dates.ambiguous,
     weightUnitFromHeader,
     weightUnitMustBeChosen,
@@ -295,20 +331,55 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
 }
 
 // ---------------------------------------------------------------------------
-// The stored form, and re-validation
+// The stored form, compaction, and re-validation
 // ---------------------------------------------------------------------------
+
+/**
+ * The mapping without the value-map entries that applying it works out by itself (review finding F8). A value map entry is only needed
+ * where the 3PL's choice differs from what `applyAdjustmentMapping` does for a text that has no entry:
+ *   - types: the text spells an adjustment type ("scale error" is not one; "reweight" is);
+ *   - carriers: an exact match with a carrier's code or name, from the catalog;
+ *   - customers: an exact match with exactly one customer's name;
+ *   - services: none (without an entry the service stays unknown, so a null entry says nothing);
+ *   - causes: the text spells a cause, and "other" when the default cause is "other" (an unmatched text is stored under the default cause).
+ * The result applies identically (the entries it drops would have been recomputed to the same value), so a file with 400 customers
+ * or 500 distinct reasons stores a few entries, not hundreds. It is idempotent.
+ */
+export function compactMapping(mapping: AdjustmentMapping, ctx: Pick<AdjustmentContext, "catalog" | "brands">): AdjustmentMapping {
+  const keep = <T>(map: Record<string, T>, recomputed: (key: string) => T | null | undefined): Record<string, T> => {
+    const out: Record<string, T> = {};
+    for (const [key, value] of Object.entries(map)) {
+      const same = recomputed(key);
+      if (same !== undefined && same === value) continue;
+      out[key] = value;
+    }
+    return out;
+  };
+  return {
+    ...mapping,
+    typeMap: keep(mapping.typeMap, (k) => enumValue(ADJUSTMENT_TYPES, k)),
+    causeMap: keep(mapping.causeMap, (k) => {
+      const spelled = enumValue(ADJUSTMENT_CAUSES, k);
+      if (spelled !== null) return spelled;
+      return mapping.defaults.cause === "other" ? "other" : undefined;
+    }),
+    carrierMap: keep(mapping.carrierMap, (k) => suggestCarrier(k, ctx.catalog)),
+    serviceMap: keep(mapping.serviceMap, () => null),
+    brandMap: keep(mapping.brandMap, (k) => suggestBrand(k, ctx.brands)),
+  };
+}
 
 /**
  * The mapping as stored in adjustment_imports.mapping: only the mapped columns, plus `fields`, which names the header each target
  * reads. The database re-runs its own forbidden-header test over `fields` (and over the detected header names), so a flagged
- * header can never be stored as mapped even if this library were bypassed.
+ * header can never be stored as mapped even if this library were bypassed. With `ctx`, the value maps are compacted (compactMapping).
  */
 export type StoredAdjustmentMapping = Omit<AdjustmentMapping, "columns"> & {
   columns: Partial<Record<AdjustmentField, number>>;
   fields: Partial<Record<AdjustmentField, string>>;
 };
 
-export function toStoredMapping(mapping: AdjustmentMapping, headers: readonly string[]): StoredAdjustmentMapping {
+export function toStoredMapping(mapping: AdjustmentMapping, headers: readonly string[], ctx?: Pick<AdjustmentContext, "catalog" | "brands">): StoredAdjustmentMapping {
   const columns: Partial<Record<AdjustmentField, number>> = {};
   const fields: Partial<Record<AdjustmentField, string>> = {};
   for (const f of ADJUSTMENT_FIELDS) {
@@ -317,7 +388,7 @@ export function toStoredMapping(mapping: AdjustmentMapping, headers: readonly st
     columns[f] = idx;
     fields[f] = cleanText(headers[idx] ?? "", 120).text ?? "";
   }
-  return { ...mapping, columns, fields };
+  return { ...(ctx ? compactMapping(mapping, ctx) : mapping), columns, fields };
 }
 
 export function fromStoredMapping(stored: StoredAdjustmentMapping): AdjustmentMapping {
@@ -327,12 +398,11 @@ export function fromStoredMapping(stored: StoredAdjustmentMapping): AdjustmentMa
   return { ...rest, columns };
 }
 
-const utf8Bytes = (s: string) => new TextEncoder().encode(s).length;
-
 /**
  * Re-validates a mapping against the file it will be applied to. Called on every save and again at commit, so a mapping
- * that was edited in the browser, or a file whose header row moved, cannot reach a money field: every header of the mapping's
- * header row is run through the guard again, and a column the guard refuses can never be mapped, not even by hand.
+ * that was edited in the browser, or a file whose header row moved, cannot reach a money field: the mapping's header row must be the
+ * row the importer reads as the column names, every header of that row is run through the guard again, and a column the guard refuses
+ * can never be mapped, not even by hand.
  */
 export function validateMapping(mapping: AdjustmentMapping, tables: Table[], ctx: Pick<AdjustmentContext, "catalog" | "brands">): MappingIssue[] {
   const issues: MappingIssue[] = [];
@@ -340,9 +410,13 @@ export function validateMapping(mapping: AdjustmentMapping, tables: Table[], ctx
   if (!table) return [{ code: "sheet_missing", message: "The sheet in this mapping is not in the file." }];
   const headers = table.rows[mapping.headerRow];
   if (!Number.isInteger(mapping.headerRow) || mapping.headerRow < 0 || !headers) return [{ code: "header_row_invalid", message: "The header row in this mapping is not in the sheet." }];
+  // Only the row the importer finds is a header row: a mapping cannot point at a title row or at a data row (whose values would then be stored as column names).
+  const found = detectHeaderRow(table.rows);
+  if (found === null) return [{ code: "header_row_missing", message: NO_HEADER_ROW_MESSAGE }];
+  if (found !== mapping.headerRow) return [{ code: "header_row_invalid", message: "The header row in this mapping is not the row that holds the column names." }];
 
-  const flaggedRow = headers.find((h) => !guardHeader(h).allowed);
-  if (flaggedRow !== undefined) issues.push({ code: "forbidden_header", message: refusalMessage(flaggedRow) });
+  const flagged = headers.filter((h) => !guardHeader(h).allowed);
+  if (flagged.length) issues.push({ code: "forbidden_header", message: refusalMessage(flagged) });
 
   const claimed = new Map<number, AdjustmentField>();
   for (const f of ADJUSTMENT_FIELDS) {
@@ -373,21 +447,23 @@ export function validateMapping(mapping: AdjustmentMapping, tables: Table[], ctx
   if (Object.values(mapping.carrierMap).some((c) => c !== null && !carrierCodes.has(c))) issues.push({ code: "unknown_carrier_in_map", message: "A carrier in this mapping is not in the carrier list." });
   if (Object.values(mapping.serviceMap).some((id) => id !== null && !serviceIds.has(id))) issues.push({ code: "unknown_service_in_map", message: "A service in this mapping is not one of the active services." });
 
-  if (utf8Bytes(JSON.stringify(toStoredMapping(mapping, headers))) > MAPPING_MAX_BYTES) {
-    issues.push({ code: "mapping_too_large", message: "This mapping has too many different customer, service, carrier or reason values to save (about 100 in total). Tidy the values or split the file." });
+  if (jsonbSizeEstimate(toStoredMapping(mapping, headers, ctx)) > MAPPING_MAX_BYTES) {
+    issues.push({ code: "mapping_too_large", message: "This mapping has too many customer, service, carrier or reason values that you chose by hand to save (about 60 in total). Values that match automatically are not counted. Tidy the values or split the file." });
   }
   return issues;
 }
 
 /**
  * What goes into adjustment_imports.detected: the header names of the chosen sheet and at most 20 sample rows holding ONLY the
- * mapped columns (a column we ignore never has its values stored). Never produced for a refused file.
+ * mapped columns (a column we ignore never has its values stored). Never produced for a refused file. The header row is the one the
+ * importer found (never a data row); rowCount counts the rows under it that are not blank.
  */
 export function buildDetected(tables: Table[], mapping: AdjustmentMapping): { sheet: string; headerRow: number; rowCount: number; headers: string[]; sampleRows: Record<string, string>[] } {
   const table = tables.find((t) => t.name === mapping.sheet) ?? tables[0]!;
   const headers = table.rows[mapping.headerRow] ?? [];
   const mapped = ADJUSTMENT_FIELDS.map((f) => mapping.columns[f]).filter((i): i is number => i !== null && i >= 0 && i < headers.length && guardHeader(headers[i] ?? "").allowed);
-  const sampleRows = table.rows.slice(mapping.headerRow + 1, mapping.headerRow + 21).map((r) => {
+  const below = table.rows.slice(mapping.headerRow + 1).filter((r) => !isBlankRow(r));
+  const sampleRows = below.slice(0, 20).map((r) => {
     const o: Record<string, string> = {};
     for (const i of mapped) {
       const key = cleanText(headers[i] ?? "", 120).text;
@@ -395,5 +471,5 @@ export function buildDetected(tables: Table[], mapping: AdjustmentMapping): { sh
     }
     return o;
   });
-  return { sheet: table.name, headerRow: mapping.headerRow, rowCount: Math.max(0, table.rows.length - mapping.headerRow - 1), headers: headers.slice(0, 200).map((h) => cleanText(h, 120).text ?? ""), sampleRows };
+  return { sheet: table.name, headerRow: mapping.headerRow, rowCount: below.length, headers: headers.slice(0, 200).map((h) => cleanText(h, 120).text ?? ""), sampleRows };
 }

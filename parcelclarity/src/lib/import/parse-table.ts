@@ -47,16 +47,47 @@ export function detectFileKind(filename: string, mimeType: string, bytes: Uint8A
   throw new ParseError("Only .csv and .xlsx files are supported.", "unsupported_type");
 }
 
-function cellToString(value: unknown): string {
+function cellToString(value: unknown, limits: ParseLimits): string {
   if (value === null || value === undefined) return "";
   if (value instanceof Date) return value.toISOString().slice(0, 10);
-  if (typeof value === "number") return Number.isInteger(value) ? String(value) : String(value);
+  if (typeof value === "number") {
+    // A spreadsheet keeps at most 15 significant digits of a number: a long tracking number typed as a number has already lost its tail.
+    // Where the limits ask for it, such a cell is handed on in exponent form ("9.2613e+19"), which no reader takes for an exact number.
+    if (limits.maxNumericDigits !== undefined && Math.abs(value) >= 10 ** limits.maxNumericDigits) return value.toExponential();
+    return String(value);
+  }
   return String(value).trim();
+}
+
+/** "A", "B", ... "Z", "AA": the name a spreadsheet gives a column. */
+function columnLetters(index: number): string {
+  let n = index + 1;
+  let out = "";
+  while (n > 0) {
+    out = String.fromCharCode(65 + ((n - 1) % 26)) + out;
+    n = Math.floor((n - 1) / 26);
+  }
+  return out;
 }
 
 function capRows(name: string, rows: string[][], limits: ParseLimits): Table {
   if (rows.length > limits.maxRowsPerSheet) throw new ParseError(`Sheet "${name}" has more than ${limits.maxRowsPerSheet.toLocaleString("en-US")} rows; split the file.`, "too_large");
-  const kept = rows.map((r) => r.slice(0, limits.maxColumns).map(cellToString));
+  const kept: string[][] = [];
+  for (const source of rows) {
+    const cells = source.map((cell) => cellToString(cell, limits));
+    if (limits.refuseWideRows) {
+      // Never cut a sheet: a column past the limit is a column nobody checked. Empty cells at the end of a row do not count.
+      let last = cells.length;
+      while (last > 0 && cells[last - 1] === "") last--;
+      if (last > limits.maxColumns) throw new ParseError(`Sheet "${name}" has more than ${limits.maxColumns} columns. Remove the columns you do not need, then upload again.`, "too_large");
+    }
+    if (cells.length > limits.maxColumns) cells.length = limits.maxColumns;
+    if (limits.maxCellLength !== undefined) {
+      const long = cells.findIndex((c) => c.length > limits.maxCellLength!);
+      if (long >= 0) throw new ParseError(`Sheet "${name}" has a cell with more than ${limits.maxCellLength.toLocaleString("en-US")} characters (column ${columnLetters(long)}). Shorten or remove that text, then upload again.`, "too_large");
+    }
+    kept.push(cells);
+  }
   // Drop fully empty trailing rows.
   while (kept.length && kept[kept.length - 1]!.every((c) => c === "")) kept.pop();
   return { name, rows: kept, truncated: false };
@@ -94,16 +125,39 @@ export function checkXlsxInflation(bytes: Uint8Array): void {
   }
 }
 
-export type ParseLimits = { maxBytes: number; maxRowsPerSheet: number; maxCellsPerSheet: number; maxSheets: number; maxColumns: number };
+export type ParseLimits = {
+  maxBytes: number;
+  maxRowsPerSheet: number;
+  maxCellsPerSheet: number;
+  maxSheets: number;
+  maxColumns: number;
+  /** Optional. A cell with more characters than this refuses the whole sheet (never truncated). Unset: no cap (the other importers). */
+  maxCellLength?: number;
+  /** Optional. Refuse a sheet with a row wider than `maxColumns` (counting up to the last filled cell) instead of cutting the row. Unset: cut (the other importers). */
+  refuseWideRows?: boolean;
+  /** Optional. An XLSX number cell with this many digits or more is handed on in exponent form, so a spreadsheet's rounded long number is never read as an exact one. Unset: plain text. */
+  maxNumericDigits?: number;
+};
 
 /** Order files are wider and longer than rate cards (a Shopify export has ~75 columns, one row per line item). */
 export const ORDER_FILE_LIMITS: ParseLimits = { maxBytes: 15 * 1024 * 1024, maxRowsPerSheet: 100_000, maxCellsPerSheet: 4_000_000, maxSheets: 5, maxColumns: 200 };
 
 /**
- * Adjustment history files (Milestone 5): 20,000 data rows and 5 MB. `maxRowsPerSheet` counts the header row too, so it is
- * 20,001 (a header plus 20,000 rows); the importer re-checks the data-row count once it knows which row is the header.
+ * Adjustment history files (Milestone 5): 5 MB and 20,000 DATA rows. `maxRowsPerSheet` only bounds memory: it counts every row of an XLSX
+ * sheet (title rows, spacer rows), so it is well above 20,000 and the importer applies the real limit to the non-blank rows under the header
+ * once it knows which row is the header (a file with two title rows and 20,000 data rows is accepted). A sheet wider than 200 columns, a cell
+ * of more than 10,000 characters and a long number typed as an XLSX number are refused or handed on in exponent form, never cut.
  */
-export const ADJUSTMENT_FILE_LIMITS: ParseLimits = { maxBytes: 5 * 1024 * 1024, maxRowsPerSheet: 20_001, maxCellsPerSheet: 4_000_000, maxSheets: 5, maxColumns: 200 };
+export const ADJUSTMENT_FILE_LIMITS: ParseLimits = {
+  maxBytes: 5 * 1024 * 1024,
+  maxRowsPerSheet: 60_000,
+  maxCellsPerSheet: 4_000_000,
+  maxSheets: 5,
+  maxColumns: 200,
+  maxCellLength: 10_000,
+  refuseWideRows: true,
+  maxNumericDigits: 15,
+};
 
 export async function parseTables(bytes: Uint8Array, kind: FileKind, limits: ParseLimits = LIMITS): Promise<Table[]> {
   if (bytes.length > limits.maxBytes) throw new ParseError(`The file is larger than ${Math.round(limits.maxBytes / 1024 / 1024)} MB.`, "too_large");

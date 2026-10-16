@@ -319,40 +319,61 @@ const TEMPLATE_MONEY_HEADERS: Readonly<Record<string, MoneyField>> = {
 };
 const TEMPLATE_MONEY_NORMALIZED = new Map(Object.entries(TEMPLATE_MONEY_HEADERS).map(([h, f]) => [normalizeGuardHeader(h), f]));
 
-/** True when the header reads like an amount of money (whether or not it is allowed). */
-export function isMoneyLikeHeader(header: string): boolean {
-  return normalizeGuardHeader(header).split(" ").some((w) => MONEY_WORDS.has(w));
+export interface HeaderInfo {
+  /** The normalised header (header-text.ts). */
+  normalized: string;
+  /** The guard lets the header through. */
+  allowed: boolean;
+  /** The header reads like an amount of money (whether or not it is allowed). */
+  moneyLike: boolean;
+  /** The header may be mapped to a money field automatically (allowed, and customer-facing by its words). */
+  autoMappable: boolean;
+  /** Which money field the words say it is, when they say. */
+  moneyField: MoneyField | null;
 }
+
+/** Everything the detection needs to know about one header, from one pass (the guard and the normalisation run once). */
+export function classifyHeader(header: string): HeaderInfo {
+  const normalized = normalizeGuardHeader(header);
+  const words = normalized.split(" ");
+  const moneyLike = words.some((w) => MONEY_WORDS.has(w));
+  const ok = guardHeader(header).allowed;
+  let autoMappable = false;
+  if (ok) {
+    if (TEMPLATE_MONEY_NORMALIZED.has(normalized)) autoMappable = true;
+    else {
+      const customer = words.includes("customer");
+      const chargedTo = words.some((w, i) => (w === "charged" || w === "billed") && words[i + 1] === "to");
+      autoMappable = (customer && words.some((w) => CUSTOMER_MONEY_WORDS.has(w))) || (chargedTo && (customer || words.some((w) => CHARGED_TO_MONEY_WORDS.has(w))));
+    }
+  }
+  let moneyField: MoneyField | null = null;
+  if (autoMappable) {
+    const exact = TEMPLATE_MONEY_NORMALIZED.get(normalized);
+    if (exact) moneyField = exact;
+    else {
+      const set = new Set(words);
+      if (set.has("fee") || set.has("fees")) moneyField = "adjustmentFee";
+      else if (["original", "declared", "before"].some((w) => set.has(w))) moneyField = "originalCharge";
+      else if (["corrected", "adjusted", "revised", "after"].some((w) => set.has(w))) moneyField = "correctedCharge";
+    }
+  }
+  return { normalized, allowed: ok, moneyLike, autoMappable, moneyField };
+}
+
+/** True when the header reads like an amount of money (whether or not it is allowed). */
+export const isMoneyLikeHeader = (header: string): boolean => classifyHeader(header).moneyLike;
 
 /**
  * True when a header that passed the guard may be mapped to a money field automatically: an exact template money header, or one that says
  * the customer was charged: the word "customer" beside charge, amount, fee, price or total, or "charged to" / "billed to" together with
  * such a money word or the word "customer" ("Charged to Customer", "Amount Billed To Account"; not "Billed To Account", which names an account).
  */
-export function isAutoMappableMoneyHeader(header: string): boolean {
-  if (!guardHeader(header).allowed) return false;
-  const n = normalizeGuardHeader(header);
-  if (TEMPLATE_MONEY_NORMALIZED.has(n)) return true;
-  const words = n.split(" ");
-  const customer = words.includes("customer");
-  if (customer && words.some((w) => CUSTOMER_MONEY_WORDS.has(w))) return true;
-  const chargedTo = words.some((w, i) => (w === "charged" || w === "billed") && words[i + 1] === "to");
-  return chargedTo && (customer || words.some((w) => CHARGED_TO_MONEY_WORDS.has(w)));
-}
+export const isAutoMappableMoneyHeader = (header: string): boolean => classifyHeader(header).autoMappable;
 
 /**
  * Which money field an auto-mappable header is, when its words say so ("customer charge original", "corrected charge to
  * customer", "customer adjustment fee"). A header like "Customer Charge" or "Charged to Customer" is customer-facing but could
  * be the original charge, the corrected charge or the fee: null, and the 3PL chooses.
  */
-export function moneyFieldOfHeader(header: string): MoneyField | null {
-  if (!isAutoMappableMoneyHeader(header)) return null;
-  const n = normalizeGuardHeader(header);
-  const exact = TEMPLATE_MONEY_NORMALIZED.get(n);
-  if (exact) return exact;
-  const words = new Set(n.split(" "));
-  if (words.has("fee") || words.has("fees")) return "adjustmentFee";
-  if (["original", "declared", "before"].some((w) => words.has(w))) return "originalCharge";
-  if (["corrected", "adjusted", "revised", "after"].some((w) => words.has(w))) return "correctedCharge";
-  return null;
-}
+export const moneyFieldOfHeader = (header: string): MoneyField | null => classifyHeader(header).moneyField;
