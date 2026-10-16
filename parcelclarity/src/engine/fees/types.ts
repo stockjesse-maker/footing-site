@@ -280,6 +280,8 @@ export interface MinimumResult {
   reasons: string[];
   /** What was counted toward the minimum over the whole period, in E4. */
   countedE4: E4;
+  /** The rule's `includesShipping`: the customer's expected shipping is part of `countedE4`, so "fees counted" would understate what counts. */
+  includesShipping?: boolean;
   members: { ruleKey: string; name: string; state: "priced" | "not_modeled" | "not_in_schedule" }[];
   buckets: { month: string; minimumE4: E4; countedE4: E4; topUpE4: E4 }[];
 }

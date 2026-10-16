@@ -786,6 +786,7 @@ function MinimumBlock({ v }: { v: MinimumView }) {
       ) : null}
       {v.buckets.length > 1 && v.averageAdded !== null ? <p className="text-sm">On average the minimum adds {usd(v.averageAdded)} a month.</p> : null}
       {v.couldAdd ? <p className="text-sm">{v.couldAdd}</p> : null}
+      {v.includesShipping ? <p className="text-sm text-muted">Shipping charges count toward this minimum.</p> : null}
       {v.members.length ? (
         <div className="space-y-1 text-sm">
           <p className="font-medium">What counts toward it</p>

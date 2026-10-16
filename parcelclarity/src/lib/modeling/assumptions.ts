@@ -257,7 +257,11 @@ export function fulfillmentProblemFromSql(message: string): Record<string, strin
 // Diff
 // ---------------------------------------------------------------------------
 export interface DiffOptions {
-  /** Driver key → the question's label, so a line reads "pallets stored 12 → 15", never a key. */
+  /**
+   * Driver key → the question's label, so a line reads "pallets stored 12 → 15", never a key. When labels are given
+   * (every screen a customer sees), a key with no label is described generically ("a fulfillment answer"), never
+   * printed: keys are the 3PL's internal slugs. Without labels (tests, tools) the key is humanised.
+   */
   labels?: Record<string, string>;
 }
 
@@ -280,7 +284,7 @@ function shareText(v: { sharePct: string; countPerOrder: number } | null | undef
 }
 
 /** Lower-case the first letter of a label unless it starts an acronym ("Pallets stored" → "pallets stored", "SKUs stored" stays). */
-function lowerFirst(label: string): string {
+export function lowerFirst(label: string): string {
   return /^[A-Z][a-z]/.test(label) ? `${label.charAt(0).toLowerCase()}${label.slice(1)}` : label;
 }
 
@@ -304,7 +308,11 @@ export function diffAssumptions(a: AssumptionsLike | null | undefined, b: Assump
   const pb = canonicaliseAssumptions(b ?? {});
   const fa = pa.fulfillment ?? null;
   const fb = pb.fulfillment ?? null;
-  const labelOf = (key: string) => lowerFirst(opts.labels?.[key] ?? humanise(key));
+  const labelOf = (key: string) => {
+    const given = opts.labels?.[key];
+    if (given) return lowerFirst(given);
+    return opts.labels ? "a fulfillment answer" : lowerFirst(humanise(key));
+  };
   const lines: string[] = [];
 
   const skipA = fa?.skip === true;

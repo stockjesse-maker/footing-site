@@ -22,7 +22,7 @@ const touch = "min-h-11 sm:min-h-9";
 
 type Editing = { kind: "new" } | { kind: "edit"; rule: FeeRule };
 
-export function RulesWorkspace({ versionId, editable, rules, sources }: { versionId: string; editable: boolean; rules: FeeRule[]; sources: Record<string, string> }) {
+export function RulesWorkspace({ versionId, editable, draft = editable, rules, sources }: { versionId: string; editable: boolean; /** The version is still a draft (a person who may not edit it still reads it as one). */ draft?: boolean; rules: FeeRule[]; sources: Record<string, string> }) {
   const [editing, setEditing] = useState<Editing | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +86,11 @@ export function RulesWorkspace({ versionId, editable, rules, sources }: { versio
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-muted">
             Each rule is one charge your customer reads on their fee schedule, in the order below.{" "}
-            {editable ? "Customers see nothing until you activate the version." : "This version is no longer a draft, so its rules cannot change. Copy it to a new draft to make changes."}
+            {editable
+              ? "Customers see nothing until you activate the version."
+              : draft
+                ? "This version is a draft, so customers see nothing yet. Only administrators can change its rules."
+                : "This version is no longer a draft, so its rules cannot change. Copy it to a new draft to make changes."}
           </p>
         </div>
         {editable && !editing ? (

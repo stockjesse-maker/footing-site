@@ -60,16 +60,21 @@ export default async function FeeVersionPage({ params }: { params: Promise<{ sch
           manage && !scheduleArchived ? (
             <>
               {draft ? <ActivateVersionButton versionId={version.id} versionNumber={version.versionNumber} /> : null}
+              {/* The header's action block does not shrink, so an armed confirmation's explanation must wrap inside a bounded width or it pushes the page sideways (and squeezes the title to nothing) between 640 and 1100px. */}
               {draft ? (
-                <ConfirmAction action={archiveFeeVersion.bind(null, version.id)} label="Discard draft" confirmLabel="Discard" variant="danger">
-                  Permanent. A discarded draft can no longer be edited or activated.
-                </ConfirmAction>
+                <div className="max-w-full sm:max-w-xs">
+                  <ConfirmAction action={archiveFeeVersion.bind(null, version.id)} label="Discard draft" confirmLabel="Discard" variant="danger">
+                    Permanent. A discarded draft can no longer be edited or activated.
+                  </ConfirmAction>
+                </div>
               ) : null}
               {active ? <EndVersionButton versionId={version.id} versionNumber={version.versionNumber} expirationDate={version.expirationDate} /> : null}
               {active ? (
-                <ConfirmAction action={archiveFeeVersion.bind(null, version.id)} label="Archive version" confirmLabel="Archive" variant="danger">
-                  Its dates still apply unless another active version covers them; end the version to stop that. An archived version cannot be reactivated.
-                </ConfirmAction>
+                <div className="max-w-full sm:max-w-xs">
+                  <ConfirmAction action={archiveFeeVersion.bind(null, version.id)} label="Archive version" confirmLabel="Archive" variant="danger">
+                    Its dates still apply unless another active version covers them; end the version to stop that. An archived version cannot be reactivated.
+                  </ConfirmAction>
+                </div>
               ) : null}
             </>
           ) : undefined
@@ -107,14 +112,14 @@ export default async function FeeVersionPage({ params }: { params: Promise<{ sch
       </dl>
 
       <div className="space-y-10">
-        <RulesWorkspace versionId={version.id} editable={editable} rules={version.rules} sources={sources} />
+        <RulesWorkspace versionId={version.id} editable={editable} draft={draft} rules={version.rules} sources={sources} />
 
         <section aria-labelledby="rounding-heading" className="space-y-3">
           <h2 id="rounding-heading" className="text-xl font-semibold tracking-tight">
             Rounding
           </h2>
           <div className="sm:max-w-xl">
-            <RoundingSelect versionId={version.id} value={version.rounding} editable={editable} />
+            <RoundingSelect versionId={version.id} value={version.rounding} editable={editable} draft={draft} />
           </div>
         </section>
 
@@ -150,7 +155,7 @@ export default async function FeeVersionPage({ params }: { params: Promise<{ sch
             <h2 id="notes-heading" className="text-xl font-semibold tracking-tight">
               Staff notes
             </h2>
-            <p className="mt-1 max-w-2xl text-sm text-muted">Only your team can read these, never customers. {editable ? "Editable until the version is activated." : "Locked because the version is no longer a draft."}</p>
+            <p className="mt-1 max-w-2xl text-sm text-muted">Only your team can read these, never customers. {editable ? "Editable until the version is activated." : draft ? "Only administrators can edit these while the version is a draft." : "Locked because the version is no longer a draft."}</p>
           </div>
           <Card>
             <VersionNotesForm versionId={version.id} notes={version.notes ?? null} editable={editable} />

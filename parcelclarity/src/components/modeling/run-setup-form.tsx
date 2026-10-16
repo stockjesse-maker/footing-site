@@ -137,7 +137,7 @@ function ScheduleNote(p: RunSetupProps) {
     return <p className="text-sm text-muted">{staff ? "No fee schedule is assigned to this customer, so this run prices shipping only. Assign one to price fulfillment fees." : "No fulfillment fee schedule is set up for your account, so this run prices shipping only."}</p>;
   }
   if (schedule.status === "not_effective") {
-    return <p className="text-sm text-muted">{`${schedule.name || (staff ? "The customer's fee schedule" : "Your fee schedule")} has no version in effect today, so there are no fulfillment questions to answer here.`}</p>;
+    return <p className="text-sm text-muted">{`${schedule.name || (staff ? "The customer's fee schedule" : "Your fee schedule")} is not in effect today, so there are no fulfillment questions to answer here.`}</p>;
   }
   if (schedule.status === "unavailable") {
     return <Alert tone="warning">The fulfillment questions could not be loaded, so this run would price fees without any answers. Reload the page to try again.</Alert>;

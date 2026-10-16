@@ -161,14 +161,14 @@ function NoticeText({ notice }: { notice: Notice }) {
   );
 }
 
-export function RoundingSelect({ versionId, value, editable }: { versionId: string; value: string; editable: boolean }) {
+export function RoundingSelect({ versionId, value, editable, draft = editable }: { versionId: string; value: string; editable: boolean; /** Still a draft, though this person may not change it. */ draft?: boolean }) {
   const id = useId();
   const [current, setCurrent] = useState(value);
   const [pending, start] = useTransition();
   const [notice, setNotice] = useState<Notice>(null);
   return (
     <div className="space-y-1.5">
-      <Field id={`${id}-rounding`} label="Rounding" hint={editable ? "How the fees are rounded to cents. Saved as soon as you change it." : "Locked because this version is no longer a draft."}>
+      <Field id={`${id}-rounding`} label="Rounding" hint={editable ? "How the fees are rounded to cents. Saved as soon as you change it." : draft ? "Only administrators can change this while the version is a draft." : "Locked because this version is no longer a draft."}>
         {(aria) => (
           <Select
             {...aria}

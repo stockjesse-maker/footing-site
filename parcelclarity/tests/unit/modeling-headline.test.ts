@@ -57,6 +57,7 @@ import {
   lowCoverage,
   modeledOrder,
   noContent,
+  noMinimum,
   noMinimumRun,
   noSchedule,
   noStorageAnswer,
@@ -505,6 +506,19 @@ describe("minimumViews", () => {
     expect(JSON.stringify(m)).not.toContain("gone_rule_key");
   });
 
+  it("a minimum that counts shipping says so: what was counted is fees and shipping, never labelled as fees alone", () => {
+    const withShipping = { ...schedule, rules: schedule.rules.map((r) => (r.basis === "minimum" ? { ...r, minimum: { ...r.minimum!, includesShipping: true } } : r)) };
+    const march = { ...period, to: "2026-03-31", days: 31, months: "1.000000", population: 2, inPeriod: 2, monthlyOrders: "2.0000", monthProfile: [{ month: "2026-03", fraction: "1.000000", orders: 2 }] };
+    const s = finalize([A, B], { monthlySchedule: withShipping, period: march }, { rows: 2, orders: 2, shipments: 2, packages: 2 });
+    // Pick $3.00 + box $0.50 + storage $180.00 + expected shipping $22.00 = $205.50 counted toward $500.00.
+    expect(s.minimums[0]).toMatchObject({ includesShipping: true, countedE4: 2055000 });
+    const [m] = minimumViews(s);
+    expect(m).toMatchObject({ includesShipping: true, oneLine: "Fees and shipping counted toward the minimum: $205.50 · Minimum: $500.00 · Added: $294.50" });
+    // A minimum that does not count shipping keeps the plain wording.
+    expect(minimumViews(oneMonth)[0]).toMatchObject({ includesShipping: false });
+    expect(minimumViews(oneMonth)[0]?.oneLine).toMatch(/^Fees counted toward the minimum: /);
+  });
+
   it("a run whose version has no minimum has nothing to show", () => {
     expect(minimumViews(noMinimumRun)).toEqual([]);
   });
@@ -723,6 +737,35 @@ describe("buildComparison", () => {
     expect(rowOf(c, "Left out of the all-in")).toMatchObject({ a: "Nothing left out", b: "storage" });
     expect(rowOf(c, "Account minimum")).toMatchObject({ a: "Adds $316.13 a month", b: "Up to $496.13 a month, not included" });
     expect(c.changes).toEqual(["pallet storage 10 → left out"]);
+  });
+
+  it("monthly charges that were all left out are Not computed on the spread-over-orders row, never $0.00; a partial set says At least", () => {
+    const onlyStorage = { ...noMinimum, rules: noMinimum.rules.filter((r) => r.key !== "admin") };
+    const nothing = finalize([A, B, C, D2], { monthlySchedule: onlyStorage, answers: { drivers: {}, orderShares: { inserts: { sharePct: "25.00", countPerOrder: 1 } } } });
+    expect(nothing.allocation?.perOrder.allocated).toBe("0.00"); // the allocation of nothing: an exact zero that must not be shown
+    expect(compareFacts(nothing).monthlyChargesPerOrder).toBeNull();
+    const c = buildComparison(fileRun(nothing), fileRun(noStorageAnswer));
+    const spread = rowOf(c, "Monthly charges spread over orders (with any account minimum)");
+    // Storage left out: only the $25.00 account fee over 2 orders a month is priced, so $12.50 is a lower bound.
+    expect(spread).toMatchObject({ a: "Not computed", b: "At least $12.50" });
+    expect(rowOf(c, "Monthly charges a month (without the account minimum)")).toMatchObject({ a: "Not computed", b: "At least $25.00 a month" });
+    expect(buildComparison(fileRun(complete), fileRun(skipped)).rows.find((r) => r.label.startsWith("Monthly charges spread"))?.b).toBe("Not computed");
+  });
+
+  it("order fees that leave a category out read At least on the Order fees row, as on the model's own page", () => {
+    const tube = modeledOrder("T", 5, "2026-04-20", "9.00", fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: "packaging:tube", reason: "packaging_unmatched" }] }));
+    const withTube = finalize([A, B, C, D2, tube], {}, { ...counts, orders: 5, shipments: 5, packages: 5, rows: 5 });
+    const c = buildComparison(fileRun(withTube), fileRun(complete));
+    expect(rowOf(c, "Order fees per order")).toMatchObject({ a: "At least $1.85", b: "$1.94" });
+    expect(rowOf(c, "Shipping + order fees (comparable)")).toMatchObject({ a: "At least $13.65", b: "$14.44" });
+  });
+
+  it("a changed answer to a question the summaries do not name is described generically, never by its key", () => {
+    const a = { ...fileRun(complete), assumptions: { fulfillment: { drivers: { pallets: "10", ghost_driver_key: "4" }, orderShares: { inserts: { sharePct: "25.00", countPerOrder: 1 } } } } };
+    const b = { ...fileRun(complete), assumptions: { fulfillment: { drivers: { pallets: "10" }, orderShares: { inserts: { sharePct: "50.00", countPerOrder: 2 } } } } };
+    const c = buildComparison(a, b);
+    expect(c.changes).toEqual(["a fulfillment answer 4 → left out", "a fulfillment answer 25% of orders × 1 → 50% of orders × 2"]);
+    expect(JSON.stringify(c)).not.toMatch(/ghost[_ ]driver/);
   });
 
   it("warns when the volumes differ by more than 5 %", () => {

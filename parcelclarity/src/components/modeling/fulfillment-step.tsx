@@ -8,6 +8,7 @@ import { formatDate } from "@/lib/format/date";
 import {
   averageToContentRows,
   describePeriodVolume,
+  lowerFirst,
   newContentRow,
   type AnswerChoice,
   type FulfillmentFormState,
@@ -89,6 +90,10 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
     return total;
   })();
   const average = state.contentMode === "average" ? averageToContentRows(state.averageUnits, state.averageLines) : null;
+  // The average's error belongs to both boxes: marking them lets the "answers need attention" step focus the first one.
+  const avgError = errors["orderContent.average"];
+  const avgInvalid = avgError ? ({ "aria-invalid": true, "aria-describedby": `${id}-avg-err` } as const) : {};
+  const rowsError = errors["orderContent.rows"];
 
   return (
     <section aria-labelledby={`${id}-heading`} className="space-y-6">
@@ -180,7 +185,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
               </ul>
               {q.longTerm?.mode === "replace" && q.longTerm.partOf ? (
                 <p className="text-sm text-muted">
-                  Held longer than {q.longTerm.thresholdDays} days. This is part of {q.longTerm.partOf.label.toLowerCase()} above, not in addition to it.
+                  Held longer than {q.longTerm.thresholdDays} days. This is part of {lowerFirst(q.longTerm.partOf.label)} above, not in addition to it.
                 </p>
               ) : null}
 
@@ -291,7 +296,9 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
                         <div key={i} className="space-y-2 rounded-control border border-line p-3">
                           <div className="grid grid-cols-3 gap-2">
                             {cells.map((c) => {
-                              const err = errors[`orderContent.rows.${i}.${c.field}`];
+                              // A share that does not add up to 100.00 is the whole set's error: it marks every share box.
+                              const own = errors[`orderContent.rows.${i}.${c.field}`];
+                              const err = own ?? (c.field === "sharePct" ? rowsError : undefined);
                               const inputId = `${id}-row${i}-${c.field}`;
                               return (
                                 <div key={c.field} className="min-w-0 space-y-1">
@@ -306,9 +313,9 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
                                     value={row[c.field]}
                                     onChange={(e) => set({ [c.field]: e.target.value })}
                                     aria-invalid={err ? true : undefined}
-                                    aria-describedby={err ? `${inputId}-err` : undefined}
+                                    aria-describedby={own ? `${inputId}-err` : err ? `${id}-rows-err` : undefined}
                                   />
-                                  <ErrorText id={`${inputId}-err`}>{err}</ErrorText>
+                                  <ErrorText id={`${inputId}-err`}>{own}</ErrorText>
                                 </div>
                               );
                             })}
@@ -335,10 +342,10 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
                   <div className="space-y-3">
                     <div className="grid grid-cols-2 gap-3">
                       <Field id={`${id}-avg-units`} label="Average items per order">
-                        {(aria) => <Input {...aria} {...numberProps} value={state.averageUnits} onChange={(e) => patch({ averageUnits: e.target.value })} placeholder="e.g. 1.4" />}
+                        {(aria) => <Input {...aria} {...numberProps} {...avgInvalid} value={state.averageUnits} onChange={(e) => patch({ averageUnits: e.target.value })} placeholder="e.g. 1.4" />}
                       </Field>
                       <Field id={`${id}-avg-lines`} label="Average order lines per order">
-                        {(aria) => <Input {...aria} {...numberProps} value={state.averageLines} onChange={(e) => patch({ averageLines: e.target.value })} placeholder="e.g. 1.2" />}
+                        {(aria) => <Input {...aria} {...numberProps} {...avgInvalid} value={state.averageLines} onChange={(e) => patch({ averageLines: e.target.value })} placeholder="e.g. 1.2" />}
                       </Field>
                     </div>
                     <ErrorText id={`${id}-avg-err`}>{errors["orderContent.average"]}</ErrorText>

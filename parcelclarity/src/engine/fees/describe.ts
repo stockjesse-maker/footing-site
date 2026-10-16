@@ -22,7 +22,9 @@ export function describeFeeRule(rule: FeeRule): string {
     let lower = 0;
     for (const b of rule.tiers.brackets) {
       const range = b.upTo === null ? `${lower + 1}+` : lower + 1 === Number(b.upTo) ? `${b.upTo}` : `${lower + 1}–${b.upTo}`;
-      parts.push(rule.tiers.pricing === "flat" ? `${range} ${noun.plural}: ${money(b.amount)} flat` : `${range} ${noun.plural}: ${money(b.amount)} each`);
+      // "1 item", not "1 items": a bracket that covers exactly one unit reads in the singular.
+      const word = b.upTo !== null && lower === 0 && Number(b.upTo) === 1 ? noun.singular : noun.plural;
+      parts.push(rule.tiers.pricing === "flat" ? `${range} ${word}: ${money(b.amount)} flat` : `${range} ${word}: ${money(b.amount)} each`);
       lower = b.upTo === null ? lower : Number(b.upTo);
     }
     const how = rule.tiers.mode === "graduated" ? "each unit priced at its own bracket" : rule.tiers.pricing === "flat" ? "one price for the whole bracket" : "every unit at the rate of the bracket the total falls in";

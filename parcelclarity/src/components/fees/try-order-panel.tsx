@@ -87,7 +87,7 @@ export function TryOrderPanel({ versionId, rules, packagingTypes, rounding = nul
   };
 
   // An empty version would otherwise read "every applicable fee was computed: $0.00", which says the order is free.
-  if (!rules.length) return <p className="text-sm text-muted">This version has no rules yet, so there is nothing to price. Add a rule above, then try an order.</p>;
+  if (!rules.length) return <p className="text-sm text-muted">This version has no rules yet, so there is nothing to price. Once it has a rule, you can try an order here.</p>;
 
   return (
     <div className="space-y-6">
@@ -244,6 +244,8 @@ export function TryOrderOutcome({ priced, namesByKey, stale = false }: { priced:
   // Nothing computed is not $0.00: the totals say so instead of printing zeros.
   const nothing = result.status === "no_content";
   const figure = (e4: number) => (nothing ? <span className="text-muted">Not computed</span> : moneyE4(e4));
+  // Rates can carry four decimals. The product rounds an order's total to the cent once everywhere else, so say so when the figures here are finer than that.
+  const fractionOfCent = !nothing && (result.definiteE4 % 100 !== 0 || result.estimatedE4 % 100 !== 0 || result.lines.some((l) => l.amountE4 % 100 !== 0));
   return (
     <section aria-labelledby="try-result-heading" className="space-y-4 rounded-card border border-line bg-surface p-4 sm:p-5">
       <div>
@@ -254,6 +256,9 @@ export function TryOrderOutcome({ priced, namesByKey, stale = false }: { priced:
         <p className="mt-0.5 text-sm text-muted">
           Order fees only, and a trial rather than an invoice. Storage, receiving, returns, flat monthly fees and the account minimum are worked out per month, not per order, so they are not in these amounts.
         </p>
+        {fractionOfCent ? (
+          <p className="mt-0.5 text-sm text-muted">Some amounts are shown to a fraction of a cent, exactly as priced. A customer&apos;s model rounds an order&apos;s total to the cent once, from these exact amounts.</p>
+        ) : null}
       </div>
 
       {stale ? <Alert tone="warning">You changed the order or the rules after pricing it, so the amounts below are for the earlier ones. Price it again to see what it is charged now.</Alert> : null}

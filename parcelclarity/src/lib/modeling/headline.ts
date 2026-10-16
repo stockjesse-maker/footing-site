@@ -441,6 +441,16 @@ function feesHeadline(b: Basis, addHref: string | undefined): HeadlineFigures {
 }
 
 /**
+ * Every monthly charge of the schedule was left out (no number given) and no exact account minimum adds anything: the
+ * monthly part of the all-in is "not computed". `allocation.perOrder.allocated` is then an exact 0.00 of nothing, and
+ * it must never be shown as $0 next to charges that were simply not priced.
+ */
+function nothingPricedMonthly(b: Basis, allocation: AllocationResult | null): boolean {
+  const topUp = b.minimumStatus === "exact" && allocation?.monthly.minimumTopUp != null && new D(allocation.monthly.minimumTopUp).gt(0);
+  return !!b.monthly && b.monthly.lines.length === 0 && b.monthly.notModeled.length > 0 && !topUp;
+}
+
+/**
  * The all-in split per order: shipping, order fees, monthly charges spread over the volume. The three parts
  * must add up to the headline (to the cent). Below 80 % coverage the allocation counts only the orders that
  * could be priced against the customer's whole volume, so the stored per-order averages of those orders
@@ -463,8 +473,7 @@ function allInParts(b: Basis, allocation: AllocationResult): HeadlinePart[] {
     scope = `averaged over the ${n(b.processingOrders)} of ${n(b.modeledOrders)} orders priced for both shipping and fees`;
   }
   const topUp = b.minimumStatus === "exact" && allocation.monthly.minimumTopUp !== null && new D(allocation.monthly.minimumTopUp).gt(0);
-  const nothingPricedMonthly = !!b.monthly && b.monthly.lines.length === 0 && b.monthly.notModeled.length > 0 && !topUp;
-  const allocated = nothingPricedMonthly ? null : allocation.perOrder.allocated;
+  const allocated = nothingPricedMonthly(b, allocation) ? null : allocation.perOrder.allocated;
   return [
     { label: "Shipping", amount: shipping, note: scope },
     { label: "Order fees", amount: processing, note: scope },
@@ -972,7 +981,10 @@ export interface CompareFacts {
   shippingPlusFeesAtLeast: boolean;
   /** Order-scope categories left out of the order fees (the set "Shipping + order fees" is comparable across). */
   orderLeftOut: FeeCategory[];
+  /** Monthly charges (and an exact account minimum) spread over the volume; null when no monthly charge was priced (never $0). */
   monthlyChargesPerOrder: string | null;
+  /** At least one monthly charge was left out because no number was given, so the figures above are lower bounds. */
+  monthlyChargesLeftOut: boolean;
   /** Every priced monthly charge, a month, rounded once; null when none was priced. */
   monthlyChargesPerMonth: string | null;
   allIn: HeadlineFigures;
@@ -1031,7 +1043,8 @@ export function compareFacts(summary: HeadlineSummary): CompareFacts {
     shippingPlusFees: both ? centsOf(new D(ship!).plus(fees!)) : null,
     shippingPlusFeesAtLeast: missingCategories(b, "order").length > 0,
     orderLeftOut: missingCategories(b, "order").map((c) => c.category),
-    monthlyChargesPerOrder: b.allocation?.perOrder.allocated ?? null,
+    monthlyChargesPerOrder: nothingPricedMonthly(b, b.allocation) ? null : (b.allocation?.perOrder.allocated ?? null),
+    monthlyChargesLeftOut: (b.monthly?.notModeled.length ?? 0) > 0,
     monthlyChargesPerMonth: monthlyCharges(summary)?.totalPerMonth ?? null,
     allIn,
   };
@@ -1102,6 +1115,8 @@ export interface Comparison {
 
 const orDash = (v: string | null): string => (v === null ? "—" : usd(v));
 const orNotComputed = (v: string | null): string => (v === null ? "Not computed" : usd(v));
+/** A figure that leaves something out says "At least"; one that could not be computed says so (never $0). */
+const figureText = (v: string | null, atLeast: boolean): string => (v === null ? "Not computed" : `${atLeast ? "At least " : ""}${usd(v)}`);
 
 function ratesText(r: CompareRunInput): string {
   if (isForecastSummary(r.summary)) return `in effect on ${formatDate(r.summary.asOfDate)}`;
@@ -1181,8 +1196,9 @@ export function buildComparison(a: CompareRunInput, b: CompareRunInput): Compari
     row("basis", "Account minimum", ...pair((f) => f.minimumText)),
 
     row("figures", "Shipping per order", orNotComputed(fa.shippingPerOrder), orNotComputed(fb.shippingPerOrder), { note: shippingScopeNote }),
-    row("figures", "Order fees per order", orNotComputed(fa.feesPerOrder), orNotComputed(fb.feesPerOrder)),
-    row("figures", "Shipping + order fees (comparable)", fa.shippingPlusFees === null ? "Not computed" : `${fa.shippingPlusFeesAtLeast ? "At least " : ""}${usd(fa.shippingPlusFees)}`, fb.shippingPlusFees === null ? "Not computed" : `${fb.shippingPlusFeesAtLeast ? "At least " : ""}${usd(fb.shippingPlusFees)}`, {
+    // Order fees that leave a category out are a lower bound here exactly as on the model's own page ("At least").
+    row("figures", "Order fees per order", figureText(fa.feesPerOrder, fa.shippingPlusFeesAtLeast), figureText(fb.feesPerOrder, fb.shippingPlusFeesAtLeast)),
+    row("figures", "Shipping + order fees (comparable)", figureText(fa.shippingPlusFees, fa.shippingPlusFeesAtLeast), figureText(fb.shippingPlusFees, fb.shippingPlusFeesAtLeast), {
       // Only when both figures exist: a run with no order fees at all has nothing to be a lower bound of.
       note: orderSetsDiffer && fa.shippingPlusFees !== null && fb.shippingPlusFees !== null ? "The two leave out different order fees, so these figures are not like for like; one marked At least is a lower bound." : null,
     }),
@@ -1194,7 +1210,7 @@ export function buildComparison(a: CompareRunInput, b: CompareRunInput): Compari
     row("figures", "May be added after shipping (up to)", sa ? inFile(sa.exposure.conditional.amount) : forecastA ? `${usd(forecastA.shipping.conditionalUpTo)} a month` : "—", sb ? inFile(sb.exposure.conditional.amount) : forecastB ? `${usd(forecastB.shipping.conditionalUpTo)} a month` : "—"),
 
     row("allin", "Monthly charges a month (without the account minimum)", monthlyText(a.summary, fa), monthlyText(b.summary, fb), { muted: !allInComparable }),
-    row("allin", "Monthly charges spread over orders (with any account minimum)", orDash(fa.monthlyChargesPerOrder), orDash(fb.monthlyChargesPerOrder), { muted: !allInComparable }),
+    row("allin", "Monthly charges spread over orders (with any account minimum)", figureText(fa.monthlyChargesPerOrder, fa.monthlyChargesLeftOut), figureText(fb.monthlyChargesPerOrder, fb.monthlyChargesLeftOut), { muted: !allInComparable }),
     row("allin", `All-in cost per order${allInComparable ? "" : " (not comparable)"}`, `${headlineText(fa.allIn)}${fa.allIn.amount !== null && fa.leftOut.length ? ` (without ${fa.leftOutText})` : ""}`, `${headlineText(fb.allIn)}${fb.allIn.amount !== null && fb.leftOut.length ? ` (without ${fb.leftOutText})` : ""}`, { muted: !allInComparable, note: allInNote }),
   ];
 

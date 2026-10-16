@@ -1,4 +1,7 @@
+import { createElement, createRef } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { FulfillmentStep } from "@/components/modeling/fulfillment-step";
 import { D } from "@/engine/money";
 import {
   averageToContentRows,
@@ -189,6 +192,8 @@ describe("diffAssumptions", () => {
   it("keeps an acronym's capitals, and never prints a key where a label is missing (it humanises it)", () => {
     expect(diffAssumptions({ fulfillment: { drivers: { skus: "10" } } }, { fulfillment: { drivers: { skus: "12" } } }, { labels })).toEqual(["SKUs stored 10 → 12"]);
     expect(diffAssumptions({ fulfillment: { drivers: { cubic_feet: "10" } } }, { fulfillment: { drivers: { cubic_feet: "12" } } })).toEqual(["cubic feet 10 → 12"]);
+    // With labels supplied (every customer screen) a key that has no label is never printed.
+    expect(diffAssumptions({ fulfillment: { drivers: { cubic_feet: "10" } } }, { fulfillment: { drivers: { cubic_feet: "12" } } }, { labels })).toEqual(["a fulfillment answer 10 → 12"]);
   });
 
   it("reports an order-share answer with its count", () => {
@@ -712,5 +717,30 @@ describe("loadRunSetupData", () => {
     expect([noValidation.hasUnits, noValidation.hasLines]).toEqual([false, true]);
     const unknown = await loadRunSetupData(stubSupabase({ dataset: { data: null, error: null }, untyped: { data: null, error: { message: "boom" } } }), "b", "d");
     expect([unknown.hasUnits, unknown.hasLines, unknown.untypedPackages]).toEqual([false, false, true]);
+  });
+});
+
+describe("FulfillmentStep: order content errors belong to the boxes they are about", () => {
+  const ctx: FulfillmentFormContext = { questions: [], canDeriveVolume: true, showPackaging: false, showContent: true };
+  const base = initialFulfillmentState(ctx, null);
+  const step = (state: FulfillmentFormState, errors: Record<string, string>) =>
+    renderToStaticMarkup(
+      createElement(FulfillmentStep, { id: "x", audience: "brand", schedule: { name: "Standard", effectiveDate: "2026-01-01", questions: [], packagingTypes: [] }, period: null, showPackaging: false, showContent: true, state, setState: () => {}, errors, headingRef: createRef<HTMLHeadingElement>() }),
+    );
+  const count = (html: string, pattern: RegExp) => (html.match(pattern) ?? []).length;
+
+  it("shares that do not add up to 100.00 mark every share box and point at the one message that exists", () => {
+    const html = step({ ...base, contentMode: "rows", contentRows: [{ units: "1", lines: "1", sharePct: "60" }, { units: "2", lines: "1", sharePct: "30" }] }, { "orderContent.rows": "Order content shares must add up to exactly 100.00%." });
+    expect(count(html, /aria-invalid="true"/g)).toBe(2);
+    expect(count(html, /aria-describedby="x-rows-err"/g)).toBe(2);
+    expect(html).toContain('id="x-rows-err"');
+  });
+
+  it("an average that cannot be turned into rows marks both boxes, so the first one can be focused", () => {
+    const html = step({ ...base, contentMode: "average", averageUnits: "1", averageLines: "2" }, { "orderContent.average": "An order cannot have more lines than items." });
+    expect(count(html, /aria-invalid="true"/g)).toBe(2);
+    expect(count(html, /aria-describedby="x-avg-err"/g)).toBe(2);
+    expect(html).toContain('id="x-avg-err"');
+    expect(count(step({ ...base, contentMode: "average" }, {}), /aria-invalid/g)).toBe(0);
   });
 });

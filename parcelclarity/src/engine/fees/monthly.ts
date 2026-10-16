@@ -179,6 +179,7 @@ export function evaluateMinimums(buckets: MonthBucket[], schedule: FeeScheduleSn
       minimumE4: bucketResults.reduce((n, b) => n + b.minimumE4, 0),
       topUpE4: bucketResults.reduce((n, b) => n + b.topUpE4, 0),
       countedE4: bucketResults.reduce((n, b) => n + b.countedE4, 0),
+      includesShipping: rule.minimum!.includesShipping,
       status,
       reasons: [...new Set(reasons)],
       members: memberStates,

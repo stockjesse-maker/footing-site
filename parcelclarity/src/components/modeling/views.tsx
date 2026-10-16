@@ -672,8 +672,8 @@ function CompareTable({ a, b, labelA, labelB }: { a: ComparableRun; b: Comparabl
         <div className="space-y-1 text-sm">
           <p className="font-medium">What differs in the assumptions</p>
           <ul className="list-disc space-y-1 pl-5 text-muted">
-            {c.changes.map((line) => (
-              <li key={line}>{line}</li>
+            {c.changes.map((line, i) => (
+              <li key={`${i}:${line}`}>{line}</li>
             ))}
           </ul>
         </div>
@@ -692,7 +692,7 @@ function CompareTable({ a, b, labelA, labelB }: { a: ComparableRun; b: Comparabl
           {groups.map(({ group, rows }) => (
             <tbody key={group} className="divide-y divide-line">
               <tr>
-                <th colSpan={3} scope="colgroup" className="pt-4 pb-1 text-left text-xs font-semibold tracking-wide text-muted uppercase">
+                <th colSpan={3} scope="rowgroup" className="pt-4 pb-1 text-left text-xs font-semibold tracking-wide text-muted uppercase">
                   {COMPARE_GROUP_TITLE[group]}
                 </th>
               </tr>

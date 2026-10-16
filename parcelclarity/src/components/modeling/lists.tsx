@@ -119,7 +119,7 @@ export function ScenarioList({ projects, basePath, brandId, staff, compareHref }
             <div className="flex flex-wrap items-center gap-2">
               {state ? <Badge tone={state.tone}>{state.label}</Badge> : null}
               {compareHref && run?.status === "completed" && (run.kind === "bulk" || run.kind === "forecast") ? (
-                <Link href={`${compareHref}?a=${run.id}`} className="inline-flex min-h-11 items-center text-sm font-medium text-accent-text hover:underline sm:min-h-9">
+                <Link href={`${compareHref}?a=${run.id}`} className="inline-flex min-h-11 items-center text-sm font-medium text-accent-text hover:underline">
                   Compare
                 </Link>
               ) : null}

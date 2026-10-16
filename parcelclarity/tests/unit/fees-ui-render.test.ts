@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { describeFeeRule } from "@/engine/fees";
 import type { FeeRule, FeeScheduleSnapshot } from "@/engine/fees/types";
 
 // The editor's components call server actions on events only; rendering them needs no server.
@@ -130,6 +131,16 @@ describe("rules list renders", () => {
     expect(t).toContain("$2.50 per order.");
   });
 
+  it("tells a person who may not edit a draft that it is a draft, not that it was locked", () => {
+    const html = renderToStaticMarkup(createElement(RulesWorkspace, { versionId: "v", editable: false, draft: true, rules, sources: {} }));
+    const t = text(html);
+    expect(t).not.toContain("no longer a draft");
+    expect(t).toContain("This version is a draft");
+    expect(t).toContain("Only administrators can change its rules");
+    expect(t).not.toContain("Add rule");
+    expect(html).not.toContain("Move up");
+  });
+
   it("with a prompt when there are no rules", () => {
     const t = text(renderToStaticMarkup(createElement(RulesWorkspace, { versionId: "v", editable: true, rules: [], sources: {} })));
     expect(t).toContain("No rules yet");
@@ -187,6 +198,15 @@ describe("try-an-order outcome", () => {
     expect(render(false)).not.toContain("You changed the order");
   });
 
+  it("says when amounts are finer than a cent, and stays quiet when they are not", () => {
+    const line = (amountE4: number) => ({ ruleKey: "scan", name: "Per-unit label scan", category: "pick_pack" as const, basis: "unit" as const, quantity: "7", unitAmountE4: 125, amountE4, chargeClass: "definite" as const, explanation: "7 items × $0.0125 = $0.0875." });
+    const fine = show({ ...empty, lines: [line(875)], definiteE4: 875 });
+    expect(fine).toContain("$0.0875");
+    expect(fine).toContain("rounds an order's total to the cent once");
+    expect(show({ ...empty, lines: [line(900)], definiteE4: 900 })).not.toContain("rounds an order's total to the cent once");
+    expect(show({ ...empty, status: "no_content" })).not.toContain("rounds an order's total to the cent once");
+  });
+
   it("shows a real zero as $0.00 when every applicable fee was computed", () => {
     const t = show(empty);
     expect(t).toContain("Every applicable fee was computed.");
@@ -234,6 +254,10 @@ describe("version controls render", () => {
     const locked = renderToStaticMarkup(createElement(RoundingSelect, { versionId: "v", value: "transaction", editable: false }));
     expect(locked).toMatch(/<select[^>]*\sdisabled=""/);
     expect(text(locked)).toContain("Locked because this version is no longer a draft.");
+    // A draft that this person may not change reads as a draft, not as a closed version.
+    const viewerDraft = text(renderToStaticMarkup(createElement(RoundingSelect, { versionId: "v", value: "transaction", editable: false, draft: true })));
+    expect(viewerDraft).toContain("Only administrators can change this while the version is a draft.");
+    expect(viewerDraft).not.toContain("no longer a draft");
     const open = renderToStaticMarkup(createElement(RoundingSelect, { versionId: "v", value: "invoice_line", editable: true }));
     expect(open).not.toMatch(/<select[^>]*\sdisabled=""/);
     expect(text(renderToStaticMarkup(createElement(VersionNotesForm, { versionId: "v", notes: "Approved by Pat", editable: false })))).toContain("Approved by Pat");
@@ -241,5 +265,25 @@ describe("version controls render", () => {
     const form = renderToStaticMarkup(createElement(VersionNotesForm, { versionId: "v", notes: "Approved by Pat", editable: true }));
     expect(form).toContain("Save notes");
     expect(text(form)).toContain("customers never see it");
+  });
+});
+
+describe("customer wording of tiers", () => {
+  const tiered = (upTo: string): FeeRule => ({
+    key: "pick",
+    name: "Pick fee",
+    category: "pick_pack",
+    scope: "order",
+    basis: "unit",
+    method: "tiered",
+    amount: null,
+    percent: null,
+    position: 0,
+    tiers: { on: "order_quantity", mode: "graduated", pricing: "rate", brackets: [{ upTo, amount: "3.00" }, { upTo: null, amount: "0.40" }] },
+  });
+
+  it("reads a one-unit bracket in the singular", () => {
+    expect(describeFeeRule(tiered("1"))).toContain("1 item: $3.00 each; 2+ items: $0.40 each");
+    expect(describeFeeRule(tiered("10"))).toContain("1–10 items: $3.00 each; 11+ items: $0.40 each");
   });
 });
