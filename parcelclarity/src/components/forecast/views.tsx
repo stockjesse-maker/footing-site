@@ -9,10 +9,14 @@ import { Button, ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Field, Input } from "@/components/ui/field";
 import { PageHeader } from "@/components/ui/page-header";
+import { can } from "@/lib/auth/permissions";
+import { getContext } from "@/lib/auth/session";
 import { uuidSchema } from "@/lib/auth/validation";
 import { forecastResultData, loadForecastContext, loadSavedForecast } from "@/lib/forecast/queries";
 import { formatDate } from "@/lib/format/date";
+import { assumptionsLine } from "@/lib/modeling/headline";
 import type { ModelingView } from "@/lib/modeling/page-context";
+import { loadAssumptionsAuthor } from "@/lib/modeling/queries";
 
 /**
  * Server-rendered forecast pages shared by the customer portal (/portal/model/forecast) and the 3PL's
@@ -100,6 +104,9 @@ export async function ForecastSavedView(v: ModelingView, projectId: string) {
   const audience = v.staff ? "staff" : "brand";
   const data = forecastResultData(saved.summary, audience);
   const editHref = `${v.basePath}/forecast?from=${saved.projectId}`;
+  // The page speaks of "your assumptions": a forecast the 3PL prepared and shared has to say whose they are (design U18).
+  const ctx = await getContext();
+  const author = ctx ? await loadAssumptionsAuthor(v.supabase, { createdBy: saved.createdBy, viewerId: ctx.user.id, viewerCanSeeMembers: can(ctx.active.role, "member.view"), brandId: v.brandId }) : null;
   return (
     <>
       <BackLink href={v.basePath} label={v.staff ? `Model costs for ${v.brandName}` : "Model Costs"} />
@@ -118,6 +125,7 @@ export async function ForecastSavedView(v: ModelingView, projectId: string) {
         <p className="text-sm text-muted">
           Saved {formatDate(saved.createdAt)}
           {saved.rateCardName ? ` · ${saved.rateCardName}` : ""} · priced on {formatDate(saved.asOfDate)}. The forecast does not change afterwards; to try other numbers, edit it as a new forecast.
+          {author ? ` ${assumptionsLine(author, v.tenantName, saved.createdAt)}.` : ""}
         </p>
         <ForecastManage projectId={saved.projectId} name={saved.name} brandId={v.staff ? v.brandId : undefined} staff={v.staff} shared={saved.sharedWithBrand} archived={saved.archivedAt !== null} />
         <ForecastResult data={data} audience={audience} editHref={editHref} />

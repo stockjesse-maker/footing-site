@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { canonicalizeAssumptions, evaluateForecast, type ForecastAssumptions, type ForecastDeps, type ForecastSummary } from "@/engine/forecast";
+import { canonicalizeAssumptions, evaluateForecast, forecastPinnedRates, type ForecastAssumptions, type ForecastDeps, type ForecastSummary } from "@/engine/forecast";
 import type { ForecastContext, ForecastFormState } from "@/components/forecast/forecast-model";
 import { FEE_ENGINE_VERSION, type FeeScheduleSnapshot } from "@/engine/fees/types";
 import { ENGINE_VERSION } from "@/engine/types";
@@ -721,13 +721,58 @@ describe("adversarial review: figures and wording that read wrong", () => {
     expect(t).toContain("Price breaks that depend on your monthly volume are not read again");
   });
 
+  it("says what is never included, in the assumptions of every kind of forecast, so an all-in figure does not read as everything", () => {
+    const never = "Never included, whatever you enter: taxes, return shipping, and special projects or anything else outside your rate card and fee schedule (these are quoted separately).";
+    for (const summary of [summaryOf(assumptions()), summaryOf(assumptions({ fulfillment: { skip: true, drivers: {}, orderShares: {} } })), summaryOf(assumptions(), deps({ schedule: null })), summaryOf(assumptions(partialZones), deps(), { priceOnlyCovered: true })]) {
+      expect(render(summary)).toContain(never);
+      expect(resultModel.assumptionLines(summary).at(-1)).toEqual({ id: "never_included", text: never });
+    }
+  });
+
   it("says the parts of the all-in can differ from it by a cent", () => {
     expect(render(summaryOf(assumptions()))).toContain("Each figure is rounded to cents once, so the parts can differ from the total by a cent.");
   });
 });
 
+describe("adversarial review: every kind of forecast renders for a brand and for staff", () => {
+  const NONE = { drivers: {}, orderShares: {} };
+  const SKIP = { skip: true, drivers: {}, orderShares: {} };
+  const partial = { zones: [{ zone: "2", sharePct: "80" }, { zone: "9", sharePct: "20" }] };
+  const cases: [string, Partial<ForecastAssumptions>, string | null, { priceOnlyCovered?: boolean }][] = [
+    ["answered", {}, "standard", {}],
+    ["no answers", { fulfillment: NONE }, "standard", {}],
+    ["skipped", { fulfillment: SKIP }, "standard", {}],
+    ["no schedule", { fulfillment: NONE }, null, {}],
+    ["partial", partial, "standard", { priceOnlyCovered: true }],
+    ["partial, skipped", { ...partial, fulfillment: SKIP }, "standard", { priceOnlyCovered: true }],
+    ["partial, no schedule", { ...partial, fulfillment: NONE }, null, { priceOnlyCovered: true }],
+    ["minimum with shipping", { fulfillment: NONE }, "minimum_with_shipping", {}],
+    ["minimum with shipping, partial", { ...partial, fulfillment: NONE }, "minimum_with_shipping", { priceOnlyCovered: true }],
+    ["per-line fees", { fulfillment: NONE }, "lines", {}],
+    ["fees tiered on the monthly volume", { fulfillment: NONE }, "tiers", {}],
+    ["storage only, no answers", { fulfillment: NONE }, "storage_surcharge", {}],
+  ];
+  for (const [name, over, schedule, options] of cases) {
+    for (const audience of ["brand", "staff"] as const) {
+      it(`${name}, for ${audience}`, () => {
+        const a = assumptions(over);
+        const s = schedule === null ? null : schedules[schedule]!;
+        const summary = summaryOf(a, deps({ schedule: s, pinnedRates: forecastPinnedRates(a, s) }), options);
+        const html = renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(summary, audience), audience, onAdd: () => undefined }));
+        // Nothing unformatted reaches the page, and an unknown amount is never a dollar figure.
+        expect(text(html)).not.toMatch(/NaN|undefined|\bnull\b|\[object/);
+        expect(html).toContain("Forecast from your assumptions at 1,250 orders a month.");
+        // A brand reads no rule key, service id or hash, whatever the schedule.
+        if (audience === "brand") for (const key of [...(s?.rules ?? []).map((r) => r.key).filter((k) => k.includes("_")), UPS, USPS, summary.assumptionsHash]) expect(html, key).not.toContain(key);
+        // The same summary, saved and read back as JSON, renders the same page.
+        const again = renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(JSON.parse(JSON.stringify(summary)) as ForecastSummary, audience), audience, onAdd: () => undefined }));
+        expect(again).toBe(html);
+      });
+    }
+  }
+});
+
 describe("adversarial review: the form", () => {
-  const ctx = context();
   const blocked = { status: "blocked" as const, cellCount: 4, unpriceable: [], unpriceableSharePct: "20.00" };
   const ok = { status: "ok" as const, result: {} as never };
   const invalid = { status: "invalid" as const, problems: ["monthlyOrders: must be between 1 and 5,000,000"] };

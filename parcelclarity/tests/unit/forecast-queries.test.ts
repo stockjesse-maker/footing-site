@@ -252,6 +252,12 @@ describe("loadSavedForecast", () => {
     expect(saved).toMatchObject({ runId: "new", archivedAt: "2026-04-01T00:00:00Z", sharedWithBrand: false });
   });
 
+  it("carries who saved it, for the line that says whose assumptions these are (null when that account is gone)", async () => {
+    const by = await loadSavedForecast(fake({ tables: { simulation_projects: [project([run({ created_by: "user-1" })])] } }), "b", "p1");
+    expect(by!.createdBy).toBe("user-1");
+    expect((await loadSavedForecast(fake({ tables: { simulation_projects: [project([run()])] } }), "b", "p1"))!.createdBy).toBeNull();
+  });
+
   it("throws on a failed query instead of answering 'not found'", async () => {
     await expect(loadSavedForecast(fake({ errors: { simulation_projects: { message: "boom" } } }), "b", "p1")).rejects.toThrow("the forecast could not be loaded: boom");
   });

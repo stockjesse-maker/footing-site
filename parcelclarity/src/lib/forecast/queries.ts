@@ -150,6 +150,8 @@ export interface SavedForecast {
   runId: string;
   name: string;
   createdAt: string;
+  /** Who saved it (the run's creator); null when that account is gone. Only used to say whose assumptions these are. */
+  createdBy: string | null;
   sharedWithBrand: boolean;
   archivedAt: string | null;
   /** The rate card the forecast was priced on (an edit starts from it while it is still assigned). */
@@ -169,7 +171,7 @@ interface SavedRow {
   archived_at: string | null;
   rate_card_id: string | null;
   rate_cards: { name: string } | null;
-  simulation_runs: { id: string; kind: string; status: string; as_of_date: string | null; created_at: string; summary: unknown; assumptions: unknown }[];
+  simulation_runs: { id: string; kind: string; status: string; as_of_date: string | null; created_at: string; created_by: string | null; summary: unknown; assumptions: unknown }[];
 }
 
 function isForecastSummary(value: unknown): value is ForecastSummary {
@@ -182,7 +184,7 @@ function isForecastSummary(value: unknown): value is ForecastSummary {
 export async function loadSavedForecast(supabase: SupabaseClient, brandId: string, projectId: string): Promise<SavedForecast | null> {
   const { data, error } = await supabase
     .from("simulation_projects")
-    .select("id, name, created_at, shared_with_brand, archived_at, rate_card_id, rate_cards(name), simulation_runs(id, kind, status, as_of_date, created_at, summary, assumptions)")
+    .select("id, name, created_at, shared_with_brand, archived_at, rate_card_id, rate_cards(name), simulation_runs(id, kind, status, as_of_date, created_at, created_by, summary, assumptions)")
     .eq("id", projectId)
     .eq("brand_id", brandId)
     .eq("kind", "forecast")
@@ -199,6 +201,7 @@ export async function loadSavedForecast(supabase: SupabaseClient, brandId: strin
     runId: run.id,
     name: data.name,
     createdAt: data.created_at,
+    createdBy: run.created_by ?? null,
     sharedWithBrand: data.shared_with_brand,
     archivedAt: data.archived_at,
     rateCardId: data.rate_card_id ?? null,

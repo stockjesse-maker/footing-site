@@ -231,7 +231,7 @@ export function forecastHeadline(summary: ForecastSummary, notIncluded: NotInclu
 // What this forecast assumes
 // ---------------------------------------------------------------------------
 export interface AssumptionLine {
-  id: ForecastCaveat | "origin";
+  id: ForecastCaveat | "origin" | "never_included";
   text: string;
 }
 
@@ -289,6 +289,8 @@ export function assumptionLines(summary: ForecastSummary): AssumptionLine[] {
       text: upTo > 0 ? `The account minimum could add up to ${usd(e4ToCents(upTo))} a month; it is not included in the all-in figure.` : "The fees counted so far already meet the account minimum, so it adds nothing, whatever the fees that could not be computed come to.",
     });
   }
+  // What no forecast can include, as the file runs' "never included" group says it: an all-in figure must not read as everything.
+  lines.push({ id: "never_included", text: "Never included, whatever you enter: taxes, return shipping, and special projects or anything else outside your rate card and fee schedule (these are quoted separately)." });
   return lines;
 }
 

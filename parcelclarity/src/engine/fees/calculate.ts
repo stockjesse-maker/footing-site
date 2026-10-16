@@ -202,7 +202,8 @@ export function calculateOrderFees(input: OrderFeeInput, schedule: FeeScheduleSn
         const qualifies = new D(input.ordinal).times(p).floor().gt(new D(input.ordinal - 1).times(p).floor());
         quantity = qualifies ? new D(answer.countPerOrder) : new D(0);
         assumed = true;
-        explanationQuantity = qualifies ? ` (this order is one of the ${formatPercent(answer.sharePct)} of orders that get ${rule.driver?.unit ?? "them"})` : "";
+        // A share of 100 % is every order (the calculator's case): the sentence would say nothing.
+        explanationQuantity = qualifies && dec(answer.sharePct).lt(100) ? ` (this order is one of the ${formatPercent(answer.sharePct)} of orders that get ${rule.driver?.unit ?? "them"})` : "";
         break;
       }
       default:
@@ -324,8 +325,11 @@ function basisNoun(rule: FeeRule, quantity: Dec): string {
       return one ? "package" : "packages";
     case "shipment":
       return one ? "shipment" : "shipments";
-    case "order_driver":
-      return rule.driver?.unit ?? (one ? "item" : "items");
+    case "order_driver": {
+      const unit = rule.driver?.unit;
+      if (!unit) return one ? "item" : "items";
+      return one && unit.endsWith("s") && unit.length > 3 ? unit.slice(0, -1) : unit;
+    }
     default:
       return "";
   }

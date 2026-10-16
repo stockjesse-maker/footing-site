@@ -14,6 +14,9 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/app/actions/surcharges", () => ({ addSurchargeRuleVersion: vi.fn(), createSurchargeRule: vi.fn(), retireRuleVersion: vi.fn(), uploadZipList: vi.fn() }));
 vi.mock("@/app/actions/forecast", () => ({ previewForecast: vi.fn(), saveForecast: vi.fn(), loadForecastFormContext: vi.fn() }));
 vi.mock("@/app/actions/modeling", () => ({ archiveScenario: vi.fn(), renameScenario: vi.fn(), shareScenario: vi.fn() }));
+// Who is looking (the saved page says whose assumptions a forecast holds): the signed-in user and role.
+const session = vi.hoisted(() => ({ role: "brand_admin" as string }));
+vi.mock("@/lib/auth/session", () => ({ getContext: async () => ({ user: { id: "viewer-1" }, active: { role: session.role } }) }));
 vi.mock("next/navigation", async (importOriginal) => ({ ...(await importOriginal<typeof import("next/navigation")>()), useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
 
 const { ForecastNewView, ForecastSavedView } = await import("@/components/forecast/views");
@@ -154,6 +157,37 @@ describe("ForecastNewView", () => {
     expect(t).not.toContain("Starting from Old plan");
   });
 
+  it("lets the person pick another date when the rate card has no rates today, instead of telling them to with nothing to do it in", async () => {
+    const empty = view(false, { rate_card_versions: [] });
+    const html = renderToStaticMarkup((await ForecastNewView(empty, {})) as never);
+    expect(text(html)).toContain("has no rates in effect on");
+    expect(text(html)).toContain("Choose another date.");
+    // A plain GET form: a date input named "date" and a button, with nothing to start from when no forecast is being edited.
+    expect(html).toMatch(/<form[^>]*method="get"/);
+    expect(html).toMatch(/<input[^>]*type="date"[^>]*name="date"|<input[^>]*name="date"[^>]*type="date"/);
+    expect(text(html)).toContain("Use this date");
+    expect(html).not.toContain('name="from"');
+    // Editing a saved forecast keeps its id through the date change.
+    const editing = renderToStaticMarkup((await ForecastNewView(view(false, { rate_card_versions: [] }), { from: PROJECT })) as never);
+    expect(editing).toContain(`<input type="hidden" name="from" value="${PROJECT}"/>`);
+    // The date that was tried stays in the box; one that is not a date is ignored.
+    const tried = renderToStaticMarkup((await ForecastNewView(view(false, { rate_card_versions: [] }), { date: "2026-02-10" })) as never);
+    expect(tried).toContain('value="2026-02-10"');
+    expect(text(tried)).toContain("has no rates in effect on Feb 10, 2026");
+    expect(renderToStaticMarkup((await ForecastNewView(view(false, { rate_card_versions: [] }), { date: "2026-02-30" })) as never)).not.toContain('value="2026-02-30"');
+  });
+
+  it("opens the form on the date in ?date=, reading the rates of that day", async () => {
+    const html = renderToStaticMarkup((await ForecastNewView(view(false), { date: "2026-03-15" })) as never);
+    expect(html).toContain('type="date"');
+    expect(html).toContain('value="2026-03-15"');
+    // The plain form is not shown when there are rates.
+    expect(html).not.toContain("Use this date");
+    expect(text(html)).not.toContain("The date starts from today");
+    // Not a date, or not a real one: today, as before.
+    for (const date of ["tomorrow", "2026-13-01", "2026-02-30", "2026-3-5"]) expect(renderToStaticMarkup((await ForecastNewView(view(false), { date })) as never)).not.toContain(`value="${date}"`);
+  });
+
   it("says what is missing instead of showing a form that cannot work", async () => {
     expect(text(await ForecastNewView(view(false, { brand_rate_card_assignments: [] }), {}))).toContain("Fixture 3PL has not assigned a rate card to your account yet.");
     expect(text(await ForecastNewView(view(true, { brand_rate_card_assignments: [] }), {}))).toContain("Assign an active rate card to this customer first.");
@@ -182,6 +216,23 @@ describe("ForecastSavedView", () => {
     // Nothing a brand must not see.
     expect(html).not.toContain("svc-ups-ground");
     expect(html).not.toContain("pick_additional");
+  });
+
+  it("says whose assumptions a saved forecast holds: yours, the 3PL's, or another user's", async () => {
+    const project = (createdBy: string | null) => [{ id: PROJECT, name: "Plan", created_at: "2026-03-16T10:00:00Z", shared_with_brand: true, archived_at: null, rate_cards: { name: "Fixture rate card" }, simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", created_by: createdBy, summary, assumptions }] }];
+    session.role = "brand_admin";
+    // Saved by the viewer.
+    expect(text(await ForecastSavedView(view(false, { simulation_projects: project("viewer-1") }), PROJECT))).toContain("Assumptions entered by you on Mar 16, 2026.");
+    // Saved by someone who is not a member of the customer (the 3PL's team), shared with the customer.
+    expect(text(await ForecastSavedView(view(false, { simulation_projects: project("staff-1"), memberships: [] }), PROJECT))).toContain("Assumptions entered by Fixture 3PL on Mar 16, 2026.");
+    // Saved by another member of the customer.
+    expect(text(await ForecastSavedView(view(false, { simulation_projects: project("colleague-1"), memberships: [{ id: "m1" }] }), PROJECT))).toContain("Assumptions entered by another user on Mar 16, 2026.");
+    // A viewer who may not see members cannot tell the 3PL from a colleague, and says so rather than guess.
+    session.role = "brand_employee";
+    expect(text(await ForecastSavedView(view(false, { simulation_projects: project("staff-1"), memberships: [] }), PROJECT))).toContain("Assumptions entered by another user on Mar 16, 2026.");
+    // The account that saved it is gone.
+    expect(text(await ForecastSavedView(view(false, { simulation_projects: project(null) }), PROJECT))).toContain("Assumptions entered by another user on Mar 16, 2026.");
+    session.role = "brand_admin";
   });
 
   it("gives staff the share switch and a private-to-the-team badge until it is shared", async () => {
