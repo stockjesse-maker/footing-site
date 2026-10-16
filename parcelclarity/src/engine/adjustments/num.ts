@@ -19,13 +19,25 @@ export const D60 = Decimal.clone({ precision: 60, rounding: Decimal.ROUND_HALF_U
 export type Dec60 = InstanceType<typeof D60>;
 
 /**
- * An exact E4 amount (possibly fractional) rounded ONCE, HALF_UP, to a whole number of ten-thousandths. Throws a
- * RangeError when the figure is not a safe integer, exactly as the forecast engine's `wholeE4` does (that helper is
- * private to its module, so the rule is restated here rather than imported).
+ * Raised on purpose when an amount cannot be carried exactly as a safe integer number of ten-thousandths of a dollar.
+ * It is a `RangeError` (callers that catch `RangeError` keep working) but a distinct class, so a caller can tell this
+ * deliberate refusal from an accidental engine fault such as a call-stack overflow, which is also a `RangeError`.
+ */
+export class AdjustmentOverflowError extends RangeError {
+  constructor(message = "an adjustment amount is too large to carry exactly") {
+    super(message);
+    this.name = "AdjustmentOverflowError";
+  }
+}
+
+/**
+ * An exact E4 amount (possibly fractional) rounded ONCE, HALF_UP, to a whole number of ten-thousandths. Throws an
+ * `AdjustmentOverflowError` (a RangeError) when the figure is not a safe integer, exactly as the forecast engine's
+ * `wholeE4` does (that helper is private to its module, so the rule is restated here rather than imported).
  */
 export function wholeE4(x: Decimal): E4 {
   const n = x.toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
-  if (!Number.isSafeInteger(n)) throw new RangeError("an adjustment amount is too large to carry exactly");
+  if (!Number.isSafeInteger(n)) throw new AdjustmentOverflowError();
   return n === 0 ? 0 : n; // never -0
 }
 

@@ -88,8 +88,25 @@ export type Basis = "exact" | "estimate";
 export type FeeState = "conditional" | "waived_for_customer" | "included_in_rate" | "undecided" | "not_configured" | "not_triggered";
 export type PostageState = "computed" | "credit";
 
-/** Scenario-level warning codes (compare as a set). Engine pricing warnings live on `sides.<side>.warnings`. */
-export type ScenarioWarning = "adjustment_fee_rule_not_conditional" | "adjustment_fee_rules_stack";
+/**
+ * Scenario-level warning codes (compare as a set). Engine pricing warnings live on `sides.<side>.warnings`.
+ *
+ *  - `adjustment_fee_rule_not_conditional`: a fee rule in scope is stored with a charge class other than conditional (forced to conditional here).
+ *  - `adjustment_fee_rules_stack`: two or more distinct fee rules both fire.
+ *  - `adjustment_fee_rule_excludes_ignored`: a fee rule lists rules it suppresses, or another rule lists a fee rule as suppressed. A fee is charged
+ *    after shipping, so no such suppression is applied: neither the postage difference nor the fee line is changed by it.
+ *  - `adjustment_fee_rule_floor_ignored`: a fee rule carries a billable-weight floor; a floor never changes the postage difference or the fee.
+ *  - `adjustment_fee_rule_group_ignored`: a fee rule shares an exclusivity group with a rule that is not a fee rule; exclusivity is kept among fee rules only.
+ *  - `adjustment_fee_rule_companion_ignored`: another rule is conditioned (rule_applied) on a fee rule; that companion is left out of the example.
+ * The last four mean the 3PL's rule form allows a combination that has no meaning for an adjustment fee: staff should fix the rule.
+ */
+export type ScenarioWarning =
+  | "adjustment_fee_rule_not_conditional"
+  | "adjustment_fee_rules_stack"
+  | "adjustment_fee_rule_excludes_ignored"
+  | "adjustment_fee_rule_floor_ignored"
+  | "adjustment_fee_rule_group_ignored"
+  | "adjustment_fee_rule_companion_ignored";
 
 /** Always-on staff notes (never customer-visible). */
 export interface ScenarioNotice {
@@ -138,6 +155,13 @@ export interface FeeLine {
   category: "reweight" | "remeasure" | "shipping_charge_correction";
   /** The corrected package of a per-package rule; null for a shipment-level rule (one line, whatever the package count). */
   packageIndex: number | null;
+  /**
+   * Shipment-level PERCENT fee only: the packages the percent was applied to, ascending. A percent fee is computed per package (cents round as a
+   * carrier rounds them) over the CORRECTED packages only (a package whose billable weight, rounded dimensions and counted price did not change is
+   * left out) and the amounts are summed into this one line, so the line is NOT the percent of the whole shipment unless this lists every package.
+   * null for a flat, per-unit or per-package line (a flat shipment-level fee is one charge per shipment).
+   */
+  coveredPackageIndexes: number[] | null;
   amount: DecimalString;
   handling: Handling;
   /** How the rule computes the fee. A percent fee is a percent of the CORRECTED base rate (the engine's own basis), with no fuel on it. */
@@ -243,10 +267,14 @@ export interface HistoryFilters {
   cause?: string | null;
   /** Inclusive ship-date window. */
   window?: { from: string; to: string } | null;
-  /** Explicit baselines (exactly these); each must match the scope. */
+  /**
+   * Explicit baselines (exactly these); each must match the scope. null / absent = choose the baselines of the scope automatically.
+   * An explicit EMPTY list means "no baselines": the statistic then has no incidence (it is never filled in from the scope).
+   */
   baselineIds?: string[] | null;
+  /** A whole number of days, 0 or more. When given, `today` is required (a statistic without a clock cannot be called mature) or the statistic is refused. */
   maturityDays?: number | null;
-  /** Today (ISO date), supplied by the caller: the engine has no clock. */
+  /** Today (ISO date), supplied by the caller: the engine has no clock. Required with `maturityDays`. */
   today?: string | null;
 }
 
@@ -279,7 +307,17 @@ export interface SeverityStat {
 
 export type ConfidenceLevel = "none" | "low" | "moderate" | "adequate";
 
-export type HistoryRefusalCode = "scope_mismatch" | "baseline_not_found" | "baselines_overlap" | "service_unresolved" | "k_exceeds_n" | "invalid_filters";
+export type HistoryRefusalCode =
+  | "scope_mismatch"
+  | "baseline_not_found"
+  | "baselines_overlap"
+  | "service_unresolved"
+  | "k_exceeds_n"
+  | "invalid_filters"
+  /** A record carries an amount that is not a decimal string, or a ship date that is not an ISO date. */
+  | "invalid_records"
+  /** A selected baseline cannot be a denominator: packages shipped not a positive whole number, a bad period, or labels without a weight out of range. */
+  | "invalid_baselines";
 
 export interface HistoryRefused {
   engineVersion: string;
@@ -368,6 +406,7 @@ export interface RiskInputs {
 }
 
 export type RiskRefusalCode =
+  | "inputs_invalid"
   | "volume_invalid"
   | "volume_negative"
   | "volume_too_large"
@@ -424,7 +463,7 @@ export interface RiskForecast {
   /** The same sum before the per-component rounding, as an exact decimal string (the per-shipment, per-1,000 and annual figures derive from it). */
   exactCountedHereE4: string | null;
   buckets: HandlingBuckets | null;
-  /** The 3PL's own possible cost of cases it decides one by one: 0 to the whole bucket (no assumed approval share). */
+  /** Foregone revenue at customer-facing rates on the cases the 3PL decides one by one: 0 to the whole bucket (no assumed approval share). */
   decidedCaseByCaseRangeE4: { lowE4: 0; highE4: E4 } | null;
   /** Staff memo: postage that is inside the user's forecast although policy says it is not billed / decided case by case. */
   inForecastMemoE4: { inForecastNotBilledE4: E4; inForecastDecidedCaseByCaseE4: E4 } | null;
@@ -438,7 +477,13 @@ export interface RiskForecast {
   annualE4: E4 | null;
   warnings: "forecast_includes_unbilled_postage"[];
   range: RiskRange | null;
+  /** Credit records (history incidence only): V x k / N x the credit each, negative. Informational; never part of exposure. */
   creditsMemoE4: E4 | null;
+  /**
+   * `countedHereE4 + creditsMemoE4`, a memo that assumes credits are returned. Only under `declared_weights`, where the postage difference (the
+   * thing a postage credit offsets) is counted here. Under `actual_weights` the postage is already inside the user's forecast and is not counted
+   * here, so a postage credit has no counterpart in `countedHereE4` and netting it against the fee alone would read as a gain: the memo is null.
+   */
   netMemoE4: E4 | null;
   confidence: {
     incidence: ConfidenceLevel | "entered";

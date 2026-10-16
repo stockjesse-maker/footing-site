@@ -1,4 +1,4 @@
-import { D, daysBetween, dec, toE4 } from "./num";
+import { AdjustmentOverflowError, D, daysBetween, dec, toE4 } from "./num";
 import { incidenceConfidence, incidencePct, wilsonBounds } from "./wilson";
 import {
   ADJUSTMENT_ENGINE_VERSION,
@@ -28,6 +28,9 @@ import {
  *    once by itself ("per adjustment record, not per package").
  *  - Credits (postage difference below zero) are a separate group: they never enter exposure.
  *  - Money is integer E4. Null money is UNKNOWN: excluded from a mean (n is reported), never 0.
+ *  - Input is checked before it is used: a malformed amount or date, a baseline that cannot be a denominator (not a positive whole
+ *    number of packages), a maturity check without today's date and a missing filters object are named refusals, never an
+ *    exception or a NaN. Anything the engine cannot add exactly throws `AdjustmentOverflowError` (a RangeError).
  */
 
 const ZERO_UUID = "00000000-0000-0000-0000-000000000000";
@@ -52,7 +55,7 @@ function severity(values: E4[], withExtremes: boolean): SeverityStat {
   if (n === 0) return withExtremes ? { n: 0, sumE4: null, meanE4: null, medianE4: null, p90E4: null, maxE4: null } : { n: 0, sumE4: null, meanE4: null, medianE4: null };
   const sorted = [...values].sort((a, b) => a - b);
   const sum = sorted.reduce((s, v) => s + v, 0);
-  if (!Number.isSafeInteger(sum)) throw new RangeError("a history amount is too large to carry exactly");
+  if (!Number.isSafeInteger(sum)) throw new AdjustmentOverflowError("a history amount is too large to carry exactly");
   const mean = new D(sum).div(n).toDecimalPlaces(0, D.ROUND_HALF_UP).toNumber();
   const median = n % 2 === 1 ? sorted[(n - 1) / 2]! : new D(sorted[n / 2 - 1]!).plus(sorted[n / 2]!).div(2).toDecimalPlaces(0, D.ROUND_HALF_UP).toNumber();
   const base: SeverityStat = { n, sumE4: sum, meanE4: mean === 0 ? 0 : mean, medianE4: median === 0 ? 0 : median };
@@ -65,28 +68,84 @@ function severity(values: E4[], withExtremes: boolean): SeverityStat {
 /** True when the largest amount is strictly more than 25 percent of the summed amounts (one record dominates the mean). */
 function dominated(values: E4[]): boolean {
   if (values.length === 0) return false;
-  const sum = values.reduce((s, v) => s + v, 0);
-  return new D(Math.max(...values)).greaterThan(new D(sum).times("0.25"));
+  // A loop, never Math.max(...values): spreading an array of ~125,000 numbers into a call overflows the stack, and the account cap is 200,000 records.
+  let max = values[0]!;
+  let sum = 0;
+  for (const v of values) {
+    if (v > max) max = v;
+    sum += v;
+  }
+  if (!Number.isSafeInteger(sum)) throw new AdjustmentOverflowError("a history amount is too large to carry exactly");
+  return new D(max).greaterThan(new D(sum).times("0.25"));
 }
 
 function severityConfidence(n: number): ConfidenceLevel {
   return n === 0 ? "none" : n < 30 ? "low" : "adequate";
 }
 
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DECIMAL_STRING = /^-?\d+(\.\d+)?$/;
+
+/** A real calendar date in ISO form ("2026-02-30" is not one). */
+function isoDate(value: unknown): value is string {
+  if (typeof value !== "string" || !ISO_DATE.test(value)) return false;
+  const t = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === value;
+}
+
+const moneyText = (value: unknown): boolean => value === null || value === undefined || (typeof value === "string" && DECIMAL_STRING.test(value));
+
+/** The first problem with the records the statistics read (the amounts and the ship date), or null. Never names a value. */
+function recordsProblem(records: readonly HistoryRecord[]): string | null {
+  for (const r of records) {
+    if (r === null || typeof r !== "object") return "A history record is missing.";
+    if (!isoDate(r.shipDate)) return "A history record has a ship date that is not a date.";
+    if (!moneyText(r.postageDifference) || !moneyText(r.separateFee)) return "A history record has an amount that is not a number.";
+  }
+  return null;
+}
+
+/** The first problem that stops a baseline from being a denominator, or null. */
+function baselineProblem(b: HistoryBaseline): string | null {
+  if (b === null || typeof b !== "object") return "A baseline is missing.";
+  if (!Number.isSafeInteger(b.packagesTotal) || b.packagesTotal <= 0) return "A baseline needs a whole number of packages shipped above zero.";
+  if (!isoDate(b.periodStart) || !isoDate(b.periodEnd) || b.periodStart > b.periodEnd) return "A baseline needs a start date that is not after its end date.";
+  if (b.labelsMissingWeight !== null && b.labelsMissingWeight !== undefined && (!Number.isSafeInteger(b.labelsMissingWeight) || b.labelsMissingWeight < 0 || b.labelsMissingWeight > b.packagesTotal)) {
+    return "A baseline's labels without a weight must be a whole number from zero to the packages shipped.";
+  }
+  return null;
+}
+
 const percent4 = (num: number, den: number): string => new D(num).times(100).div(den).toDecimalPlaces(4, D.ROUND_HALF_UP).toFixed(4);
 
 export function summariseHistory(records: readonly HistoryRecord[], baselines: readonly HistoryBaseline[], filters: HistoryFilters): HistoryStatistics | HistoryRefused {
+  // 0. Input shape and values, before anything is read.
+  if (filters === null || filters === undefined || typeof filters !== "object" || Array.isArray(filters)) return refused("invalid_filters", "The statistics need filters (a customer, or null for the whole account).");
+  if (!Array.isArray(records)) return refused("invalid_records", "The history records are missing.");
+  if (!Array.isArray(baselines)) return refused("invalid_baselines", "The baselines are missing.");
   const brandId = filters.brandId ?? null;
   const carrier = filters.carrierCode ?? null;
   const serviceId = filters.serviceId ?? null;
   const window = filters.window ?? null;
   const notes: string[] = ["range_reflects_incidence_uncertainty_only", "credits_never_enter_exposure"];
 
+  if (window !== null && (typeof window !== "object" || !isoDate(window.from) || !isoDate(window.to))) return refused("invalid_filters", "The window needs a start date and an end date.");
   if (window && window.from > window.to) return refused("invalid_filters", "The window ends before it starts.");
+  if (filters.baselineIds !== undefined && filters.baselineIds !== null && (!Array.isArray(filters.baselineIds) || filters.baselineIds.some((id) => typeof id !== "string"))) {
+    return refused("invalid_filters", "The chosen baselines must be a list of baseline ids.");
+  }
+  if (filters.maturityDays !== undefined && filters.maturityDays !== null) {
+    if (!Number.isSafeInteger(filters.maturityDays) || filters.maturityDays < 0) return refused("invalid_filters", "The days a window needs to mature must be a whole number, zero or more.");
+    // A statistic without a clock cannot be called mature: an immature window must never look mature because today was left out.
+    if (!isoDate(filters.today)) return refused("invalid_filters", "Checking whether a window has matured needs today's date.");
+  }
+  const recordProblem = recordsProblem(records);
+  if (recordProblem) return refused("invalid_records", recordProblem);
 
   // 1. Baselines: exactly the ones whose (customer, carrier, service) key equals the numerator's scope.
   let selected: HistoryBaseline[];
-  if (filters.baselineIds && filters.baselineIds.length > 0) {
+  if (filters.baselineIds !== undefined && filters.baselineIds !== null) {
+    // An explicit list is exactly these baselines; an explicit EMPTY list is "no baselines", never "choose for me".
     const wanted = new Set(filters.baselineIds);
     selected = baselines.filter((b) => wanted.has(b.id));
     if (selected.length !== wanted.size) return refused("baseline_not_found", "A chosen baseline does not exist.");
@@ -95,6 +154,10 @@ export function summariseHistory(records: readonly HistoryRecord[], baselines: r
     }
   } else {
     selected = baselines.filter((b) => (b.brandId ?? null) === brandId && (b.carrierCode ?? null) === carrier && (b.serviceId ?? null) === serviceId);
+  }
+  for (const b of selected) {
+    const problem = baselineProblem(b);
+    if (problem) return refused("invalid_baselines", problem, { ids: [b.id] });
   }
   let outsideWindowCount = 0;
   if (window) {
@@ -138,6 +201,7 @@ export function summariseHistory(records: readonly HistoryRecord[], baselines: r
   const k = keys.size;
   const perRecordCounting = numerator.some((r) => r.packageRef === null || r.packageRef === undefined);
   const N = selected.reduce((s, b) => s + b.packagesTotal, 0);
+  if (!Number.isSafeInteger(N)) return refused("invalid_baselines", "The packages shipped in the chosen baselines are too many to add exactly.");
   if (hasBaseline && k > N) return refused("k_exceeds_n", "More affected packages than packages shipped: check the baseline and the filters.", { k, N });
 
   // 3. Severity per direction group and parameter.
@@ -166,13 +230,12 @@ export function summariseHistory(records: readonly HistoryRecord[], baselines: r
   // 5. Maturity: a window ending within `maturityDays` of today is still collecting adjustments.
   let maturity: HistoryStatistics["maturity"] = null;
   if (filters.maturityDays !== undefined && filters.maturityDays !== null && filters.today) {
+    // (Both are validated above: a maturity check without a valid today is refused, never skipped.)
     const windowEnd = window ? window.to : hasBaseline ? selected.reduce((m, b) => (b.periodEnd > m ? b.periodEnd : m), selected[0]!.periodEnd) : null;
     if (windowEnd) {
       const days = daysBetween(windowEnd, filters.today);
-      if (Number.isFinite(days)) {
-        maturity = { windowEnd, daysSinceWindowEnd: days, maturityDays: filters.maturityDays, immature: days < filters.maturityDays };
-        if (maturity.immature) notes.push("window_immature_adjustments_still_posting");
-      }
+      maturity = { windowEnd, daysSinceWindowEnd: days, maturityDays: filters.maturityDays, immature: days < filters.maturityDays };
+      if (maturity.immature) notes.push("window_immature_adjustments_still_posting");
     }
   }
 

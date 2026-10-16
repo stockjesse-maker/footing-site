@@ -4,7 +4,8 @@ import type { ConfidenceLevel, WilsonBounds } from "./types";
 /**
  * Wilson score interval for a proportion k / N at 95 percent (z = 1.96 exactly), closed form:
  *   ((p + z^2 / 2N) +- z * sqrt(p (1 - p) / N + z^2 / 4N^2)) / (1 + z^2 / N)
- * evaluated with 60 significant digits (Decimal sqrt). The lower bound is clamped at 0 and the upper at 1.
+ * evaluated with 60 significant digits (Decimal sqrt). The lower bound is clamped at 0 and the upper at 1; the edges
+ * k = 0 and k = N are computed in closed form, so they are exactly 0 and exactly 1.
  * The interval reflects INCIDENCE uncertainty only (severity uncertainty is not included).
  */
 export const WILSON_Z = "1.96";
@@ -14,13 +15,22 @@ export interface WilsonFraction {
   upper: Dec60;
 }
 
-/** Exact bounds as fractions in [0, 1]. null unless N >= 1 and 0 <= k <= N (both integers). */
+/**
+ * Exact bounds as fractions in [0, 1]. null unless N >= 1 and 0 <= k <= N (both integers).
+ *
+ * The two edges have closed forms with no square root, so they are exact and the interval never carries the 1e-60
+ * residue of a 60-digit sqrt: with k = 0 the lower bound is exactly 0 and the upper z^2 / (N + z^2); with k = N the
+ * upper bound is exactly 1 and the lower N / (N + z^2). (Derivation: at p = 0 the radius equals the centre z^2 / 2N, at
+ * p = 1 it equals z^2 / 2N and the centre is 1 + z^2 / 2N.) Every other k uses the general closed form.
+ */
 export function wilsonFraction(k: number, N: number): WilsonFraction | null {
   if (!Number.isInteger(k) || !Number.isInteger(N) || N < 1 || k < 0 || k > N) return null;
   const n = new D60(N);
-  const p = new D60(k).div(n);
   const z = new D60(WILSON_Z);
   const z2 = z.times(z);
+  if (k === 0) return { lower: new D60(0), upper: z2.div(n.plus(z2)) };
+  if (k === N) return { lower: n.div(n.plus(z2)), upper: new D60(1) };
+  const p = new D60(k).div(n);
   const denominator = new D60(1).plus(z2.div(n));
   const centre = p.plus(z2.div(n.times(2)));
   const radius = z.times(p.times(new D60(1).minus(p)).div(n).plus(z2.div(n.times(n).times(4))).sqrt());

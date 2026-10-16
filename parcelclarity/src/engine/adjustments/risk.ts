@@ -1,4 +1,4 @@
-import { D, D60, wholeE4, type Dec60 } from "./num";
+import { AdjustmentOverflowError, D, D60, wholeE4, type Dec60 } from "./num";
 import { incidenceConfidence, incidencePct, pctString, wilsonFraction } from "./wilson";
 import {
   ADJUSTMENT_ENGINE_VERSION,
@@ -34,6 +34,9 @@ import {
  *     is absorbed or manual_approval the amount is reported as a staff memo with a warning.
  * The four buckets (customer pays, decided case by case, not billed to the customer, not decided) always sum to the
  * counted total in E4 (asserted). Credits never enter exposure; an optional memo shows them separately.
+ *
+ * Every E4 figure, sum included, goes through one safe-integer check: a figure that cannot be carried exactly is refused
+ * with `overflow` (never returned as an imprecise number). Sums are taken in 60-digit decimals, never as JS numbers.
  */
 
 export const MAX_MONTHLY_VOLUME = 5_000_000;
@@ -66,12 +69,15 @@ export function forecastAdjustmentRisk(inputs: RiskInputs): RiskForecast | RiskR
   try {
     return compute(inputs);
   } catch (err) {
-    if (err instanceof RangeError) return refused("overflow", "An amount is too large to carry exactly. Check the volume and the severities.");
+    // Only the deliberate refusal is turned into one; any other fault is not an overflow and must not read as one.
+    if (err instanceof AdjustmentOverflowError) return refused("overflow", "An amount is too large to carry exactly. Check the volume and the severities.");
     throw err;
   }
 }
 
 function compute(inputs: RiskInputs): RiskForecast | RiskRefused {
+  // 0. Input shape: nothing at all (or something that is not an object) is a refusal, never an exception.
+  if (inputs === null || inputs === undefined || typeof inputs !== "object" || Array.isArray(inputs)) return refused("inputs_invalid", "The forecast needs its inputs: monthly volume, incidence, severities, basis and handling.");
   // 1. Validation (every refusal names a code the screen turns into one sentence).
   if (typeof inputs.monthlyVolume !== "string" || !DECIMAL.test(inputs.monthlyVolume)) return refused("volume_invalid", "The monthly volume must be a number.");
   const V = new D60(inputs.monthlyVolume);
@@ -154,8 +160,7 @@ function compute(inputs: RiskInputs): RiskForecast | RiskRefused {
   // 4. Totals, buckets, memo.
   const counted = COMPONENTS.filter((c) => countedHereOf(c));
   const computedHere = counted.filter((c) => comps[c].state === "computed");
-  const countedHereE4: E4 | null = computedHere.length > 0 ? computedHere.reduce((s, c) => s + comps[c].amountE4!, 0) : null;
-  if (countedHereE4 !== null && !Number.isSafeInteger(countedHereE4)) throw new RangeError("total too large");
+  const countedHereE4: E4 | null = computedHere.length > 0 ? wholeE4(computedHere.reduce((s, c) => s.plus(comps[c].amountE4!), new D60(0))) : null;
   const sumNumerator: Dec60 | null = computedHere.length > 0 ? computedHere.reduce((s, c) => s.plus(numerator[c]!), new D60(0)) : null;
   const exactSum: Dec60 | null = sumNumerator ? sumNumerator.div(d) : null;
 
@@ -183,7 +188,9 @@ function compute(inputs: RiskInputs): RiskForecast | RiskRefused {
   const atLeast = notComputedHere && computedHere.length > 0;
   const soFar = buckets !== null && buckets.notDecided > 0;
   const known = computedHere.map((c) => comps[c].severityE4).filter((s): s is E4 => s !== null);
-  const perAffectedE4 = known.length > 0 ? known.reduce((s, v) => s + v, 0) : null;
+  /** The known counted-here severities added in exact decimals (a sum of two safe integers need not be a safe integer). */
+  const perAffected60: Dec60 | null = known.length > 0 ? known.reduce((s, v) => s.plus(v), new D60(0)) : null;
+  const perAffectedE4 = perAffected60 !== null ? wholeE4(perAffected60) : null;
   // Per shipment, per 1,000 shipments and annual come from the EXACT sum, rounded once (never from a rounded monthly total).
   const perShipmentE4 = sumNumerator !== null && !V.isZero() ? wholeE4(sumNumerator.div(d.times(V))) : null;
   const per1000E4 = sumNumerator !== null && !V.isZero() ? wholeE4(sumNumerator.times(1000).div(d.times(V))) : null;
@@ -195,7 +202,7 @@ function compute(inputs: RiskInputs): RiskForecast | RiskRefused {
     const f = wilsonFraction(history.k, history.N)!;
     const low = V.times(f.lower);
     const high = V.times(f.upper);
-    const s60 = known.length > 0 ? new D60(known.reduce((s, v) => s + v, 0)) : null;
+    const s60 = perAffected60;
     range = {
       incidenceLowPct4dp: pctString(f.lower, 4),
       incidenceHighPct4dp: pctString(f.upper, 4),
@@ -211,7 +218,9 @@ function compute(inputs: RiskInputs): RiskForecast | RiskRefused {
   let netMemoE4: E4 | null = null;
   if (credits && history && history.N > 0) {
     creditsMemoE4 = wholeE4(V.times(credits.k).times(credits.severityE4).div(history.N));
-    netMemoE4 = countedHereE4 === null ? null : countedHereE4 + creditsMemoE4;
+    // The net memo nets a postage credit against what is counted here, so it exists only where the postage difference is counted here. Under
+    // `actual_weights` the postage is already in the user's forecast: only the fee is counted here and a postage credit has no counterpart in it.
+    netMemoE4 = basis === "declared_weights" && countedHereE4 !== null ? wholeE4(new D60(countedHereE4).plus(creditsMemoE4)) : null;
   }
 
   // 7. Confidence per parameter; the weakest rated one is the overall.

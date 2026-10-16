@@ -1,6 +1,6 @@
 import { dec } from "./num";
 import { fmt, toLb } from "../money";
-import type { PackageInput } from "../types";
+import type { PackageInput, WeightUnit } from "../types";
 import { correctedPackages } from "./scenario";
 import type { AdjustmentScenarioInput, AdjustmentScenarioResult, Handling, RiskForecast, SeparateFeeComponent } from "./types";
 import { ADJUSTMENT_ENGINE_VERSION } from "./types";
@@ -16,7 +16,38 @@ import { ADJUSTMENT_ENGINE_VERSION } from "./types";
 
 const MONEY = /^[0-9]{1,7}\.[0-9]{2}$/;
 
-export type StorageOutcome<T> = { ok: true; value: T } | { ok: false; reason: string };
+/** Decimals of a pound and of an inch a stored example keeps (`adjustment_scenarios.input` weights and dimensions). */
+export const STORED_DECIMALS = 6;
+
+/**
+ * True when `weight` (in `unit`) is exactly a whole number of millionths of a pound once converted to pounds. A weight that is not (an ounce
+ * weight with more than 2 decimals, e.g. 16.001 oz = 1.0000625 lb) would be ROUNDED when stored, and a rounded weight can fall on the other side of
+ * a billable-weight boundary, so the stored package would no longer price to the amount shown. The action's input schema uses this to refuse such
+ * a weight up front; `scenarioStorageInput` refuses it again (it never stores a rounded weight).
+ */
+export function storableWeight(weight: unknown, unit: WeightUnit | undefined = "lb"): boolean {
+  if (typeof weight !== "string") return false;
+  try {
+    const lb = toLb(dec(weight), unit);
+    return lb.eq(lb.toDecimalPlaces(STORED_DECIMALS));
+  } catch {
+    return false;
+  }
+}
+
+/** True when a dimension (inches) has at most 6 decimals, so storing it rounds nothing (a rounded dimension can cross a whole-inch DIM rounding boundary). */
+export function storableDimension(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  try {
+    const d = dec(value);
+    return d.eq(d.toDecimalPlaces(STORED_DECIMALS));
+  } catch {
+    return false;
+  }
+}
+
+/** A failure carries a code (`reason`) and, when the person can act on it, a plain sentence (`message`). */
+export type StorageOutcome<T> = { ok: true; value: T } | { ok: false; reason: string; message?: string };
 
 export interface StoredScenarioInput {
   v: 1;
@@ -38,20 +69,38 @@ export interface StoredPackage {
   heightIn?: string;
 }
 
+/** The package as stored; never rounds: the caller has checked `storableWeight` and `storableDimension` first. */
 const storedPackage = (p: PackageInput): StoredPackage => {
-  const out: StoredPackage = { weightLb: fmt(toLb(dec(p.weight), p.weightUnit), 6) };
+  const out: StoredPackage = { weightLb: fmt(toLb(dec(p.weight), p.weightUnit), STORED_DECIMALS) };
   if (p.length !== undefined && p.width !== undefined && p.height !== undefined) {
-    out.lengthIn = fmt(dec(p.length), 6);
-    out.widthIn = fmt(dec(p.width), 6);
-    out.heightIn = fmt(dec(p.height), 6);
+    out.lengthIn = fmt(dec(p.length), STORED_DECIMALS);
+    out.widthIn = fmt(dec(p.width), STORED_DECIMALS);
+    out.heightIn = fmt(dec(p.height), STORED_DECIMALS);
   }
   return out;
 };
+
+/** The first reason a package cannot be stored exactly, or null. */
+function storageProblem(packages: readonly PackageInput[]): StorageOutcome<never> | null {
+  for (const p of packages) {
+    if (!storableWeight(p.weight, p.weightUnit)) {
+      return { ok: false, reason: "weight_precision", message: "A weight has more decimals than an example can keep exactly (millionths of a pound; ounces to 2 decimals). Enter it with fewer decimals so the saved example prices to the amount shown." };
+    }
+    for (const d of [p.length, p.width, p.height]) {
+      if (d !== undefined && !storableDimension(d)) return { ok: false, reason: "dimension_precision", message: "A dimension has more than 6 decimals. Enter it with fewer decimals so the saved example prices to the amount shown." };
+    }
+  }
+  return null;
+}
 
 /** adjustment_scenarios.input. Fails (reason) when the scenario was not priced, since only a priced example can be saved. */
 export function scenarioStorageInput(input: AdjustmentScenarioInput, result: AdjustmentScenarioResult): StorageOutcome<StoredScenarioInput> {
   if (result.status !== "ok" && result.status !== "no_adjustment") return { ok: false, reason: "not_priced" };
   if (!result.service) return { ok: false, reason: "no_service" };
+  const corrected = correctedPackages(input);
+  // Exactness first: the stored example is shown to the customer as the example package, so it must price to the published amount.
+  const problem = storageProblem(input.shipment.packages) ?? storageProblem(corrected);
+  if (problem) return problem;
   const zone = result.zone !== null && /^[0-9]{1,6}$/.test(result.zone) ? Number(result.zone) : null;
   return {
     ok: true,
@@ -62,7 +111,7 @@ export function scenarioStorageInput(input: AdjustmentScenarioInput, result: Adj
       zone,
       declaredSource: input.declaredSource,
       declared: { packages: input.shipment.packages.map(storedPackage) },
-      corrected: { packages: correctedPackages(input).map(storedPackage) },
+      corrected: { packages: corrected.map(storedPackage) },
       shipment: input.shipment,
       corrections: input.corrections,
     },
