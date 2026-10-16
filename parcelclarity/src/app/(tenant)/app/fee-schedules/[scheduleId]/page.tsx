@@ -181,7 +181,7 @@ export default async function FeeScheduleDetail({ params }: { params: Promise<{ 
                   </div>
                   {manage ? (
                     <ConfirmAction action={unassignFeeSchedule.bind(null, a.id)} label="Remove" confirmLabel="Remove fee schedule" variant="danger">
-                      They stop seeing these fees and their models stop including them.
+                      They stop seeing these fees, and new cost models for them stop including them. Models already saved keep the fees they were priced with.
                     </ConfirmAction>
                   ) : null}
                 </DataRow>

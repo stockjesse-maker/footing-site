@@ -29,12 +29,22 @@ interface AssignmentRow {
   assigned_at: string;
 }
 
-/** Where the schedule's active version stands today. */
-function versionStanding(version: NonNullable<FeeScheduleListRow["activeVersion"]>, today: string): { inEffect: boolean; label: string } {
+/**
+ * Where the schedule stands today. A version is in effect when pricing would use it: an active one, or an archived
+ * one still inside its dates (archiving does not stop a version applying; ending it does). Only "assign" needs an
+ * active version, so that rule reads `activeVersion` and this reads `inEffectVersion`.
+ */
+function scheduleStanding(schedule: FeeScheduleListRow, today: string): { inEffect: boolean; label: string } {
+  const live = schedule.inEffectVersion;
+  if (live) {
+    const dates = formatEffectivity(live.effectiveDate, live.expirationDate);
+    return { inEffect: true, label: `Version ${live.versionNumber} in effect · ${dates}${live.status === "archived" ? " (archived; it still applies inside its dates)" : ""}` };
+  }
+  const version = schedule.activeVersion;
+  if (!version) return { inEffect: false, label: schedule.versions.archived > 0 ? "No version is in effect today" : "No version has been activated yet" };
   const dates = formatEffectivity(version.effectiveDate, version.expirationDate);
   if (version.effectiveDate > today) return { inEffect: false, label: `Version ${version.versionNumber} scheduled · ${dates}` };
-  if (version.expirationDate !== null && version.expirationDate < today) return { inEffect: false, label: `Version ${version.versionNumber} ended · ${dates}` };
-  return { inEffect: true, label: `Version ${version.versionNumber} in effect · ${dates}` };
+  return { inEffect: false, label: `Version ${version.versionNumber} ended · ${dates}` };
 }
 
 export async function FeeScheduleAssignmentCard({ brandId, tenantId }: { brandId: string; tenantId: string }) {
@@ -69,7 +79,7 @@ export async function FeeScheduleAssignmentCard({ brandId, tenantId }: { brandId
 
   const today = new Date().toISOString().slice(0, 10);
   const current = assignment ? (schedules.find((s) => s.id === assignment.schedule_id) ?? null) : null;
-  const standing = current?.activeVersion ? versionStanding(current.activeVersion, today) : null;
+  const standing = current ? scheduleStanding(current, today) : null;
   // The same rule assign_fee_schedule enforces: an active schedule with an active version.
   const offered = schedules.filter((s) => s.status === "active" && s.activeVersion !== null && s.id !== assignment?.schedule_id);
 
@@ -95,12 +105,12 @@ export async function FeeScheduleAssignmentCard({ brandId, tenantId }: { brandId
                 </Link>
                 {current ? <Badge tone={statusTone(current.status)}>{current.status}</Badge> : null}
               </p>
-              <p className="text-sm text-muted">{standing ? standing.label : "No version has been activated yet"}</p>
+              <p className="text-sm text-muted">{standing ? standing.label : "This fee schedule could not be found"}</p>
               <p className="text-sm text-muted">Assigned {formatDate(assignment.assigned_at)}</p>
             </div>
             {manage ? (
               <ConfirmAction action={unassignFeeSchedule.bind(null, assignment.id)} label="Remove" confirmLabel="Remove fee schedule" variant="danger">
-                The customer&apos;s models stop including fulfillment fees until you assign another schedule.
+                New cost models for this customer stop including fulfillment fees until you assign another schedule. Models already saved keep the fees they were priced with.
               </ConfirmAction>
             ) : null}
           </DataRow>

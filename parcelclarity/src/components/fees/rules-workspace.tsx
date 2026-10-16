@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { deleteFeeRule, reorderFeeRules } from "@/app/actions/fee-schedules";
 import { RuleForm } from "@/components/fees/rule-form";
 import { BASIS_LABELS, CATEGORY_LABELS } from "@/components/fees/shared";
@@ -29,6 +29,9 @@ export function RulesWorkspace({ versionId, editable, rules, sources }: { versio
   const [pending, start] = useTransition();
   const editorRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const listRef = useRef<HTMLOListElement>(null);
+  // Which move button to hand keyboard focus back to once a move has been saved, and the order it started from.
+  const moveFocus = useRef<{ target: string; before: string } | null>(null);
 
   const ids = rules.map((r) => r.id);
   const reorderable = editable && ids.every((x): x is string => typeof x === "string");
@@ -44,11 +47,26 @@ export function RulesWorkspace({ versionId, editable, rules, sources }: { versio
     order[target] = moved;
     setError(null);
     setNotice(null);
+    moveFocus.current = { target: `${moved}:${delta === -1 ? "up" : "down"}`, before: ids.join(",") };
     start(async () => {
       const result = await reorderFeeRules(versionId, order);
       if (!result.ok) setError(result.message ?? "Something went wrong. Please try again.");
     });
   };
+
+  // The buttons are disabled while a move saves and the list re-renders in its new order, either of which drops
+  // keyboard focus to the page. Put it back on the rule that moved (or on its other arrow when this one is now at an end).
+  useEffect(() => {
+    const m = moveFocus.current;
+    if (!m || pending) return;
+    // The saved order has not reached the page yet: wait for it (a failed move shows its message and settles at once).
+    if (rules.map((r) => r.id).join(",") === m.before && !error) return;
+    moveFocus.current = null;
+    const [ruleId, direction] = m.target.split(":");
+    const find = (d: string) => listRef.current?.querySelector<HTMLButtonElement>(`[data-move="${ruleId}:${d}"]`) ?? null;
+    const same = find(direction ?? "up");
+    (same && !same.disabled ? same : find(direction === "up" ? "down" : "up"))?.focus();
+  }, [pending, rules, error]);
 
   // The editor unmounts when it closes; keyboard focus returns to the section instead of falling to the page.
   const closeEditor = (message: string | null) => {
@@ -90,6 +108,9 @@ export function RulesWorkspace({ versionId, editable, rules, sources }: { versio
 
       {editing ? (
         <Card>
+          <p id="rule-editor-hint" className="mb-4 text-sm text-muted">
+            Save or cancel this rule before you open another one.
+          </p>
           <div ref={editorRef} id="rule-editor">
             <RuleForm
               key={editing.kind === "new" ? "new" : (editing.rule.id ?? editing.rule.key)}
@@ -105,7 +126,7 @@ export function RulesWorkspace({ versionId, editable, rules, sources }: { versio
       ) : null}
 
       {rules.length ? (
-        <ol className="divide-y divide-line overflow-hidden rounded-card border border-line bg-raised shadow-card">
+        <ol ref={listRef} className="divide-y divide-line overflow-hidden rounded-card border border-line bg-raised shadow-card">
           {rules.map((rule, index) => (
             <li key={rule.id ?? rule.key} className="px-4 py-4 sm:px-6">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -125,16 +146,19 @@ export function RulesWorkspace({ versionId, editable, rules, sources }: { versio
                 </div>
                 {editable ? (
                   <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-                    <Button size="sm" variant="secondary" className={touch} disabled={pending || !reorderable || index === 0} onClick={() => move(index, -1)} aria-label={`Move up: ${rule.name}`}>
+                    <Button size="sm" variant="secondary" className={touch} disabled={pending || !reorderable || index === 0} onClick={() => move(index, -1)} aria-label={`Move up: ${rule.name}`} data-move={rule.id ? `${rule.id}:up` : undefined}>
                       Move up
                     </Button>
-                    <Button size="sm" variant="secondary" className={touch} disabled={pending || !reorderable || index === rules.length - 1} onClick={() => move(index, 1)} aria-label={`Move down: ${rule.name}`}>
+                    <Button size="sm" variant="secondary" className={touch} disabled={pending || !reorderable || index === rules.length - 1} onClick={() => move(index, 1)} aria-label={`Move down: ${rule.name}`} data-move={rule.id ? `${rule.id}:down` : undefined}>
                       Move down
                     </Button>
                     <Button
                       size="sm"
                       variant="secondary"
                       className={touch}
+                      // Opening another rule would replace the open form and drop what was typed in it.
+                      disabled={editing !== null && !(editing.kind === "edit" && editing.rule.id === rule.id)}
+                      aria-describedby={editing ? "rule-editor-hint" : undefined}
                       onClick={() => {
                         setNotice(null);
                         setEditing({ kind: "edit", rule });
@@ -143,7 +167,18 @@ export function RulesWorkspace({ versionId, editable, rules, sources }: { versio
                     >
                       Edit
                     </Button>
-                    {rule.id ? <DeleteRule ruleId={rule.id} name={rule.name} onDeleted={() => setNotice("Rule removed.")} /> : null}
+                    {rule.id ? (
+                      <DeleteRule
+                        ruleId={rule.id}
+                        name={rule.name}
+                        onDeleted={() => {
+                          // A rule deleted while its form is open cannot be saved any more: close the form with it.
+                          if (editing?.kind === "edit" && editing.rule.id === rule.id) setEditing(null);
+                          setNotice("Rule removed.");
+                          setTimeout(() => headingRef.current?.focus(), 0);
+                        }}
+                      />
+                    ) : null}
                   </div>
                 ) : null}
               </div>

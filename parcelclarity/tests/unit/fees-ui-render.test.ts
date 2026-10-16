@@ -109,6 +109,16 @@ describe("rules list renders", () => {
     expect(t).toContain("Key (staff only):");
   });
 
+  it("tags each move button with its rule so keyboard focus can return to it after the list re-renders", () => {
+    const html = renderToStaticMarkup(createElement(RulesWorkspace, { versionId: "v", editable: true, rules, sources: {} }));
+    expect(html).toContain('data-move="id-0:up"');
+    expect(html).toContain('data-move="id-0:down"');
+    expect(html).toContain(`data-move="id-${rules.length - 1}:down"`);
+    // Nothing is open, so no rule is held back from Edit and the hint about finishing the open rule is absent.
+    expect(text(html)).not.toContain("Save or cancel this rule before you open another one");
+    expect(html).not.toMatch(/<button[^>]*aria-label="Edit: [^"]*"[^>]*\sdisabled=""|<button[^>]*\sdisabled=""[^>]*aria-label="Edit: /);
+  });
+
   it("read-only for any other version", () => {
     const html = renderToStaticMarkup(createElement(RulesWorkspace, { versionId: "v", editable: false, rules, sources: {} }));
     const t = text(html);
@@ -168,6 +178,13 @@ describe("try-an-order outcome", () => {
     expect(t).not.toContain("Computed fees together");
     expect(t).toContain("not per order, so they are not in these amounts");
     expect(t).toContain("These are left out of the amounts above, not counted as $0.");
+  });
+
+  it("says when the order or the rules changed after pricing, so old amounts are not read as the current ones", () => {
+    const render = (stale: boolean) => text(renderToStaticMarkup(createElement(TryOrderOutcome, { priced: { result: empty, versionNumber: 2 }, namesByKey: new Map(), stale })));
+    expect(render(true)).toContain("You changed the order or the rules after pricing it");
+    expect(render(true)).toContain("Price it again");
+    expect(render(false)).not.toContain("You changed the order");
   });
 
   it("shows a real zero as $0.00 when every applicable fee was computed", () => {

@@ -3,7 +3,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { NOT_SUPPORTED_ITEMS, NotSupportedPanel } from "@/components/fees/not-supported";
-import { PRESETS, blank, buildInput, splitTypes, valuesFromRule, type Values } from "@/components/fees/rule-model";
+import { PRESETS, blank, buildInput, friendly, splitTypes, valuesFromRule, type Values } from "@/components/fees/rule-model";
 import { FeeScheduleView, describeEffectivity, describeRounding } from "@/components/fees/schedule-view";
 import { countsRules, dollars, moneyE4, resolveMinimumMembers, slugify, textOf, tidy, versionInEffect } from "@/components/fees/shared";
 import { buildTryOrderInput, tryOrderShape, type TryFields } from "@/components/fees/try-order-model";
@@ -222,6 +222,21 @@ describe("rule editor model: form ⇄ schema input", () => {
     expect(errorsOf({ scope: "monthly", basis: "minimum", method: "minimum", minAmount: "" })).toHaveProperty("minimum.amount");
     expect(errorsOf({ basis: "unit", amount: "1", minUnits: "5", maxUnits: "2" })).toHaveProperty("conditions.minUnits");
     expect(errorsOf({ basis: "unit", amount: "1", includedQuantity: "1", method: "tiered", brackets: [{ upTo: "", amount: "1" }] })).toEqual({}); // the allowance is dropped for tiers, not refused
+  });
+
+  it("words every problem the form can raise in the form's own terms, never as a schema field name", () => {
+    const shown = (patch: Partial<Values>) => {
+      const parsed = feeRuleInputSchema.safeParse(buildInput({ ...blank(), name: "R", key: "r", ...patch }));
+      return Object.fromEntries(Object.entries(parsed.success ? {} : ruleFieldErrors(parsed.error)).map(([k, m]) => [k, friendly(m)]));
+    };
+    expect(shown({ scope: "monthly", basis: "minimum", method: "minimum", minAmount: "" })["minimum.amount"]).toBe("Enter the monthly minimum in dollars, with up to 4 decimals.");
+    expect(shown({ basis: "unit", amount: "1", minUnits: "5", maxUnits: "2" })["conditions.minUnits"]).toBe("The fewest items cannot be more than the most items.");
+    expect(shown({ basis: "unit", amount: "1", minLines: "5", maxLines: "2" })["conditions.minLines"]).toBe("The fewest order lines cannot be more than the most order lines.");
+    expect(shown({ basis: "unit", amount: "1", minPackages: "5", maxPackages: "2" })["conditions.minPackages"]).toBe("The fewest packages cannot be more than the most packages.");
+    expect(shown({ basis: "unit", method: "tiered", brackets: [{ upTo: "10", amount: "1" }, { upTo: "5", amount: "2" }, { upTo: "", amount: "3" }] })["tiers.brackets.1.upTo"]).toBe("Each bracket must end higher than the one before it.");
+    expect(shown({ scope: "monthly", basis: "driver", amount: "1", driverKey: "k", driverLabel: "Q", driverUnit: "pallets", longTerm: true, ltReplaces: "std", ltDays: "0" })["driver.longTerm.thresholdDays"]).toBe("Enter a number of days from 1 to 3650.");
+    expect(shown({ basis: "order", amount: "1", exclusiveGroup: "Bad Group!", priority: "1" }).exclusiveGroup).toMatch(/^Use a short group name/);
+    expect(shown({ basis: "order", amount: "1", priority: "1" }).priority).toBe("Enter a group name above, or clear the priority.");
   });
 });
 

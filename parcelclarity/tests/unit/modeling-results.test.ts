@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BulkSummary } from "@/engine/modeling";
 import type { ModelingView } from "@/lib/modeling/page-context";
 import { fakeSupabase, type FakeOptions } from "../fixtures/forecast/fake-supabase";
-import { complete, forecast, noStorageAnswer, skipped, standard } from "../fixtures/modeling/fee-runs";
+import { A, B, C, D2, complete, finalize, forecast, noStorageAnswer, schedule, skipped, standard } from "../fixtures/modeling/fee-runs";
 
 /**
  * The server side of the results screens with a fake database: the read models (orders, shipping per order,
@@ -41,6 +41,7 @@ vi.mock("@/lib/supabase/server", () => ({ createClient: async () => routeDb.clie
 
 const queries = await import("@/lib/modeling/queries");
 const views = await import("@/components/modeling/views");
+const lists = await import("@/components/modeling/lists");
 const ordersRoute = await import("@/app/api/runs/[runId]/orders.csv/route");
 const monthlyRoute = await import("@/app/api/runs/[runId]/monthly.csv/route");
 
@@ -336,6 +337,28 @@ describe("RunView for a customer", () => {
     expect(at).toContain("The account minimum could add up to $496.13 a month");
   });
 
+  it("a monthly figure that leaves a charge out says At least, on the card and on the tile", async () => {
+    const t = text(await runPage(noStorageAnswer));
+    // Pallet storage has no number: the $25.00 account fee is all that was priced, so it is a lower bound, and the missing charge is named below it.
+    expect(t).toContain("At least $25.00 a month, whatever you ship");
+    expect(t).toContain("Spread over your orders, that is at least $12.50 per order at 2 orders a month.");
+    expect(t).toContain("Not modeled, because no number was given");
+    const tiles = text(lists.ModelTiles({ summary: noStorageAnswer }));
+    expect(tiles).toContain("At least $25.00 a month");
+    expect(tiles).toContain("at least about $12.50 per order, spread over your orders");
+    // A complete model keeps the plain figures.
+    expect(text(await runPage(complete))).toContain("$205.00 a month, whatever you ship");
+    expect(text(lists.ModelTiles({ summary: complete }))).not.toContain("At least $205.00");
+  });
+
+  it("a fee schedule with no monthly charges is None, not a missing number", () => {
+    const none = finalize([A, B, C, D2], { monthlySchedule: { ...schedule, rules: schedule.rules.filter((r) => r.scope === "order") } });
+    const tiles = text(lists.ModelTiles({ summary: none }));
+    expect(tiles).toContain("Monthly charges None The fee schedule has no monthly charges.");
+    // A skipped model has nothing to say about monthly charges: that one is "not computed".
+    expect(text(lists.ModelTiles({ summary: skipped }))).toContain("Monthly charges Not computed Fulfillment costs were not modeled for this run.");
+  });
+
   it("says where the fees and the assumptions came from, and when the fee schedule has changed since", async () => {
     const t = text(await runPage(complete));
     expect(t).toContain("Acme 3PL fee schedule 'Standard fulfillment', in effect from Jan 1, 2026.");
@@ -364,7 +387,7 @@ describe("RunView for a customer", () => {
     const t = text(await runPage(complete));
     expect(t).toContain("Order fees");
     expect(t).toContain("Orders charged");
-    expect(t).toContain("From your rate card");
+    expect(t).toContain("From your fee schedule");
     expect(t).toContain("Based on assumptions");
     // Monthly charges lead with dollars a month, never a per-order fee, and print their basis.
     expect(t).toContain("$205.00 a month, whatever you ship");
@@ -696,7 +719,7 @@ describe("monthly.csv", () => {
     expect(lines).toContain("# Basis: 2 orders a month over Mar 1, 2026–Apr 30, 2026 (2 months).");
     expect(lines).toContain("row_type,name,period,status,quantity,unit_amount,amount,class,note");
     expect(lines).toContain("charge,Pallet storage,a month,priced,10,18.00,180.00,based_on_assumptions,10 pallets × $18.00 = $180.00 a month.");
-    expect(lines).toContain("charge,Account fee,a month,priced,1,25.00,25.00,from_rate_card,$25.00 a month.");
+    expect(lines).toContain("charge,Account fee,a month,priced,1,25.00,25.00,from_fee_schedule,$25.00 a month.");
     expect(lines.filter((l) => l.startsWith("minimum,")).length).toBe(2);
     expect(lines.join("\n")).not.toMatch(/per_order|all_in/);
     expect(lines.join("\n")).not.toMatch(FORBIDDEN_TEXT);

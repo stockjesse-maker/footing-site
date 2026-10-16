@@ -20,7 +20,7 @@ import { buildMaterialisePayloads } from "@/lib/orders/materialise";
 import type { OrderMapping, OrderValidationReport, SkuProfileInput } from "@/lib/orders/types";
 import { applyOrderMapping } from "@/lib/orders/validate";
 import { loadServiceCatalog } from "@/lib/pricing/catalog";
-import { calculatorRequestSchema } from "@/lib/pricing/calculator-schema";
+import { calculatorRequestSchema, type CalculatorFeesResponse } from "@/lib/pricing/calculator-schema";
 import { customerSafe, priceOrderFees } from "@/lib/pricing/customer-safe";
 import { loadBrandFeeSchedule } from "@/lib/fees/queries";
 import { loadPricingContext } from "@/lib/pricing/snapshot";
@@ -525,7 +525,12 @@ export async function saveSingleScenario(request: unknown, name: string, brandId
   // like the calculator did. When the schedule cannot be read the save stops rather than dropping fees the customer saw.
   let orderFees: unknown;
   if (req.box && calculation.status === "ok") {
-    const fees = priceOrderFees({ schedule: await loadBrandFeeSchedule(supabase, m.brandId, req.shipDate), box: req.box, calculations: [calculation], audience: "brand" });
+    let fees: CalculatorFeesResponse;
+    try {
+      fees = priceOrderFees({ schedule: await loadBrandFeeSchedule(supabase, m.brandId, req.shipDate), box: req.box, calculations: [calculation], audience: "brand" });
+    } catch {
+      fees = { status: "load_failed" };
+    }
     if (fees.status === "load_failed") return { ok: false, message: "The fee schedule could not be loaded, so the order fees were not saved. Try again in a moment." };
     if (fees.status === "computed") orderFees = fees.byService[0] ?? undefined;
   }

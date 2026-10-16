@@ -190,8 +190,8 @@ function HeadlineCard({ h, labelId }: { h: HeadlineFigures; labelId: string }) {
         <div className="space-y-1 text-sm">
           <p className="font-medium">Not included, because no numbers were given</p>
           <ul className="space-y-1">
-            {h.notIncluded.map((item) => (
-              <li key={`${item.category}:${item.name}`} className="flex flex-wrap items-center gap-x-3">
+            {h.notIncluded.map((item, index) => (
+              <li key={`${index}:${item.category}:${item.name}`} className="flex flex-wrap items-center gap-x-3">
                 <span>
                   {item.name}: <span className="text-muted">{item.rate}</span>
                   {item.reason !== NO_NUMBER_REASON ? <span className="text-muted"> (because {item.reason})</span> : null}
@@ -537,7 +537,8 @@ export function ShipmentsTable({ rows, page, pageSize, total, hrefFor, status, p
 // ---------------------------------------------------------------------------
 // Fee cards: order fees, monthly charges, account minimum, not included
 // ---------------------------------------------------------------------------
-const CHARGE_CLASS_LABEL = { definite: "From your rate card", estimated: "Based on assumptions" } as const;
+// Fee amounts come from the fee schedule and the orders file (the rate card prices shipping only).
+const CHARGE_CLASS_LABEL = { definite: "From your fee schedule", estimated: "Based on assumptions" } as const;
 
 /** "Order fees": every order-scope charge of the schedule in effect, whether or not it was charged, and what could not be computed. */
 export function OrderFeesCard({ summary, addHref }: { summary: BulkSummary; addHref: string | null }) {
@@ -569,12 +570,12 @@ export function OrderFeesCard({ summary, addHref }: { summary: BulkSummary; addH
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {rows.map((r) => {
+              {rows.map((r, index) => {
                 // A charge that was computed for no order at all (no order could be priced, or every order lacked what it needs)
                 // has no amount: "$0.00" there would read as "this fee is free", so the cells say it was not computed.
                 const neverComputed = r.orders === 0 && (r.notComputed !== null || p.orders === 0);
                 return (
-                  <tr key={`${r.category}:${r.name}`}>
+                  <tr key={`${index}:${r.category}:${r.name}`}>
                     <td className="py-2 pr-3">
                       {r.name}
                       {r.rate ? <span className="block text-xs text-muted">{r.rate}</span> : null}
@@ -634,16 +635,23 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
   const allIn = headlineFigures(summary, "allin");
   const points = allIn.amount === null ? [] : volumeSensitivity(summary);
   const volume = summary.period.monthlyOrders;
+  // Charges the customer gave no numbers for are not in the figures below: they are lower bounds, and say so.
+  const leftOut = m.notModeled.length > 0;
   return (
     <Card className="space-y-4">
       <div>
         <CardTitle>Monthly charges</CardTitle>
         {m.lines.length ? (
           <div className="mt-2 space-y-1">
-            {m.fixedPerMonth !== null ? <p className="tabular text-2xl font-semibold tracking-tight">{usd(m.fixedPerMonth)} a month, whatever you ship</p> : null}
+            {m.fixedPerMonth !== null ? (
+              <p className="tabular text-2xl font-semibold tracking-tight">
+                {leftOut ? "At least " : ""}
+                {usd(m.fixedPerMonth)} a month, whatever you ship
+              </p>
+            ) : null}
             {m.volumeLinkedPerMonth !== null ? (
               <p className={m.fixedPerMonth !== null ? "text-sm" : "tabular text-2xl font-semibold tracking-tight"}>
-                {m.fixedPerMonth !== null ? "plus " : ""}
+                {m.fixedPerMonth !== null ? "plus " : leftOut ? "At least " : ""}
                 {usd(m.volumeLinkedPerMonth)} a month in charges that grow with your orders
               </p>
             ) : null}
@@ -655,7 +663,7 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
           <CardDescription>The fee schedule has no monthly charges.</CardDescription>
         )}
         <p className="mt-2 text-sm text-muted">
-          {m.perOrder !== null && volume ? `Spread over your orders, that is about ${usd(m.perOrder)} per order at ${formatVolume(volume)} orders a month. This is monthly charges shared across orders, not a per-order fee. Basis: ${endSentence(m.basisSentence)}` : m.basisSentence}
+          {m.perOrder !== null && volume ? `Spread over your orders, that is ${leftOut ? "at least" : "about"} ${usd(m.perOrder)} per order at ${formatVolume(volume)} orders a month. This is monthly charges shared across orders, not a per-order fee. Basis: ${endSentence(m.basisSentence)}` : m.basisSentence}
         </p>
         {m.minimumPerMonth !== null ? (
           <p className="mt-1 text-sm text-muted">
@@ -674,8 +682,8 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {m.lines.map((l) => (
-                <tr key={`${l.category}:${l.name}`}>
+              {m.lines.map((l, index) => (
+                <tr key={`${index}:${l.category}:${l.name}`}>
                   <td className="py-2 pr-3">
                     {l.name}
                     <span className="block text-xs text-muted">{l.explanation}</span>
@@ -694,8 +702,8 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
         <div className="space-y-1 text-sm">
           <p className="font-medium">Not modeled, because no number was given</p>
           <ul className="space-y-1">
-            {m.notModeled.map((x) => (
-              <li key={`${x.category}:${x.name}`} className="flex flex-wrap items-center gap-x-3">
+            {m.notModeled.map((x, index) => (
+              <li key={`${index}:${x.category}:${x.name}`} className="flex flex-wrap items-center gap-x-3">
                 <span>
                   {x.name}: <span className="text-muted">{endSentence(x.rate)} {x.reason !== NO_NUMBER_REASON ? `Left out because ${x.reason}. ` : ""}Not included in the totals.</span>
                 </span>
@@ -823,8 +831,8 @@ export function NotIncludedCard({ summary, addHref, audience }: { summary: BulkS
         <div className="space-y-1 text-sm">
           <h3 className="font-medium">{summary.fees.mode === "skipped" ? "Left out because fulfillment costs were skipped" : "Left out because no numbers were given"}</h3>
           <ul className="space-y-1">
-            {g.needNumbers.map((item) => (
-              <li key={`${item.category}:${item.name}`} className="flex flex-wrap items-center gap-x-3">
+            {g.needNumbers.map((item, index) => (
+              <li key={`${index}:${item.category}:${item.name}`} className="flex flex-wrap items-center gap-x-3">
                 <span>
                   {item.name}: <span className="text-muted">{item.rate}</span>
                   {summary.fees.mode !== "skipped" && item.reason !== NO_NUMBER_REASON ? <span className="text-muted"> (because {item.reason})</span> : null}
@@ -839,8 +847,8 @@ export function NotIncludedCard({ summary, addHref, audience }: { summary: BulkS
         <div className="space-y-1 text-sm">
           <h3 className="font-medium">Not on {schedule}</h3>
           <ul className="space-y-1">
-            {g.notOnSchedule.map((item) => (
-              <li key={`${item.label}:${item.detail}`}>
+            {g.notOnSchedule.map((item, index) => (
+              <li key={`${index}:${item.label}:${item.detail}`}>
                 {item.label}: <span className="text-muted">{item.detail}</span>
               </li>
             ))}

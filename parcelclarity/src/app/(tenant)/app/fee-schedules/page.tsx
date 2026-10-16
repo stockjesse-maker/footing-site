@@ -18,14 +18,24 @@ import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Fee schedules" };
 
-/** Where the schedule's active version stands today, in words and as a badge. */
+/**
+ * Where the schedule stands today, in words and as a badge. "In effect" follows what pricing uses (an active
+ * version, or an archived one still inside its dates), the same answer the schedule's own page gives.
+ */
 function standing(schedule: FeeScheduleListRow, today: string) {
+  const live = schedule.inEffectVersion;
+  if (live) {
+    const dates = formatEffectivity(live.effectiveDate, live.expirationDate);
+    return { line: `Version ${live.versionNumber} in effect · ${dates}${live.status === "archived" ? " (archived; it still applies inside its dates)" : ""}`, badge: <Badge tone="success">In effect</Badge> };
+  }
   const v = schedule.activeVersion;
-  if (!v) return { line: schedule.draftVersionId ? "No active version yet. A draft is waiting to be activated." : "No active version yet.", badge: <Badge tone="warning">No active version</Badge> };
+  if (!v) {
+    if (schedule.versions.archived > 0) return { line: schedule.draftVersionId ? "No version is in effect today. A draft is waiting to be activated." : "No version is in effect today.", badge: <Badge tone="warning">Nothing in effect</Badge> };
+    return { line: schedule.draftVersionId ? "No active version yet. A draft is waiting to be activated." : "No active version yet.", badge: <Badge tone="warning">No active version</Badge> };
+  }
   const dates = formatEffectivity(v.effectiveDate, v.expirationDate);
   if (v.effectiveDate > today) return { line: `Version ${v.versionNumber} scheduled · ${dates}`, badge: <Badge tone="accent">Scheduled</Badge> };
-  if (v.expirationDate !== null && v.expirationDate < today) return { line: `Version ${v.versionNumber} ended · ${dates}`, badge: <Badge tone="warning">Ended</Badge> };
-  return { line: `Version ${v.versionNumber} in effect · ${dates}`, badge: <Badge tone="success">In effect</Badge> };
+  return { line: `Version ${v.versionNumber} ended · ${dates}`, badge: <Badge tone="warning">Ended</Badge> };
 }
 
 export default async function FeeSchedulesPage() {

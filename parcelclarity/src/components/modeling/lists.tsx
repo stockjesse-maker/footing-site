@@ -8,7 +8,7 @@ import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Stat } from "@/components/ui/stat";
 import { formatDate } from "@/lib/format/date";
-import { defaultView, headlineFigures, headlineReason, headlineText, monthlyCharges, usd, type HeadlineAudience, type HeadlineSummary } from "@/lib/modeling/headline";
+import { defaultView, endSentence, headlineFigures, headlineReason, headlineText, monthlyCharges, usd, type HeadlineAudience, type HeadlineSummary } from "@/lib/modeling/headline";
 import { fileSummaryOf, forecastSummaryOf, latestCompletedBulkRun, latestCompletedForecast, latestCompletedWhatIf, type DatasetListRow, type ProjectListRow, type RunListRow } from "@/lib/modeling/queries";
 
 /** Lists shared by the customer portal and the 3PL's on-behalf view. */
@@ -149,6 +149,9 @@ export function ModelTiles({ summary, audience = "brand" }: { summary: BulkSumma
   const fees = headlineFigures(summary, "fees", {}, audience);
   const monthly = monthlyCharges(summary);
   const reason = headlineReason(allIn);
+  // A schedule with no monthly charges is a known absence ("None"), not a missing number; charges left out make the figure a lower bound.
+  const noMonthlyCharges = !!monthly && monthly.lines.length === 0 && monthly.notModeled.length === 0;
+  const monthlyLeftOut = !!monthly && monthly.notModeled.length > 0;
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <Stat
@@ -169,8 +172,16 @@ export function ModelTiles({ summary, audience = "brand" }: { summary: BulkSumma
       <Stat label={fees.label} value={headlineText(fees)} note={fees.amount === null ? fees.unavailable : fees.basisSentence} />
       <Stat
         label="Monthly charges"
-        value={monthly && monthly.totalPerMonth !== null ? `${usd(monthly.totalPerMonth)} a month` : "Not computed"}
-        note={monthly ? (monthly.perOrder !== null ? `about ${usd(monthly.perOrder)} per order, spread over your orders (${monthly.basisSentence})` : monthly.basisSentence) : "Fulfillment costs were not modeled for this run."}
+        value={noMonthlyCharges ? "None" : monthly && monthly.totalPerMonth !== null ? `${monthlyLeftOut ? "At least " : ""}${usd(monthly.totalPerMonth)} a month` : "Not computed"}
+        note={
+          noMonthlyCharges
+            ? "The fee schedule has no monthly charges."
+            : monthly
+              ? monthly.perOrder !== null
+                ? `${monthlyLeftOut ? "at least " : ""}about ${usd(monthly.perOrder)} per order, spread over your orders (${monthly.basisSentence})`
+                : monthly.basisSentence
+              : "Fulfillment costs were not modeled for this run."
+        }
       />
     </div>
   );
@@ -187,7 +198,7 @@ function ForecastTile({ project, run, basePath, audience }: { project: ProjectLi
       value={headlineText(h)}
       note={
         <>
-          {h.basisSentence}.{" "}
+          {endSentence(h.basisSentence)}{" "}
           <Link href={`${basePath}/forecast/${project.id}`} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
             {project.name}
           </Link>
@@ -240,7 +251,7 @@ export function OverviewFigures({ projects, basePath, tenantName, audience }: { 
           </h2>
           <ModelTiles summary={summary} audience={audience} />
           <p className="text-sm text-muted">
-            <Link href={`${basePath}/runs/${latest.run.id}`} className="font-medium text-accent-text hover:underline">
+            <Link href={`${basePath}/runs/${latest.run.id}`} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
               {latest.project.name}
             </Link>
             {latest.run.finished_at ? ` · priced ${formatDate(latest.run.finished_at)}` : ""} · estimates {audience === "brand" ? `from the rates and fee schedule ${tenantName} assigned to you` : "from the rates and fee schedule assigned to this customer"}, never an invoice.

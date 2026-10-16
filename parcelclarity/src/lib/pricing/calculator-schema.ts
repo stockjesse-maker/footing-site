@@ -229,12 +229,26 @@ export const emptyBoxDrafts = (): BoxDrafts => ({ units: "", products: "", lines
 
 export type ParsedCount = { kind: "empty" } | { kind: "ok"; value: number } | { kind: "invalid" };
 
-/** "1,200" -> 1200; "" -> empty; "2.5", "abc", "-1" -> invalid. */
+/**
+ * "1,200" -> 1200; "" -> empty; "2.5", "abc", "-1" -> invalid. A very long run of digits is still a whole
+ * number (the range check says "1,000,000 or fewer"), so it is not called "not a whole number".
+ */
 export function parseCount(raw: string): ParsedCount {
   const v = raw.trim().replace(/[,\s]/g, "");
   if (v === "") return { kind: "empty" };
-  if (!/^\d{1,8}$/.test(v)) return { kind: "invalid" };
+  if (!/^\d{1,12}$/.test(v)) return { kind: "invalid" };
   return { kind: "ok", value: Number(v) };
+}
+
+/**
+ * The packaging value the form may send for a schedule: the drafted one only when this schedule offers it
+ * ("" = "Not sure" otherwise). A choice made under another ship date's schedule must not survive a change of
+ * date as a hidden value (the select would show "Not sure" while "box" was priced).
+ */
+export function offeredPackaging(value: string, options: Pick<CalculatorBoxOptionsOk, "packaging" | "allowOtherPackaging"> | null): string {
+  if (!options || value === "") return "";
+  if (value === PACKAGING_OTHER) return options.allowOtherPackaging ? value : "";
+  return options.packaging.some((p) => p.value === value) ? value : "";
 }
 
 export interface BoxFromDrafts {
@@ -254,7 +268,7 @@ const UNITS_REQUIRED = "Enter the number of items to see order fees.";
  * ignored). Items blank with nothing else entered is fine: no box, no error, no order fees. Items blank
  * with anything else entered is an error on the items. A blank count is unknown, not zero.
  */
-export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOptionsOk, "showLines" | "counts"> | null): BoxFromDrafts {
+export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOptionsOk, "showLines" | "counts" | "packaging" | "allowOtherPackaging"> | null): BoxFromDrafts {
   const errors: Record<string, string> = {};
   if (!options) return { box: null, errors, started: false };
   const empty: ParsedCount = { kind: "empty" };
@@ -262,7 +276,8 @@ export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOpti
   const products = parseCount(drafts.products);
   const lines = options.showLines ? parseCount(drafts.lines) : empty;
   const counts = options.counts.map((c) => ({ key: c.key, parsed: parseCount(drafts.counts[c.key] ?? "") }));
-  const packagingChosen = drafts.packaging !== "";
+  const packaging = offeredPackaging(drafts.packaging, options);
+  const packagingChosen = packaging !== "";
   const others = products.kind !== "empty" || lines.kind !== "empty" || packagingChosen || counts.some((c) => c.parsed.kind !== "empty");
   const started = units.kind !== "empty" || others;
 
@@ -290,21 +305,23 @@ export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOpti
     units: units.value,
     ...(products.kind === "ok" ? { products: products.value } : {}),
     ...(lines.kind === "ok" ? { lines: lines.value } : {}),
-    packaging: packagingChosen ? drafts.packaging : null,
+    packaging: packagingChosen ? packaging : null,
     ...(Object.keys(givenCounts).length ? { counts: givenCounts } : {}),
   };
   return { box, errors, started };
 }
 
 /** The box in plain words ("3 items, 2 different products, packaging: Poly mailer"): the echo under the result and in saved scenarios. */
-export function describeBox(box: CalculatorBox, options?: Pick<CalculatorBoxOptionsOk, "counts" | "packaging"> | null): string {
+export function describeBox(box: CalculatorBox, options?: Pick<CalculatorBoxOptionsOk, "counts" | "packaging" | "allowOtherPackaging"> | null): string {
   const plural = (n: number, one: string, many: string) => `${n.toLocaleString("en-US")} ${n === 1 ? one : many}`;
   const parts = [plural(box.units, "item", "items")];
   if (box.products !== undefined) parts.push(`${plural(box.products, "different product", "different products")}`);
   if (box.lines !== undefined) parts.push(plural(box.lines, "order line", "order lines"));
+  // "Packaging not specified" is only said when the customer was asked: a schedule that prices nothing by packaging has no such question.
+  const asked = !options || options.packaging.length > 0 || options.allowOtherPackaging;
   if (box.packaging === PACKAGING_OTHER) parts.push("packaging: another type");
   else if (box.packaging) parts.push(`packaging: ${options?.packaging.find((p) => p.value === box.packaging)?.label ?? capitalise(box.packaging)}`);
-  else parts.push("packaging not specified");
+  else if (asked) parts.push("packaging not specified");
   for (const [key, n] of Object.entries(box.counts ?? {})) {
     const unit = options?.counts.find((c) => c.key === key)?.unit ?? "extras";
     parts.push(plural(n, singular(unit), unit));

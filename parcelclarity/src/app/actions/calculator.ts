@@ -129,7 +129,15 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
   let fees: CalculatorFeesResponse | undefined;
   if (req.box) {
     const feeBrand = isBrand ? ctx.active.brandId : onBehalf;
-    fees = feeBrand ? priceOrderFees({ schedule: await loadBrandFeeSchedule(supabase, feeBrand, req.shipDate), box: req.box, calculations: results, audience: isBrand ? "brand" : "staff" }) : { status: "no_schedule" };
+    if (!feeBrand) fees = { status: "no_schedule" };
+    else {
+      try {
+        fees = priceOrderFees({ schedule: await loadBrandFeeSchedule(supabase, feeBrand, req.shipDate), box: req.box, calculations: results, audience: isBrand ? "brand" : "staff" });
+      } catch {
+        // The result says the fees could not be calculated; the shipping price (already computed) is not lost with them.
+        fees = { status: "load_failed" };
+      }
+    }
   }
 
   const activity = supabase.rpc("log_audit_event", {

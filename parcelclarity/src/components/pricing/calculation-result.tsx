@@ -425,13 +425,19 @@ function References({ references, uid }: { references: ShipmentCalculation["refe
 // Order fees ("What's in the box")
 // ---------------------------------------------------------------------------
 
+/** Fee lines come from the customer's fee schedule, not from the rate card the shipping lines are read from. */
+const BRAND_FEE_CLASS: Record<OrderFeeLineView["chargeClass"], { label: string; tone: "success" | "warning" }> = {
+  definite: { label: "From your fee schedule", tone: "success" },
+  estimated: { label: "Based on assumptions", tone: "warning" },
+};
+
 function FeeLineRow({ line, audience }: { line: OrderFeeLineView; audience: ResultAudience }) {
-  const cls = (audience === "brand" ? BRAND_CHARGE_CLASS : CHARGE_CLASS)[line.chargeClass];
+  const cls = audience === "brand" ? BRAND_FEE_CLASS[line.chargeClass] : CHARGE_CLASS[line.chargeClass];
   return (
     <li className="flex items-start justify-between gap-4 py-3">
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{line.name}</span>
+          <span className="font-medium break-words">{line.name}</span>
           <Badge tone={cls.tone}>{cls.label}</Badge>
         </div>
         <p className="text-sm text-muted">{line.explanation}</p>
@@ -448,7 +454,7 @@ function NotComputedRow({ item, audience, onAdd }: { item: OrderFeeNotComputedVi
     <li className="flex flex-col gap-2 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{item.name}</span>
+          <span className="font-medium break-words">{item.name}</span>
           <Badge tone="neutral">Not computed</Badge>
         </div>
         <p className="text-sm text-muted">{item.reason}</p>
@@ -481,12 +487,21 @@ export function OrderFeesSection({ fees, audience, uid, onAdd }: { fees: OrderFe
         In the box: {fees.box}. Fee schedule <span className="font-medium text-fg">{fees.schedule.name}</span>, in effect from {formatDate(fees.schedule.effectiveDate)}
         {audience === "staff" && fees.schedule.versionNumber !== undefined ? ` (version ${fees.schedule.versionNumber})` : ""}.
       </p>
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Stat label="Shipping" value={dollars(fees.shipping)} note="Expected shipping cost of this shipment." />
+      {/* Two columns from sm and three from lg: a text-4xl figure such as "$1,234.56" or "Not computed" does not fit three narrow columns. */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <Stat label="Shipping" value={dollars(fees.shipping)} note={`${audience === "brand" ? "Estimated" : "Expected"} shipping cost of this shipment.`} />
         <Stat
           label={`Order fees${atLeast}`}
           value={fees.orderFees === null ? "Not computed" : dollars(fees.orderFees)}
-          note={fees.orderFees === null ? "Add what is missing to see them." : left ? `${left === 1 ? "1 fee is" : `${left} fees are`} left out below.` : "Charged on this order."}
+          note={
+            fees.orderFees === null
+              ? "Add what is missing to see them."
+              : left
+                ? `${left === 1 ? "1 fee is" : `${left} fees are`} left out below.`
+                : fees.lines.length
+                  ? "Every fee that applies to this box is counted. An estimate, not an invoice."
+                  : "No fee applies to this box."
+          }
         />
         <Stat
           label={`Shipping + order fees${atLeast}`}

@@ -21,6 +21,7 @@ import {
   calculatorRequestSchema,
   describeBox,
   emptyBoxDrafts,
+  offeredPackaging,
   parseCount,
   shippingInputFromCalculation,
   type CalculatorBox,
@@ -221,7 +222,10 @@ describe("form drafts to box", () => {
     expect(parseCount("  ")).toEqual({ kind: "empty" });
     expect(parseCount("12")).toEqual({ kind: "ok", value: 12 });
     expect(parseCount("1,200")).toEqual({ kind: "ok", value: 1200 });
-    for (const bad of ["2.5", "abc", "-1", "1e3", "123456789"]) expect(parseCount(bad), bad).toEqual({ kind: "invalid" });
+    for (const bad of ["2.5", "abc", "-1", "1e3"]) expect(parseCount(bad), bad).toEqual({ kind: "invalid" });
+    // A long run of digits is a whole number that is too big, and is told so (not "enter a whole number").
+    expect(parseCount("123456789")).toEqual({ kind: "ok", value: 123_456_789 });
+    expect(boxFromDrafts(drafts({ units: "2,000,000" }), options).errors["box.units"]).toBe("Enter 1,000,000 or fewer.");
   });
 
   it("sends no box and shows no error while nothing has been entered", () => {
@@ -275,6 +279,25 @@ describe("form drafts to box", () => {
     expect(boxFromDrafts(drafts({ units: "4", lines: "5" }), lines).errors["box.lines"]).toBe("Order lines can't be more than the items in the box.");
   });
 
+  it("drops a packaging choice the schedule in effect does not offer (it must not survive a change of ship date unseen)", () => {
+    // "box" was picked under a schedule that prices it; under the tiers schedule (no packaging rule) and under a schedule with
+    // other types only, the select would show "Not sure", so "Not sure" is what is priced.
+    const tiersOptions = boxOptionsFromSnapshot(tiers);
+    expect(offeredPackaging("box", options)).toBe("box");
+    expect(offeredPackaging(PACKAGING_OTHER, options)).toBe(PACKAGING_OTHER);
+    expect(offeredPackaging("box", tiersOptions)).toBe("");
+    expect(offeredPackaging(PACKAGING_OTHER, tiersOptions)).toBe("");
+    expect(offeredPackaging("box", null)).toBe("");
+    const mailerOnly: FeeScheduleSnapshot = { ...standard, rules: standard.rules.filter((r) => r.key === "pack_mailer") };
+    const mailerOptions = boxOptionsFromSnapshot(mailerOnly);
+    expect(mailerOptions.allowOtherPackaging).toBe(false);
+    expect(boxFromDrafts(drafts({ units: "2", packaging: "box" }), mailerOptions).box).toEqual({ units: 2, packaging: null });
+    expect(boxFromDrafts(drafts({ units: "2", packaging: PACKAGING_OTHER }), mailerOptions).box).toEqual({ units: 2, packaging: null });
+    expect(boxFromDrafts(drafts({ units: "2", packaging: "poly mailer" }), mailerOptions).box).toEqual({ units: 2, packaging: "poly mailer" });
+    // A hidden stale choice is not "something typed in the block": items blank + stale packaging is an empty block, not an error.
+    expect(boxFromDrafts(drafts({ packaging: "box" }), tiersOptions)).toEqual({ box: null, errors: {}, started: false });
+  });
+
   it("the built box is what the schema accepts", () => {
     const r = boxFromDrafts(drafts({ units: "5", products: "3", packaging: "carton", counts: { inserts: "2" } }), options);
     expect(boxSchema.safeParse(r.box).success).toBe(true);
@@ -289,6 +312,12 @@ describe("describeBox", () => {
     expect(describeBox({ units: 1, products: 1, packaging: null, counts: { inserts: 1 } }, options)).toBe("1 item, 1 different product, packaging not specified, 1 insert");
     expect(describeBox({ units: 4, products: 2, lines: 3, packaging: PACKAGING_OTHER }, options)).toBe("4 items, 2 different products, 3 order lines, packaging: another type");
     expect(describeBox({ units: 1200 }, null)).toBe("1,200 items, packaging not specified");
+  });
+
+  it("does not say 'packaging not specified' when the schedule never asked about packaging", () => {
+    const noPackaging = boxOptionsFromSnapshot(tiers);
+    expect(describeBox({ units: 5, products: 2 }, noPackaging)).toBe("5 items, 2 different products");
+    expect(describeBox({ units: 5 }, options)).toBe("5 items, packaging not specified");
   });
 });
 
@@ -528,9 +557,27 @@ describe("rendering", () => {
     expect(t).toContain("Needs the packaging used.");
     expect(t).toContain("Rate: $0.30 per package");
     expect(t).toContain("left out of the totals above, not counted as $0");
-    // Brand vocabulary for the classes.
-    expect(t).toContain("From your rate card");
+    // Brand vocabulary for the classes: fee lines come from the fee schedule, never "from your rate card" (that is shipping).
+    expect(t).toContain("From your fee schedule");
+    expect(t).not.toContain("From your rate card");
+    expect(t).toContain("Estimated shipping cost of this shipment");
+    expect(t).not.toContain("Expected shipping cost");
     for (const key of ["pick_order", "pack_mailer", "handling_pct", "ruleKey"]) expect(html).not.toContain(key);
+  });
+
+  it("does not call a figure 'charged' (an estimate is not an invoice), whether or not something was left out", () => {
+    const complete = computed(priceOrderFees({ schedule: okSchedule(standard), box: { units: 3, products: 2, packaging: "poly mailer", counts: { inserts: 2 } }, calculations: [shipment()], audience: "brand" }))[0]!;
+    const t = text(renderToStaticMarkup(createElement(OrderFeesSection, { fees: complete, audience: "brand", uid: "u1" })));
+    expect(t).not.toContain("Charged on this order");
+    expect(t).toContain("Every fee that applies to this box is counted. An estimate, not an invoice.");
+    expect(t).toContain("Shipping + order fees $23.54");
+    const none: FeeScheduleSnapshot = { ...standard, rules: standard.rules.filter((r) => r.key === "pick_additional") };
+    const [empty] = computed(priceOrderFees({ schedule: okSchedule(none), box: { units: 1 }, calculations: [shipment()], audience: "brand" }));
+    expect(empty!.status).toBe("ok");
+    expect(empty!.lines).toEqual([]);
+    const emptyText = text(renderToStaticMarkup(createElement(OrderFeesSection, { fees: empty!, audience: "brand", uid: "u1" })));
+    expect(emptyText).toContain("No fee applies to this box.");
+    expect(emptyText).toContain("No order fees apply to what is in the box.");
   });
 
   it("staff see the rule keys and the staff class names", () => {
@@ -607,6 +654,15 @@ describe("the box block in the form", () => {
     expect(html).toMatch(/id="t-box-products"[^>]*aria-describedby="[^"]*t-box-products-error/);
     expect(text(html)).toContain("Different products can't be more than the items in the box.");
     expect(html).not.toContain('id="t-box-units-error"');
+  });
+
+  it("shows 'Not sure' when the drafted packaging is not one this schedule offers", () => {
+    const mailerOnly: FeeScheduleSnapshot = { ...standard, rules: standard.rules.filter((r) => r.key === "pack_mailer") };
+    const html = render(boxOptionsFromSnapshot(mailerOnly), { ...emptyBoxDrafts(), units: "2", packaging: "box" });
+    expect(html).toMatch(/<option value="" selected="">Not sure<\/option>/);
+    expect(html).not.toMatch(/<option value="box"/);
+    const picked = render(boxOptionsFromSnapshot(mailerOnly), { ...emptyBoxDrafts(), units: "2", packaging: "poly mailer" });
+    expect(picked).toMatch(/<option value="poly mailer" selected="">Poly mailer<\/option>/);
   });
 
   it("says the packaging applies to every package when there are several", () => {

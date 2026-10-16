@@ -244,7 +244,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
             hint={`${you ? "Some of your packages have" : "Some packages in the file have"} no packaging type. Choose the packaging they use so packaging fees can be priced; Not sure leaves packaging fees out.`}
           >
             {(aria) => (
-              <Select {...aria} value={state.packagingDefault} onChange={(e) => patch({ packagingDefault: e.target.value })}>
+              <Select {...aria} defaultValue={state.packagingDefault} onChange={(e) => patch({ packagingDefault: e.target.value })}>
                 <option value="">Not sure</option>
                 {[...new Set([...schedule.packagingTypes, ...(state.packagingDefault && !schedule.packagingTypes.includes(state.packagingDefault) ? [state.packagingDefault] : [])])].map((t) => (
                   <option key={t} value={t}>

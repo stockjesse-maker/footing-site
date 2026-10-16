@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type MouseEvent, type ReactNode, type SetStateAction } from "react";
+import { Fragment, useId, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type MouseEvent, type ReactNode, type SetStateAction } from "react";
 import { flushSync, useFormStatus } from "react-dom";
 import { createBulkScenario, rerunScenario } from "@/app/actions/modeling";
 import { ActionForm, SubmitButton, useFormState } from "@/components/forms/action-form";
@@ -84,13 +84,34 @@ export function RunSetupForm(p: RunSetupProps) {
   );
 }
 
+/**
+ * React 19 resets a form after its action has finished, failed or not. Radios and checkboxes go back to the
+ * state they were created with and selects to their default option, while component state (and with it the
+ * hidden fields that are posted) keeps the customer's choices. A retry would then send settings the screen
+ * does not show: a skipped fulfillment step with the box unticked, business deliveries shown as home deliveries,
+ * a different rates basis. The fields are created again on every response, so they start from the current state
+ * and from the values the action echoed, and the reset leaves them as shown.
+ */
+function ResetSafe({ children }: { children: ReactNode }) {
+  const state = useFormState();
+  const [seen, setSeen] = useState(state);
+  const [epoch, setEpoch] = useState(0);
+  if (seen !== state) {
+    setSeen(state);
+    setEpoch((e) => e + 1);
+  }
+  return <Fragment key={epoch}>{children}</Fragment>;
+}
+
 function RunSetupFields(p: RunSetupProps) {
   const schedule = p.fulfillment?.schedule;
   if (p.fulfillment && schedule?.status === "ok") return <TwoStepFields {...p} setup={p.fulfillment} schedule={schedule} />;
   return (
     <>
       <Identity {...p} />
-      <ShippingFields {...p} />
+      <ResetSafe>
+        <ShippingFields {...p} />
+      </ResetSafe>
       <ScheduleNote {...p} />
       <SubmitButton pendingLabel="Starting…">{p.projectId ? "Run again with these settings" : "Run the model"}</SubmitButton>
     </>
@@ -116,7 +137,7 @@ function ScheduleNote(p: RunSetupProps) {
     return <p className="text-sm text-muted">{staff ? "No fee schedule is assigned to this customer, so this run prices shipping only. Assign one to price fulfillment fees." : "No fulfillment fee schedule is set up for your account, so this run prices shipping only."}</p>;
   }
   if (schedule.status === "not_effective") {
-    return <p className="text-sm text-muted">{`${schedule.name} has no version in effect today, so there are no fulfillment questions to answer here.`}</p>;
+    return <p className="text-sm text-muted">{`${schedule.name || (staff ? "The customer's fee schedule" : "Your fee schedule")} has no version in effect today, so there are no fulfillment questions to answer here.`}</p>;
   }
   if (schedule.status === "unavailable") {
     return <Alert tone="warning">The fulfillment questions could not be loaded, so this run would price fees without any answers. Reload the page to try again.</Alert>;
@@ -183,7 +204,7 @@ function ShippingFields(p: RunSetupProps) {
           hint={whatIfOnly ? "Leave empty to price each shipment on the service in the file." : "Leave empty to keep the services in the file; unmapped shipments are then excluded and listed."}
         >
           {(aria) => (
-            <Select {...aria} name="serviceOverrideId" value={override} onChange={(e) => setOverride(e.target.value)}>
+            <Select {...aria} name="serviceOverrideId" defaultValue={override} onChange={(e) => setOverride(e.target.value)}>
               <option value="">Keep the services in the file</option>
               {p.services.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -302,7 +323,9 @@ function TwoStepFields(p: RunSetupProps & { setup: RunSetupData; schedule: Extra
   const blocked = Object.keys(built.errors).length;
   const visibleErrors = { ...serverErrors, ...(showErrors ? built.errors : {}) };
   const labels = useMemo(() => Object.fromEntries(schedule.questions.map((q) => [q.key, q.label])), [schedule]);
-  const diff = p.projectId && blocked === 0 ? formatAssumptionDiff(diffAssumptions({ fulfillment: p.initial?.fulfillment }, { fulfillment: built.value }, { labels })) : null;
+  // The line compares the fulfillment answers only (the shipping settings of step 1 are not part of it), so "no changes" says which answers.
+  const diffLines = p.projectId && blocked === 0 ? diffAssumptions({ fulfillment: p.initial?.fulfillment }, { fulfillment: built.value }, { labels }) : null;
+  const diff = diffLines === null ? null : diffLines.length > 0 ? formatAssumptionDiff(diffLines) : "Your fulfillment answers are the same as in the last run.";
 
   const goTo = (next: 1 | 2) => {
     flushSync(() => setStep(next));
@@ -336,24 +359,28 @@ function TwoStepFields(p: RunSetupProps & { setup: RunSetupData; schedule: Extra
             Shipping settings
           </h3>
         </div>
-        <ShippingFields {...p} />
+        <ResetSafe>
+          <ShippingFields {...p} />
+        </ResetSafe>
         <Button onClick={() => goTo(2)}>Continue to fulfillment costs</Button>
       </div>
 
       <div ref={stepTwo} hidden={step !== 2} className="space-y-6">
         <p className="text-sm font-medium text-muted">Step 2 of 2</p>
-        <FulfillmentStep
-          id={`${id}-fulfillment`}
-          audience={audience}
-          schedule={schedule}
-          period={setup.period}
-          showPackaging={ctx.showPackaging}
-          showContent={ctx.showContent}
-          state={answers}
-          setState={update}
-          errors={visibleErrors}
-          headingRef={fulfillmentHeading}
-        />
+        <ResetSafe>
+          <FulfillmentStep
+            id={`${id}-fulfillment`}
+            audience={audience}
+            schedule={schedule}
+            period={setup.period}
+            showPackaging={ctx.showPackaging}
+            showContent={ctx.showContent}
+            state={answers}
+            setState={update}
+            errors={visibleErrors}
+            headingRef={fulfillmentHeading}
+          />
+        </ResetSafe>
         {!answers.skip && diff ? (
           <p className="text-sm" aria-live="polite">
             {diff}

@@ -30,8 +30,14 @@ export interface FeeScheduleListRow {
   createdAt: string;
   updatedAt: string;
   versions: { total: number; draft: number; active: number; archived: number };
-  /** The active version in effect today, else the latest active one. */
+  /** The active version in effect today, else the latest active one. What "assign" needs: an active version, whatever its dates. */
   activeVersion: { id: string; versionNumber: number; effectiveDate: string; expirationDate: string | null } | null;
+  /**
+   * The version pricing uses today, as `app.fee_version_on` resolves it: an active or an archived version whose
+   * dates cover today (archived versions keep applying inside their dates), an active one first, then the newest.
+   * Null when nothing covers today. Status lines say "in effect" from this, never from `activeVersion` alone.
+   */
+  inEffectVersion: { id: string; versionNumber: number; effectiveDate: string; expirationDate: string | null; status: "active" | "archived" } | null;
   draftVersionId: string | null;
   /** Brands currently on this schedule. */
   assignedBrands: number;
@@ -67,6 +73,17 @@ function activeVersionOf(versions: ListVersionRow[], today: string): FeeSchedule
   return pick ? { id: pick.id, versionNumber: pick.version_number, effectiveDate: pick.effective_date!, expirationDate: pick.expiration_date } : null;
 }
 
+/** Same rule as `app.fee_version_on` and `versionInEffect` (components/fees/shared.ts): active or archived, covering the day, active first, then newest. */
+function inEffectVersionOf(versions: ListVersionRow[], today: string): FeeScheduleListRow["inEffectVersion"] {
+  const covering = versions.filter(
+    (v): v is ListVersionRow & { status: "active" | "archived"; effective_date: string } =>
+      (v.status === "active" || v.status === "archived") && v.effective_date !== null && v.effective_date <= today && (v.expiration_date === null || v.expiration_date >= today),
+  );
+  covering.sort((a, b) => Number(b.status === "active") - Number(a.status === "active") || b.version_number - a.version_number);
+  const pick = covering[0];
+  return pick ? { id: pick.id, versionNumber: pick.version_number, effectiveDate: pick.effective_date, expirationDate: pick.expiration_date, status: pick.status } : null;
+}
+
 export async function listFeeSchedules(supabase: SupabaseClient, tenantId: string): Promise<FeeScheduleListRow[]> {
   const { data, error } = await supabase
     .from("fee_schedules")
@@ -92,6 +109,7 @@ export async function listFeeSchedules(supabase: SupabaseClient, tenantId: strin
         archived: versions.filter((v) => v.status === "archived").length,
       },
       activeVersion: activeVersionOf(versions, today),
+      inEffectVersion: inEffectVersionOf(versions, today),
       draftVersionId: versions.find((v) => v.status === "draft")?.id ?? null,
       assignedBrands: (s.brand_fee_schedule_assignments ?? []).filter((a) => a.unassigned_at === null).length,
     };

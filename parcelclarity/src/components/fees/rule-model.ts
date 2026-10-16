@@ -438,6 +438,15 @@ export const FRIENDLY: Record<string, string> = {
   "bracket amounts must be numbers with up to 4 decimals": "Enter an amount with up to 4 decimals.",
   "key must be a short slug (letters, digits, underscores)": "Use lower-case letters, digits and underscores, starting with a letter (up to 61 characters).",
   "name must be 1–120 characters": "Enter a name of up to 120 characters.",
+  // Messages that name a schema field ("minUnits", "longTerm.thresholdDays") rather than the box the person sees.
+  "minimum.amount must be a number with up to 4 decimals": "Enter the monthly minimum in dollars, with up to 4 decimals.",
+  "minUnits exceeds maxUnits": "The fewest items cannot be more than the most items.",
+  "minLines exceeds maxLines": "The fewest order lines cannot be more than the most order lines.",
+  "minPackages exceeds maxPackages": "The fewest packages cannot be more than the most packages.",
+  "longTerm.thresholdDays must be 1–3650": "Enter a number of days from 1 to 3650.",
+  "bracket edges must ascend": "Each bracket must end higher than the one before it.",
+  "exclusive group must be a short slug": "Use a short group name of lower-case letters, digits and underscores, starting with a letter.",
+  "priority applies to rules in an exclusive group only": "Enter a group name above, or clear the priority.",
 };
 export const friendly = (message: string) => FRIENDLY[message] ?? message;
 

@@ -126,7 +126,7 @@ export default async function FeeVersionPage({ params }: { params: Promise<{ sch
             <p className="mt-1 max-w-2xl text-sm text-muted">Check this version against an order before you activate it. Nothing is saved, and nothing here reaches a customer.</p>
           </div>
           <Card>
-            <TryOrderPanel versionId={version.id} rules={version.rules} packagingTypes={packagingTypes(version.snapshot)} />
+            <TryOrderPanel versionId={version.id} rules={version.rules} packagingTypes={packagingTypes(version.snapshot)} rounding={version.rounding} />
           </Card>
         </section>
 

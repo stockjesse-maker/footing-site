@@ -23,7 +23,7 @@ export interface Priced {
   versionNumber: number;
 }
 
-export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId: string; rules: FeeRule[]; packagingTypes: string[] }) {
+export function TryOrderPanel({ versionId, rules, packagingTypes, rounding = null }: { versionId: string; rules: FeeRule[]; packagingTypes: string[]; rounding?: string | null }) {
   const uid = useId();
   const id = (name: string) => `${uid}-${name}`;
   const [units, setUnits] = useState("");
@@ -40,7 +40,8 @@ export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId:
   const [monthly, setMonthly] = useState<Record<string, string>>({});
   const [ordinal, setOrdinal] = useState("1");
   const [pending, start] = useTransition();
-  const [priced, setPriced] = useState<Priced | null>(null);
+  // The result is kept with the exact request it answered, so the panel can say when the form no longer matches it.
+  const [priced, setPriced] = useState<{ outcome: Priced; request: string } | null>(null);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [message, setMessage] = useState<string | null>(null);
 
@@ -49,25 +50,30 @@ export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId:
   const namesByKey = new Map(rules.map((r) => [r.key, r.name]));
   const err = (path: string) => errors[path];
 
+  const input = buildTryOrderInput({
+    units,
+    lines,
+    products,
+    packages,
+    packagingDefault,
+    shipments,
+    shipTotal,
+    baseFreight,
+    estimated,
+    shares,
+    shareKeys: shareDrivers.map(([key]) => key),
+    monthly,
+    tierBases,
+    ordinal,
+  });
+  // The rules and the rounding are part of the request: a rule saved above, or another rounding, changes what the same order is charged.
+  const request = JSON.stringify([input, rules, rounding]);
+  // Edited since it was priced: the amounts on screen belong to the earlier order or rules, not to what the page says now.
+  const stale = priced !== null && priced.request !== request;
+
   const submit = () => {
     setMessage(null);
     setErrors({});
-    const input = buildTryOrderInput({
-      units,
-      lines,
-      products,
-      packages,
-      packagingDefault,
-      shipments,
-      shipTotal,
-      baseFreight,
-      estimated,
-      shares,
-      shareKeys: shareDrivers.map(([key]) => key),
-      monthly,
-      tierBases,
-      ordinal,
-    });
     start(async () => {
       const outcome = await tryFeeOrder(versionId, input);
       if (!outcome.ok) {
@@ -76,7 +82,7 @@ export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId:
         setMessage(outcome.message ?? (outcome.errors ? "Fix the highlighted fields and try again." : "Something went wrong. Please try again."));
         return;
       }
-      setPriced({ result: outcome.result, versionNumber: outcome.versionNumber });
+      setPriced({ outcome: { result: outcome.result, versionNumber: outcome.versionNumber }, request });
     });
   };
 
@@ -223,13 +229,13 @@ export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId:
       {message ? <Alert tone="danger">{message}</Alert> : null}
 
       <div aria-live="polite">
-        {priced ? <TryOrderOutcome priced={priced} namesByKey={namesByKey} /> : null}
+        {priced ? <TryOrderOutcome priced={priced.outcome} namesByKey={namesByKey} stale={stale} /> : null}
       </div>
     </div>
   );
 }
 
-export function TryOrderOutcome({ priced, namesByKey }: { priced: Priced; namesByKey: Map<string, string> }) {
+export function TryOrderOutcome({ priced, namesByKey, stale = false }: { priced: Priced; namesByKey: Map<string, string>; stale?: boolean }) {
   const { result, versionNumber } = priced;
   const blocking = result.unresolved.filter((u) => u.reason !== "replaced");
   const replaced = result.unresolved.filter((u) => u.reason === "replaced");
@@ -249,6 +255,8 @@ export function TryOrderOutcome({ priced, namesByKey }: { priced: Priced; namesB
           Order fees only, and a trial rather than an invoice. Storage, receiving, returns, flat monthly fees and the account minimum are worked out per month, not per order, so they are not in these amounts.
         </p>
       </div>
+
+      {stale ? <Alert tone="warning">You changed the order or the rules after pricing it, so the amounts below are for the earlier ones. Price it again to see what it is charged now.</Alert> : null}
 
       <dl className="grid gap-3 sm:grid-cols-3">
         <div>

@@ -18,6 +18,7 @@ import {
   boxFromDrafts,
   describeBox,
   emptyBoxDrafts,
+  offeredPackaging,
   type BoxDrafts,
   type BoxFieldRef,
   type CalculatorBoxOptions,
@@ -293,14 +294,14 @@ export function BoxBlock({
           {(aria) => <Input {...aria} type="text" inputMode="numeric" autoComplete="off" placeholder="e.g. 2" value={drafts.products} onChange={(e) => onChange({ products: e.target.value })} />}
         </Field>
         {options.showLines ? (
-          <Field id={`${idPrefix}-box-lines`} label="Order lines" error={errors["box.lines"]} hint="Lines on the order. A product ordered once is one line.">
+          <Field id={`${idPrefix}-box-lines`} label="Order lines" error={errors["box.lines"]} hint="Lines on the order. One product, in any quantity, is usually one line.">
             {(aria) => <Input {...aria} type="text" inputMode="numeric" autoComplete="off" placeholder="e.g. 2" value={drafts.lines} onChange={(e) => onChange({ lines: e.target.value })} />}
           </Field>
         ) : null}
         {showPackaging ? (
           <Field id={`${idPrefix}-box-packaging`} label="Packaging" hint={packageCount > 1 ? "Used for every package in this shipment." : "The packaging this order ships in."}>
             {(aria) => (
-              <Select {...aria} value={drafts.packaging} onChange={(e) => onChange({ packaging: e.target.value })}>
+              <Select {...aria} value={offeredPackaging(drafts.packaging, options)} onChange={(e) => onChange({ packaging: e.target.value })}>
                 <option value="">Not sure</option>
                 {options.packaging.map((p) => (
                   <option key={p.value} value={p.value}>
@@ -520,16 +521,20 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
   useEffect(() => {
     if (!boxKey) return;
     let cancelled = false;
-    loadCalculatorBox({ ...(brandId ? { brandId } : {}), shipDate }).then(
-      (options) => {
-        if (!cancelled) setBoxFetched({ key: boxKey, options });
-      },
-      () => {
-        if (!cancelled) setBoxFetched({ key: boxKey, options: { status: "load_failed" } });
-      },
-    );
+    // Typing a date key by key passes through valid dates (year 0002, 0020, 0202, 2026): ask once the date has settled.
+    const timer = setTimeout(() => {
+      loadCalculatorBox({ ...(brandId ? { brandId } : {}), shipDate }).then(
+        (options) => {
+          if (!cancelled) setBoxFetched({ key: boxKey, options });
+        },
+        () => {
+          if (!cancelled) setBoxFetched({ key: boxKey, options: { status: "load_failed" } });
+        },
+      );
+    }, 250);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [boxKey, brandId, shipDate]);
   const boxOptions: CalculatorBoxOptions | null = boxKey && boxFetched?.key === boxKey ? boxFetched.options : null;

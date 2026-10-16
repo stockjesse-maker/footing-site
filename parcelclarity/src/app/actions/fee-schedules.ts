@@ -70,10 +70,12 @@ export async function createFeeSchedule(_prev: ActionState, formData: FormData):
 
 export async function renameFeeSchedule(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const ctx = await requireTenantContext("ratecard.manage");
+  // Echoed on a failed submit: a form that ends an action is reset to its defaults, which would drop what was typed.
+  const values = { name: String(formData.get("name") ?? ""), description: String(formData.get("description") ?? "") };
   const parsed = z
     .object({ id: uuidSchema, name: nameSchema, description: z.string().trim().max(1000, "Use at most 1,000 characters.").optional() })
     .safeParse({ id: formData.get("id"), name: formData.get("name"), description: formData.get("description") ?? undefined });
-  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
+  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error), values };
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("fee_schedules")
@@ -81,8 +83,8 @@ export async function renameFeeSchedule(_prev: ActionState, formData: FormData):
     .eq("id", parsed.data.id)
     .eq("tenant_id", ctx.active.tenantId)
     .select("id");
-  if (error?.code === "23505") return { ok: false, errors: { name: "You already have a fee schedule with that name." } };
-  if (error || !data?.length) return { ok: false, message: error ? GENERIC_FAILURE : "Fee schedule not found." };
+  if (error?.code === "23505") return { ok: false, errors: { name: "You already have a fee schedule with that name." }, values };
+  if (error || !data?.length) return { ok: false, message: error ? GENERIC_FAILURE : "Fee schedule not found.", values };
   revalidateSchedules();
   return { ok: true, message: "Saved." };
 }
@@ -135,21 +137,23 @@ export async function updateDraftRounding(versionId: string, rounding: string): 
 
 export async function activateFeeVersion(_prev: ActionState, formData: FormData): Promise<ActionState> {
   await requireTenantContext("ratecard.manage");
+  // Echoed on a failed submit so the dates the person chose survive the form reset that follows every action.
+  const values = { effectiveDate: String(formData.get("effectiveDate") ?? ""), expirationDate: String(formData.get("expirationDate") ?? "") };
   const parsed = z
     .object({ versionId: uuidSchema, effectiveDate: isoDate, expirationDate: z.preprocess((v) => (v === "" || v === undefined ? null : v), isoDate.nullable()) })
     .safeParse({ versionId: formData.get("versionId"), effectiveDate: formData.get("effectiveDate"), expirationDate: formData.get("expirationDate") });
-  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
+  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error), values };
   const supabase = await createClient();
   const { error } = await supabase.rpc("activate_fee_schedule_version", { p_version: parsed.data.versionId, p_effective: parsed.data.effectiveDate, p_expiration: parsed.data.expirationDate });
   if (error) {
     const m = error.message;
-    if (error.code === "P0007" || m.includes("already covers")) return { ok: false, errors: { effectiveDate: "Another active version already covers these dates. End it or choose different dates." } };
-    if (error.code === "P0005") return { ok: false, message: `This version cannot be activated yet: ${m}.` };
-    if (m.includes("only a draft")) return { ok: false, message: "Only a draft version can be activated." };
-    if (m.includes("precede")) return { ok: false, errors: { expirationDate: "The end date cannot be before the effective date." } };
-    if (m.includes("effective date is required")) return { ok: false, errors: { effectiveDate: "Enter a date." } };
-    if (error.code === "P0003") return { ok: false, message: "Version not found." };
-    return { ok: false, message: GENERIC_FAILURE };
+    if (error.code === "P0007" || m.includes("already covers")) return { ok: false, errors: { effectiveDate: "Another active version already covers these dates. End it or choose different dates." }, values };
+    if (error.code === "P0005") return { ok: false, message: `This version cannot be activated yet: ${m.replace(/\.+$/, "")}.`, values };
+    if (m.includes("only a draft")) return { ok: false, message: "Only a draft version can be activated.", values };
+    if (m.includes("precede")) return { ok: false, errors: { expirationDate: "The end date cannot be before the effective date." }, values };
+    if (m.includes("effective date is required")) return { ok: false, errors: { effectiveDate: "Enter a date." }, values };
+    if (error.code === "P0003") return { ok: false, message: "Version not found.", values };
+    return { ok: false, message: GENERIC_FAILURE, values };
   }
   revalidateSchedules();
   return { ok: true, message: "Version activated." };
@@ -158,15 +162,16 @@ export async function activateFeeVersion(_prev: ActionState, formData: FormData)
 /** Ends an active version on a date so a successor can start the next day; history stays intact. */
 export async function endFeeVersion(_prev: ActionState, formData: FormData): Promise<ActionState> {
   await requireTenantContext("ratecard.manage");
+  const values = { expirationDate: String(formData.get("expirationDate") ?? "") };
   const parsed = z.object({ versionId: uuidSchema, expirationDate: isoDate }).safeParse({ versionId: formData.get("versionId"), expirationDate: formData.get("expirationDate") });
-  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
+  if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error), values };
   const supabase = await createClient();
   const { error } = await supabase.rpc("end_fee_schedule_version", { p_version: parsed.data.versionId, p_expiration: parsed.data.expirationDate });
   if (error) {
-    if (error.message.includes("only an active")) return { ok: false, message: "Only an active version can be ended." };
-    if (error.message.includes("precede")) return { ok: false, errors: { expirationDate: "The end date cannot be before the effective date." } };
-    if (error.code === "23P01" || error.message.includes("already covers")) return { ok: false, errors: { expirationDate: "Another active version already covers that date." } };
-    return { ok: false, message: "Version not found." };
+    if (error.message.includes("only an active")) return { ok: false, message: "Only an active version can be ended.", values };
+    if (error.message.includes("precede")) return { ok: false, errors: { expirationDate: "The end date cannot be before the effective date." }, values };
+    if (error.code === "23P01" || error.message.includes("already covers")) return { ok: false, errors: { expirationDate: "Another active version already covers that date." }, values };
+    return { ok: false, message: "Version not found.", values };
   }
   revalidateSchedules();
   return { ok: true, message: "Version ended." };

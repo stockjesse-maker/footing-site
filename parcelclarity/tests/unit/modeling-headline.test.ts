@@ -63,7 +63,9 @@ import {
   noVolume,
   notEffective,
   oneMonth,
+  period,
   returnsRun,
+  schedule,
   skipped,
   undated,
   zeroVolume,
@@ -861,7 +863,7 @@ describe("monthly.csv", () => {
     expect([...MONTHLY_CSV_COLUMNS]).toEqual(["row_type", "name", "period", "status", "quantity", "unit_amount", "amount", "class", "note"]);
     expect(lines(csv)).toEqual([
       "charge,Pallet storage,a month,priced,10,18.00,180.00,based_on_assumptions,10 pallets × $18.00 = $180.00 a month.",
-      "charge,Account fee,a month,priced,1,25.00,25.00,from_rate_card,$25.00 a month.",
+      "charge,Account fee,a month,priced,1,25.00,25.00,from_fee_schedule,$25.00 a month.",
       "total,Monthly charges priced,a month,priced,,,205.00,,",
       "minimum,Monthly minimum,2026-03,exact,,,316.50,,Counted $183.50 toward a $500.00 minimum; amount is what is added",
       "minimum,Monthly minimum,2026-04,exact,,,315.75,,Counted $184.25 toward a $500.00 minimum; amount is what is added",
@@ -878,7 +880,7 @@ describe("monthly.csv", () => {
   it("a charge with no number given is listed as not modeled with its rate, blank, never zero; the minimum is an upper bound", () => {
     const csv = monthlyCsv(noStorageAnswer, meta);
     expect(lines(csv)).toEqual([
-      "charge,Account fee,a month,priced,1,25.00,25.00,from_rate_card,$25.00 a month.",
+      "charge,Account fee,a month,priced,1,25.00,25.00,from_fee_schedule,$25.00 a month.",
       "charge,Pallet storage,a month,not_modeled,,,,,No number was given. Rate: $18.00 per pallet per month.",
       "total,Monthly charges priced,a month,priced,,,25.00,,Charges that are not modeled are not in this total",
       "minimum,Monthly minimum,,up_to,,,,,Could add up to $496.13 a month; not included in any all-in figure (Pallet storage is not modeled)",
@@ -909,5 +911,114 @@ describe("fee dates no schedule covered", () => {
   it("names the rules an order could not be computed on, never keys, and skips a replaced rule", () => {
     const names = new Map([["a", "Box"]]);
     expect(unresolvedRuleNames([{ ruleKey: "a", reason: "packaging_unknown" }, { ruleKey: "a", reason: "units_unknown" }, { ruleKey: "zz_key", reason: "units_unknown" }, { ruleKey: "b", reason: "replaced" }], names)).toEqual(["Box", "A fee"]);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Adversarial review of the results screens: figures that must add up, lower bounds that say so
+// ---------------------------------------------------------------------------
+describe("the all-in split adds up to the all-in figure", () => {
+  const partsTotal = (summary: BulkSummary) => {
+    const h = headlineFigures(summary, "allin");
+    return { h, sum: h.parts.reduce((t, p) => t + Number(p.amount ?? 0), 0).toFixed(2) };
+  };
+
+  it("below 80 % coverage the monthly figures count only the orders that were priced, so each part is the monthly figure over the volume", () => {
+    // 3 of 5 orders priced, 5 orders a month over one month: shipping 30.00 + fees 5.00 a month, storage and account fee 205.00, spread over 5 orders.
+    // The stored per-order averages of the 3 priced orders (10.00 and 1.67) would add up to 52.67, not to the 48.00 headline.
+    const { h, sum } = partsTotal(lowCoverage);
+    expect(h).toMatchObject({ amount: "48.00", qualifier: "At least" });
+    expect(h.parts).toEqual([
+      { label: "Shipping", amount: "6.00", note: "counts only the orders that could be priced" },
+      { label: "Order fees", amount: "1.00", note: "counts only the orders that could be priced" },
+      { label: "Monthly charges, spread over your orders", amount: "41.00", note: "at 5 orders a month" },
+    ]);
+    expect(sum).toBe("48.00");
+  });
+
+  it("when only some priced orders also got fees, the parts say they are averaged over those orders (the Shipping view averages over all of them)", () => {
+    const e = modeledOrder("E", 5, "2026-03-28", "8.00", fees("not_effective"));
+    const run = finalize([A, B, C, D2, e], { period: { ...period, population: 5, inPeriod: 5 } }, { ...counts, rows: 5, orders: 5, shipments: 5, packages: 5 });
+    const { h, sum } = partsTotal(run);
+    // 4 of the 5 priced orders have fees: 80 % coverage, so the average of those 4 is scaled to the volume.
+    expect(h.parts[0]).toEqual({ label: "Shipping", amount: "12.50", note: "averaged over the 4 of 5 orders priced for both shipping and fees" });
+    expect(h.parts[1]).toMatchObject({ label: "Order fees", amount: "1.94", note: "averaged over the 4 of 5 orders priced for both shipping and fees" });
+    expect(headlineFigures(run, "shipping").amount).toBe("11.60"); // all 5 priced orders: 58.00 / 5
+    expect(Math.abs(Number(sum) - Number(h.amount))).toBeLessThanOrEqual(0.01);
+  });
+
+  it("a complete run keeps plain parts with no scope note", () => {
+    expect(headlineFigures(complete, "allin").parts.map((p) => p.note)).toEqual([null, null, "at 2 orders a month, with the account minimum"]);
+  });
+
+  it("when every monthly charge was left out the monthly part is not computed, never $0.00", () => {
+    const storageOnly = { ...schedule, rules: schedule.rules.filter((r) => r.key !== "admin" && r.basis !== "minimum") };
+    const run = finalize([A, B, C, D2], { monthlySchedule: storageOnly, answers: { drivers: {}, orderShares: { inserts: { sharePct: "25.00", countPerOrder: 1 } } } });
+    const h = headlineFigures(run, "allin");
+    expect(run.allocation?.perOrder.allocated).toBe("0.00"); // what the allocation stores: nothing was priced
+    expect(h).toMatchObject({ label: "All-in cost per order, without storage", amount: "14.44", qualifier: "At least" });
+    expect(h.parts.map((p) => [p.label, p.amount])).toEqual([["Shipping", "12.50"], ["Order fees", "1.94"], ["Monthly charges, spread over your orders", null]]);
+    // A schedule that simply has no monthly charges is a known zero.
+    const none = finalize([A, B, C, D2], { monthlySchedule: { ...schedule, rules: schedule.rules.filter((r) => r.scope === "order") } });
+    expect(headlineFigures(none, "allin").parts[2]).toMatchObject({ amount: "0.00" });
+  });
+});
+
+describe("compare: what is left out, and rows that are not like for like", () => {
+  const run = (summary: BulkSummary): CompareRunInput => ({ summary, datasetId: "d-1", datasetName: "March orders", rateCardName: "Fixture card", pricingBasis: "fixed_date", asOfDate: "2026-03-15", serviceOverrideId: null, serviceOverrideName: null, overrideAllServices: false, assumptions: null });
+
+  it("names the account minimum when it is the only thing left out of an all-in figure", () => {
+    expect(compareFacts(lowCoverage).leftOutText).toBe("the account minimum (not worked out exactly)");
+    expect(compareFacts(undated).leftOutText).toBe("the account minimum (not worked out exactly)");
+    // A category that is left out explains the minimum too (its member is not modeled): the sentence stays as it was.
+    expect(compareFacts(noStorageAnswer).leftOutText).toBe("storage");
+    const c = buildComparison(run(lowCoverage), run(complete));
+    expect(c.allInComparable).toBe(false);
+    expect(c.allInNote).toContain("(the account minimum (not worked out exactly) in the first; Nothing left out in the second)");
+    expect(c.allInNote).not.toContain("Nothing left out in the first");
+  });
+
+  it("explains a shipping figure that averages over fewer orders than the run page's Shipping figure", () => {
+    const mixed = finalize([A, B, { ...C, fees: fees("not_effective") }, { ...D2, fees: fees("not_effective") }]);
+    expect(headlineFigures(mixed, "shipping").amount).toBe("12.50"); // all 4 priced orders
+    const c = buildComparison(run(mixed), run(complete));
+    expect(rowOf(c, "Shipping per order")).toMatchObject({ a: "$11.00", b: "$12.50" }); // the 2 orders priced for fees as well
+    expect(rowOf(c, "Shipping per order").note).toContain("can differ from the Shipping figure on the model's own page");
+    expect(rowOf(buildComparison(run(complete), run(complete)), "Shipping per order").note).toBeNull();
+  });
+
+  it("the lower-bound note on shipping + order fees only appears when both runs have a figure", () => {
+    const partial = finalize([A, B, C, modeledOrder("D", 4, "2026-04-18", "8.00", fees("partial", { lines: [feeLine(PICK, 15000)], unresolved: [{ ruleKey: "inserts", reason: "assumption_missing" }] }))]);
+    const both = buildComparison(run(partial), run(complete));
+    expect(rowOf(both, "Shipping + order fees (comparable)")).toMatchObject({ a: "At least $14.38", b: "$14.44" });
+    expect(rowOf(both, "Shipping + order fees (comparable)").note).toContain("not like for like");
+    // The skipped run has no figure: nothing to be a lower bound of.
+    expect(rowOf(buildComparison(run(skipped), run(complete)), "Shipping + order fees (comparable)")).toMatchObject({ a: "Not computed", note: null });
+  });
+
+  it("monthly charges that leave a charge out say At least; a schedule with none says None, not Not computed", () => {
+    const none = finalize([A, B, C, D2], { monthlySchedule: { ...schedule, rules: schedule.rules.filter((r) => r.scope === "order") } });
+    const c = buildComparison(run(noStorageAnswer), run(none));
+    expect(rowOf(c, "Monthly charges a month (without the account minimum)")).toMatchObject({ a: "At least $25.00 a month", b: "None on the fee schedule" });
+    expect(rowOf(buildComparison(run(skipped), run(complete)), "Monthly charges a month (without the account minimum)").a).toBe("Not computed");
+  });
+
+  it("a forecast's monthly 'up to' amounts and a file's totals are labelled when they sit side by side", () => {
+    const forecastRun = { ...run(complete), datasetId: null, datasetName: null, summary: forecast(), assumptions: forecastAssumptions() as never };
+    const mixed = buildComparison(forecastRun, run(complete));
+    expect(rowOf(mixed, "Could not be decided (up to)")).toMatchObject({ b: "$0.00 in the file" });
+    expect(rowOf(mixed, "Could not be decided (up to)").a).toMatch(/ a month$/);
+    // Two files: the totals need no label.
+    expect(rowOf(buildComparison(run(complete), run(complete)), "Could not be decided (up to)")).toMatchObject({ a: "$0.00", b: "$0.00" });
+  });
+});
+
+describe("CSV comments never end a sentence twice", () => {
+  it("a basis sentence that already ends in a full stop is not given another", () => {
+    const comments = ordersCsvComments(noVolume, { scenarioName: "S", rateCardName: "R", feeScheduleLine: null });
+    expect(comments.join("\n")).not.toContain("..");
+    expect(comments.join("\n")).toContain("No monthly volume is known, so monthly charges are not spread over your orders.");
+    expect(monthlyCsv(noVolume, { scenarioName: "S", rateCardName: "R", feeScheduleLine: null }).comments.join("\n")).not.toContain("..");
   });
 });
