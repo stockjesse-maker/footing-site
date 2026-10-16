@@ -1,0 +1,41 @@
+ship_date,adjusted_on,carrier,service,brand,adjustment_type,cause,reason,package_ref,declared_weight,actual_weight,weight_unit,original_length,original_width,original_height,corrected_length,corrected_width,corrected_height,dimension_unit,customer_charge_original,customer_charge_corrected,customer_adjustment_fee,handling
+2026-08-03,2026-08-09,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000001,4,6,lb,10,8,6,,,,in,13.35,14.91,3.00,absorbed
+2026-08-04,2026-08-11,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000002,5,7,lb,,,,,,,,15.05,17.61,3.00,manual_approval
+2026-08-05,2026-08-13,UPS,UPS Ground,Beta Beverages,reweight,wms_no_weight,WMS did not send weight,1Z9A000003,,8,lb,10,8,6,,,,in,14.50,15.06,3.00,
+2026-08-06,2026-08-11,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000004,7,9,lb,,,,,,,,11.07,12.63,,pass_through
+2026-08-07,2026-08-13,USPS,USPS Ground Advantage,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,9400000005,7,8.5,oz,10,8,6,,,,in,13.52,16.08,3.00,absorbed
+2026-08-08,2026-08-15,UPS,UPS Ground,Beta Beverages,reweight,scale_error,Scale error at pack bench,1Z9A000006,4,2,lb,,,,,,,,16.75,15.05,,manual_approval
+2026-08-09,2026-08-17,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000007,5,7,lb,10,8,6,,,,in,9.82,11.38,0.00,
+2026-08-10,2026-08-15,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000008,6,8,lb,,,,,,,,21.44,24.44,3.00,pass_through
+2026-08-11,2026-08-17,UPS,UPS Ground,Beta Beverages,reweight,wms_no_weight,WMS did not send weight,1Z9A000009,,9,lb,10,8,6,,,,in,18.56,19.12,3.00,absorbed
+2026-08-12,2026-08-19,USPS,USPS Ground Advantage,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,9400000010,8,9.5,oz,,,,,,,,12.79,14.35,3.00,manual_approval
+2026-08-13,2026-08-21,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000011,4,6,lb,10,8,6,,,,in,,,,
+2026-08-14,2026-08-19,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000012,5,7,lb,,,,,,,,$15.05,$15.61,,pass_through
+2026-08-15,2026-08-21,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000013,6,8,lb,10,8,6,,,,in,14.50,16.06,3.00,absorbed
+2026-08-16,2026-08-23,UPS,UPS Ground,Beta Beverages,reweight,scale_error,Scale error at pack bench,1Z9A000014,7,5,lb,,,,,,,,11.07,9.37,,manual_approval
+2026-08-17,2026-08-25,USPS,USPS Ground Advantage,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,9400000015,9,10.5,oz,10,8,6,,,,in,13.52,14.08,3.00,
+2026-08-18,2026-08-23,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000016,1500,1900,g,,,,,,,,16.75,18.31,3.00,pass_through
+2026-08-19,2026-08-25,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000017,2.0,2.6,kg,10,8,6,,,,in,9.82,12.38,3.00,absorbed
+2026-08-20,2026-08-27,UPS,UPS Ground,Beta Beverages,reweight,wms_no_weight,WMS did not send weight,1Z9A000018,,8,lb,,,,,,,,21.44,22.00,3.00,manual_approval
+2026-08-21,2026-08-29,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1Z9A000019,7,9,lb,10,8,6,,,,in,18.56,20.12,3.00,
+2026-08-22,2026-08-27,USPS,USPS Ground Advantage,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,9400000020,6,7.5,oz,,,,,,,,12.79,15.35,,pass_through
+2026-08-23,2026-08-29,UPS,UPS Ground,Alpha Apparel,reweight,carrier_reweigh,Carrier reweigh,1Z9A000021,4,6,lb,10,8,6,,,,in,13.35,13.91,3.00,absorbed
+2026-08-24,2026-08-31,UPS,UPS Ground,Alpha Apparel,reweight,wms_no_weight,WMS did not send weight,1Z9A000022,,7,lb,,,,,,,,15.05,16.61,3.00,manual_approval
+2026-08-25,2026-09-02,UPS,UPS Ground,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,1Z9A000023,6,6,lb,10,8,6,14,10,8,in,14.50,17.33,4.00,
+2026-08-26,2026-08-31,UPS,UPS Ground,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,1Z9A000024,7,7,lb,10,8,6,14,10,8,in,11.07,13.90,4.00,pass_through
+2026-08-27,2026-09-02,USPS,USPS Ground Advantage,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,9400000025,7,7,oz,10,8,6,14,10,8,in,,,,absorbed
+2026-08-28,2026-09-04,UPS,UPS Ground,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,1Z9A000026,4,4,lb,10,8,6,14,10,8,in,16.75,19.58,4.00,manual_approval
+2026-08-29,2026-09-06,UPS,UPS Ground,Alpha Apparel,remeasure,packaging_change,Packaging changed,1Z9A000027,5,5,lb,10,8,6,14,10,8,in,9.82,7.12,,
+2026-08-30,2026-09-04,UPS,UPS Ground,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,1Z9A000028,6,6,lb,10,8,6,14,10,8,in,$21.44,$24.27,4.00,pass_through
+2026-08-31,2026-09-06,UPS,UPS Ground,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,1Z9A000029,7,7,lb,10,8,6,14,10,8,in,18.56,21.39,4.00,absorbed
+2026-09-01,2026-09-08,USPS,USPS Ground Advantage,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,9400000030,8,8,oz,10,8,6,14,10,8,in,12.79,16.79,4.00,manual_approval
+2026-09-02,2026-09-10,UPS,UPS Ground,Alpha Apparel,remeasure,packaging_change,Packaging changed,1Z9A000031,4,4,lb,10,8,6,14,10,8,in,13.35,10.65,,
+2026-09-03,2026-09-08,UPS,UPS Ground,Alpha Apparel,remeasure,carrier_remeasure,Carrier remeasure,1Z9A000032,5,5,lb,10,8,6,14,10,8,in,15.05,17.88,4.00,pass_through
+2026-09-04,2026-09-10,UPS,UPS Ground,Alpha Apparel,combined,carrier_reweigh,Carrier reweigh,1Z9A000033,6,8,lb,10,8,6,14,10,8,in,14.50,18.33,7.00,absorbed
+2026-09-05,2026-09-12,UPS,UPS Ground,Alpha Apparel,combined,carrier_reweigh,Carrier reweigh,1Z9A000034,7,9,lb,10,8,6,14,10,8,in,11.07,13.90,7.00,manual_approval
+2026-09-06,2026-09-14,USPS,USPS Ground Advantage,,combined,carrier_reweigh,Carrier reweigh,9400000035,9,10.5,oz,10,8,6,14,10,8,in,13.52,17.35,7.00,
+2026-09-07,2026-09-12,UPS,UPS Ground,,combined,carrier_reweigh,Carrier reweigh,1Z9A000036,4,6,lb,10,8,6,14,10,8,in,,,,pass_through
+2026-09-08,2026-09-14,UPS,UPS Ground,,combined,carrier_reweigh,Carrier reweigh,1Z9A000037,5,7,lb,10,8,6,14,10,8,in,9.82,13.65,7.00,absorbed
+2026-09-09,2026-09-16,UPS,UPS Ground,Gamma Goods,correction,other,Address and charge correction,1Z9A000038,4,4,lb,,,,,,,,,,5.00,manual_approval
+2026-09-10,2026-09-18,UPS,UPS Ground,Gamma Goods,correction,other,Address and charge correction,1Z9A000039,4,4,lb,,,,,,,,,,5.00,
+2026-09-11,2026-09-16,USPS,USPS Ground Advantage,Gamma Goods,correction,other,Address and charge correction,9400000040,4,4,oz,,,,,,,,,,5.00,pass_through

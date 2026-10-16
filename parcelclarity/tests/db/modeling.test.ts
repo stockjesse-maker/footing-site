@@ -364,7 +364,10 @@ describe("scenarios and runs", () => {
     expect(r2!.id).not.toBe(r!.id);
     await asUser(w.brandA.admin.id, "select public.fail_simulation_run($1, 'pricing context unavailable')", [r2!.id]);
     const [failed] = await asUser<{ status: string; error: string }>(w.brandA.admin.id, "select status, error from public.simulation_runs where id = $1", [r2!.id]);
-    expect(failed).toEqual({ status: "failed", error: "pricing context unavailable" });
+    // The run row carries a code only; the exception text moved to a table only the 3PL's staff can read.
+    expect(failed).toEqual({ status: "failed", error: "run_failed" });
+    expect(await asUser(w.brandA.admin.id, "select detail from public.simulation_run_failures where run_id = $1", [r2!.id])).toHaveLength(0);
+    expect(await asUser(w.t1.employee.id, "select detail from public.simulation_run_failures where run_id = $1", [r2!.id])).toEqual([{ detail: "pricing context unavailable" }]);
     const [r3] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
     await asUser(w.brandA.admin.id, "select public.cancel_simulation_run($1)", [r3!.id]);
     expect((await asUser<{ status: string }>(w.brandA.admin.id, "select status from public.simulation_runs where id = $1", [r3!.id]))[0]?.status).toBe("cancelled");

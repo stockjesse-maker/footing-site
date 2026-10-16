@@ -1,0 +1,4050 @@
+{
+  "_comment": "FICTIONAL inputs for the Milestone 5 adjustment goldens (see RULES.md). 'scenarios' are evaluateAdjustmentScenario inputs; 'historyCases' are summariseHistory inputs (record and baseline sets live in history-records.json and history-baselines.json); 'riskCases' are forecastAdjustmentRisk inputs. Expected results are in expected.json, keyed by case id, and were derived by hand/script from RULES.md and the M2 fixtures, never from engine output.",
+  "policyProfilesNote": "Policy profiles map '<adjustmentType>' -> '<component>' -> handling. A missing entry means the handling is 'unconfigured'. Use them to build policyFn(type, component). Types are reweight, remeasure, combined and correction (correction has only separate_fee).",
+  "policyProfiles": {
+    "all_pt": {
+      "reweight": {
+        "postage_difference": "pass_through",
+        "separate_fee": "pass_through"
+      },
+      "remeasure": {
+        "postage_difference": "pass_through",
+        "separate_fee": "pass_through"
+      },
+      "combined": {
+        "postage_difference": "pass_through",
+        "separate_fee": "pass_through"
+      },
+      "correction": {
+        "separate_fee": "pass_through"
+      }
+    },
+    "post_pt_fee_manual": {
+      "reweight": {
+        "postage_difference": "pass_through",
+        "separate_fee": "manual_approval"
+      },
+      "remeasure": {
+        "postage_difference": "pass_through",
+        "separate_fee": "manual_approval"
+      },
+      "combined": {
+        "postage_difference": "pass_through",
+        "separate_fee": "manual_approval"
+      },
+      "correction": {
+        "separate_fee": "manual_approval"
+      }
+    },
+    "post_pt_fee_absorbed": {
+      "reweight": {
+        "postage_difference": "pass_through",
+        "separate_fee": "absorbed"
+      },
+      "remeasure": {
+        "postage_difference": "pass_through",
+        "separate_fee": "absorbed"
+      },
+      "combined": {
+        "postage_difference": "pass_through",
+        "separate_fee": "absorbed"
+      },
+      "correction": {
+        "separate_fee": "absorbed"
+      }
+    },
+    "post_absorbed_fee_pt": {
+      "reweight": {
+        "postage_difference": "absorbed",
+        "separate_fee": "pass_through"
+      },
+      "remeasure": {
+        "postage_difference": "absorbed",
+        "separate_fee": "pass_through"
+      },
+      "combined": {
+        "postage_difference": "absorbed",
+        "separate_fee": "pass_through"
+      },
+      "correction": {
+        "separate_fee": "pass_through"
+      }
+    },
+    "post_pt_fee_undecided": {
+      "reweight": {
+        "postage_difference": "pass_through"
+      },
+      "remeasure": {
+        "postage_difference": "pass_through"
+      },
+      "combined": {
+        "postage_difference": "pass_through"
+      }
+    },
+    "none": {},
+    "combined_explicit": {
+      "reweight": {
+        "postage_difference": "absorbed",
+        "separate_fee": "absorbed"
+      },
+      "remeasure": {
+        "postage_difference": "pass_through",
+        "separate_fee": "pass_through"
+      },
+      "combined": {
+        "postage_difference": "manual_approval",
+        "separate_fee": "pass_through"
+      },
+      "correction": {
+        "separate_fee": "pass_through"
+      }
+    },
+    "reweight_pt_correction_manual": {
+      "reweight": {
+        "postage_difference": "pass_through",
+        "separate_fee": "pass_through"
+      },
+      "remeasure": {
+        "postage_difference": "pass_through",
+        "separate_fee": "pass_through"
+      },
+      "combined": {
+        "postage_difference": "pass_through",
+        "separate_fee": "pass_through"
+      },
+      "correction": {
+        "separate_fee": "manual_approval"
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "id": "e1_dim_governs_no_adjustment",
+      "description": "E1. Weight-only correction 3.0 -> 3.4 lb on a 10x8x6 package. DIM 480/139 = 3.4532 lb bills 4 lb on both sides, so nothing moves.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3.0",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "3.4",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E1",
+        "dim_governed_zero",
+        "not_triggered"
+      ]
+    },
+    {
+      "id": "e2_reweight_bracket_crossing",
+      "description": "E2. Weight-only increase 3 -> 5 lb on a 10x8x6 package: the corrected weight leaves the DIM-governed 4 lb bracket. Reweigh rule 3.00 only.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E2",
+        "bracket_crossing"
+      ]
+    },
+    {
+      "id": "same_bracket_zero_4_2_to_4_8",
+      "description": "Same bracket: 4.2 -> 4.8 lb. Actual weight governs on both sides and both round up to 5 lb.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "4.2",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "4.8",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "same_bracket_zero",
+        "not_triggered"
+      ]
+    },
+    {
+      "id": "dim_governed_zero_14x10x8_2_to_5",
+      "description": "DIM-governed zero: 14x10x8 package, 2 lb -> 5 lb. DIM 1120/139 = 8.0576 lb bills 9 lb whatever the actual weight (up to 9 lb).",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "2",
+              "weightUnit": "lb",
+              "length": "14",
+              "width": "10",
+              "height": "8"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "dim_governed_zero",
+        "not_triggered"
+      ]
+    },
+    {
+      "id": "plateau_billable_differs_zero_delta",
+      "description": "Price plateau: UPS Ground zone 2, 1 lb -> 2 lb on a 6x4x2 package. Both brackets are below the 8.50 service minimum, so the counted total is the same although billable weight changes.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "90210",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "1",
+              "weightUnit": "lb",
+              "length": "6",
+              "width": "4",
+              "height": "2"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "2",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "plateau",
+        "direction_none"
+      ]
+    },
+    {
+      "id": "remeasure_only_14x10x8",
+      "description": "Remeasure only: 3 lb, 10x8x6 -> 14x10x8. DIM 8.0576 lb bills 9 lb. Remeasure rule 4.00 only.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "14",
+            "width": "10",
+            "height": "8"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "remeasure",
+        "E4"
+      ]
+    },
+    {
+      "id": "remeasure_dimensions_added",
+      "description": "Remeasure where no dimensions were known: 3 lb, no dimensions -> 3 lb, 10x8x6. The declared side is an estimate.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "remeasure",
+        "dimensions_added",
+        "estimate"
+      ]
+    },
+    {
+      "id": "remeasure_rounded_dimensions_echo_15_4_to_15_5",
+      "description": "Remeasure by 0.1 in: 15.4x10x10 -> 15.5x10x10, 3 lb. nearest_whole rounds 15.4 to 15 and 15.5 to 16; the result echoes the rounded dimensions.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "15.4",
+              "width": "10",
+              "height": "10"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "15.5"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E8",
+        "remeasure",
+        "rounded_dimensions_echo"
+      ]
+    },
+    {
+      "id": "remeasure_same_rounded_dimensions_zero_15_4_to_15_3",
+      "description": "Remeasure 15.4 -> 15.3 in: different input, same rounded dimensions (15), so nothing moves.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "15.4",
+              "width": "10",
+              "height": "10"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "15.3"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "remeasure",
+        "not_triggered"
+      ]
+    },
+    {
+      "id": "e4_combined_non_additive",
+      "description": "E4. Combined correction 3 lb -> 5 lb and 10x8x6 -> 14x10x8 with reweight 3.00 and remeasure 4.00 rules, no group: the difference is 2.83, not 0.56 + 2.83. Handling comes from the explicit combined policy row.",
+      "context": "both_flat",
+      "policy": "combined_explicit",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb",
+            "length": "14",
+            "width": "10",
+            "height": "8"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E4",
+        "combined",
+        "stack_warning"
+      ]
+    },
+    {
+      "id": "e4_combined_grouped_pair",
+      "description": "Combined correction with the reweight (priority 1) and remeasure (priority 2) rules in one exclusivity group: the engine keeps the higher priority, 4.00.",
+      "context": "pair_grouped",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb",
+            "length": "14",
+            "width": "10",
+            "height": "8"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E4",
+        "combined",
+        "exclusivity_group"
+      ]
+    },
+    {
+      "id": "weight_only_with_grouped_pair",
+      "description": "Weight-only correction 3 -> 5 lb while a grouped reweight/remeasure pair is configured: only the reweight rule is in scope, so the fee is 3.00 (not the higher-priority 4.00).",
+      "context": "pair_grouped",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "exclusivity_group",
+        "in_scope_filter"
+      ]
+    },
+    {
+      "id": "dims_only_with_grouped_pair",
+      "description": "Dimension-only correction 3 lb, 10x8x6 -> 14x10x8 with the grouped pair: only the remeasure rule is in scope, fee 4.00.",
+      "context": "pair_grouped",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "14",
+            "width": "10",
+            "height": "8"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "exclusivity_group",
+        "in_scope_filter"
+      ]
+    },
+    {
+      "id": "weight_only_both_rules_present",
+      "description": "Weight-only correction 3 -> 5 lb with BOTH a reweigh 3.00 and a remeasure 4.00 rule configured (no group): only 3.00 is shown (not 7.00).",
+      "context": "both_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "in_scope_filter"
+      ]
+    },
+    {
+      "id": "dims_only_both_rules_present",
+      "description": "Dimension-only correction 3 lb, 10x8x6 -> 14x10x8 with both rules configured: 4.00 only.",
+      "context": "both_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "14",
+            "width": "10",
+            "height": "8"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "in_scope_filter"
+      ]
+    },
+    {
+      "id": "e3_surcharge_flip_49_to_52",
+      "description": "E3. Weight-only 49 -> 52 lb in a 20x20x20 box: DIM 8000/139 = 57.55 lb bills 58 lb on both sides, but Additional handling (weight > 50 lb actual) flips on.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "49",
+              "weightUnit": "lb",
+              "length": "20",
+              "width": "20",
+              "height": "20"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "52",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E3",
+        "surcharge_flip"
+      ]
+    },
+    {
+      "id": "e5_estimate_with_undecided_41_78",
+      "description": "E5. Declared 3 lb with no dimensions vs corrected 3 lb at 50x10x10: the declared side is an estimate and 20.00 of the difference rests on a charge that could not be decided on the declared side.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "50",
+            "width": "10",
+            "height": "10"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E5",
+        "estimate",
+        "undecided",
+        "dimensions_added"
+      ]
+    },
+    {
+      "id": "e5_estimate_6lb_no_dimensions_to_50x10x10",
+      "description": "E5. Declared 6 lb with no dimensions vs corrected 6 lb at 50x10x10.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "6",
+              "weightUnit": "lb"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "50",
+            "width": "10",
+            "height": "10"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E5",
+        "estimate",
+        "undecided",
+        "dimensions_added"
+      ]
+    },
+    {
+      "id": "e7_percent_fee_1_16",
+      "description": "E7. 10 percent conditional reweight rule on the E2 shipment: the line is 10 percent of the CORRECTED base rate, 1.16.",
+      "context": "reweight_pct",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E7",
+        "percent_fee"
+      ]
+    },
+    {
+      "id": "e7_residential_tenant_default",
+      "description": "E7. Residential 3 -> 5 lb in the 3PL default context (no customer overrides).",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E7",
+        "brand_context",
+        "residential"
+      ]
+    },
+    {
+      "id": "e7_residential_beta_overrides",
+      "description": "E7. The same shipment for the fixture customer with overrides (residential waived, fuel 10.00 percent): the customer's own difference is 0.54.",
+      "context": "reweight_flat_beta",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E7",
+        "brand_context",
+        "residential"
+      ]
+    },
+    {
+      "id": "waived_for_customer",
+      "description": "Customer exception (exclude) on the reweigh rule: the fee is waived for this customer.",
+      "context": "reweight_flat_waived",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "waived"
+      ]
+    },
+    {
+      "id": "included_in_rate",
+      "description": "Service terms bundle the reweigh rule into the rate (includedSurchargeKeys).",
+      "context": "reweight_flat_included",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "included"
+      ]
+    },
+    {
+      "id": "not_configured_usps_ounces_e8",
+      "description": "E8. USPS Ground Advantage 7.9 oz -> 8.1 oz (10x6x1, zone 5). No USPS adjustment-fee rule exists, so the fee is not configured.",
+      "context": "both_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "usps",
+          "serviceCode": "ground_advantage",
+          "packages": [
+            {
+              "weight": "7.9",
+              "weightUnit": "oz",
+              "length": "10",
+              "width": "6",
+              "height": "1"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "8.1",
+            "weightUnit": "oz"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E8",
+        "not_configured",
+        "usps_ounces"
+      ]
+    },
+    {
+      "id": "not_configured_no_overlay_rules",
+      "description": "No adjustment-fee rule exists in the context at all: UPS 3 -> 5 lb.",
+      "context": "none",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "not_configured"
+      ]
+    },
+    {
+      "id": "not_configured_remeasure_rule_only_weight_change",
+      "description": "Only a remeasure rule exists; the correction is weight-only, so no in-scope rule exists and the fee is not configured.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "not_configured",
+        "in_scope_filter"
+      ]
+    },
+    {
+      "id": "fee_not_triggered_das_condition_false",
+      "description": "A reweigh rule restricted to DAS ZIPs; the destination 85001 is not in the list: the rule exists but does not apply.",
+      "context": "reweight_das_only",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "not_triggered"
+      ]
+    },
+    {
+      "id": "fee_conditional_das_condition_true",
+      "description": "The same rule for destination 93920 (a DAS ZIP, zone 3): the fee applies. DAS 4.00 sits on both sides.",
+      "context": "reweight_das_only",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "93920",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "das"
+      ]
+    },
+    {
+      "id": "fee_undecided_zip_list_missing",
+      "description": "The DAS-restricted reweigh rule while no ZIP lists are loaded: the outcome is unknown.",
+      "context": "reweight_das_only_no_zip_lists",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "undecided",
+        "estimate",
+        "zip_list_missing"
+      ]
+    },
+    {
+      "id": "declared_unavailable_151_to_140",
+      "description": "Declared 151 lb (above the 150 lb card maximum) corrected to 140 lb.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "151",
+              "weightUnit": "lb",
+              "length": "20",
+              "width": "20",
+              "height": "20"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "140",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "declared_unavailable"
+      ]
+    },
+    {
+      "id": "e5_corrected_unavailable_151lb",
+      "description": "E5. Declared 140 lb corrected to 151 lb: the corrected side is above the card maximum.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "140",
+              "weightUnit": "lb",
+              "length": "20",
+              "width": "20",
+              "height": "20"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "151",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E5",
+        "corrected_unavailable"
+      ]
+    },
+    {
+      "id": "e5_corrected_unavailable_dim_691",
+      "description": "E5. 3 lb, 10x8x6 corrected to 60x40x40: DIM 96000/139 = 690.6 lb bills 691 lb, above the card maximum.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "60",
+            "width": "40",
+            "height": "40"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E5",
+        "corrected_unavailable"
+      ]
+    },
+    {
+      "id": "e5_corrected_unavailable_2da_31lb",
+      "description": "E5. UPS 2nd Day Air 30 lb corrected to 31 lb: the 2nd Day Air card ends at 30 lb.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "second_day_air",
+          "packages": [
+            {
+              "weight": "30",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "31",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E5",
+        "corrected_unavailable"
+      ]
+    },
+    {
+      "id": "both_unavailable_151_to_160",
+      "description": "Both sides above the card maximum: 151 lb -> 160 lb.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "151",
+              "weightUnit": "lb",
+              "length": "20",
+              "width": "20",
+              "height": "20"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "160",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "both_unavailable"
+      ]
+    },
+    {
+      "id": "invalid_input_nothing_to_correct",
+      "description": "A correction entry with no changed field.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {}
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "invalid_input"
+      ]
+    },
+    {
+      "id": "invalid_input_unit_equivalent_no_change",
+      "description": "USPS 0.5 lb corrected to 8 oz: the same weight in another unit.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "usps",
+          "serviceCode": "ground_advantage",
+          "packages": [
+            {
+              "weight": "0.5",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "6",
+              "height": "1"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "8",
+            "weightUnit": "oz"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "invalid_input",
+        "unit_equivalence"
+      ]
+    },
+    {
+      "id": "invalid_input_declared_weight_zero",
+      "description": "Declared weight 0 lb entered (the engine rejects weights that are not greater than zero).",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "0",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "3",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "invalid_input"
+      ]
+    },
+    {
+      "id": "invalid_input_wms_fallback_zero",
+      "description": "declaredSource wms_fallback with a 0 lb fallback weight.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "0",
+              "weightUnit": "lb"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "wms_fallback"
+      },
+      "tags": [
+        "invalid_input",
+        "wms_fallback"
+      ]
+    },
+    {
+      "id": "invalid_input_bad_origin_zip",
+      "description": "Origin ZIP with 4 digits.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "9000",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "invalid_input"
+      ]
+    },
+    {
+      "id": "invalid_input_correction_count_mismatch",
+      "description": "Two correction entries for a one-package shipment.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          },
+          {
+            "weight": "6",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "invalid_input"
+      ]
+    },
+    {
+      "id": "invalid_input_partial_dimensions_added",
+      "description": "Declared without dimensions, correction gives only a length.",
+      "context": "remeasure_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "14"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "invalid_input"
+      ]
+    },
+    {
+      "id": "credit_decrease_8_to_5",
+      "description": "Credit: declared 8 lb, actual 5 lb (10x8x6). The corrected charge is lower; no fee is shown.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "8",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "credit"
+      ]
+    },
+    {
+      "id": "credit_multi_package_5_5_to_5_3_residential",
+      "description": "Credit on one package of two: 5,5 lb -> 5,3 lb, residential. The sign is that of the shipment total.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "5",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "5",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {},
+          {
+            "weight": "3",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "credit",
+        "multi_package"
+      ]
+    },
+    {
+      "id": "e6_multi_package_one_corrected_flat_fee",
+      "description": "E6. Three packages 3,3,3 lb, only package 1 corrected to 5 lb, one shipment-level reweigh fee.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {},
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          },
+          {}
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E6",
+        "multi_package"
+      ]
+    },
+    {
+      "id": "e6_multi_package_one_corrected_per_package_fee",
+      "description": "E6. As above with a PER-PACKAGE reweigh rule: the engine emits a line for each package, only the corrected package's line is kept.",
+      "context": "reweight_pp",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {},
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          },
+          {}
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "E6",
+        "multi_package",
+        "per_package_fee"
+      ]
+    },
+    {
+      "id": "fuel_v1_ship_20260915_residential_zone2_5_to_20",
+      "description": "Ship date 2026-09-15: fuel v1 (14.00 percent) is in force. Residential, zone 2, 5 -> 20 lb.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-09-15",
+          "originZip": "90001",
+          "destinationZip": "90210",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "5",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "20",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "fuel_v1",
+        "residential"
+      ]
+    },
+    {
+      "id": "fuel_v1_ship_20260915_commercial_3_to_5",
+      "description": "Ship date 2026-09-15 on the E2 shipment (3 -> 5 lb, commercial): fuel v1 14.00 percent.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-09-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "fuel_v1"
+      ]
+    },
+    {
+      "id": "fuel_v2_ship_20261015_residential_zone2_5_to_20",
+      "description": "The same shipment on 2026-10-15 under fuel v2 (15.50 percent): the difference changes with the date.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "90210",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "5",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "20",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "fuel_v2",
+        "residential"
+      ]
+    },
+    {
+      "id": "fuel_v2_peak_ship_20261201_residential_zone2_5_to_20",
+      "description": "Ship date 2026-12-01: fuel v2 and the peak residential surcharge (1.50 per package) are in force.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-12-01",
+          "originZip": "90001",
+          "destinationZip": "90210",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "5",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "20",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "fuel_v2",
+        "peak",
+        "residential"
+      ]
+    },
+    {
+      "id": "wms_fallback_dims_known_1lb_to_5lb",
+      "description": "WMS fallback: the label was created at the 1 lb fallback weight with known dimensions 10x8x6; the carrier measured 5 lb.",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "1",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "wms_fallback"
+      },
+      "tags": [
+        "wms_fallback"
+      ]
+    },
+    {
+      "id": "wms_fallback_no_dimensions_combined",
+      "description": "WMS fallback: a scale failure lost both weight and dimensions (1 lb fallback, no dimensions); the carrier measured 5 lb and 10x8x6.",
+      "context": "both_flat",
+      "policy": "combined_explicit",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "1",
+              "weightUnit": "lb"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb",
+            "length": "10",
+            "width": "8",
+            "height": "6"
+          }
+        ],
+        "declaredSource": "wms_fallback"
+      },
+      "tags": [
+        "wms_fallback",
+        "combined",
+        "estimate"
+      ]
+    },
+    {
+      "id": "definite_class_rule_forced_conditional_warning",
+      "description": "A reweight rule stored with charge class definite: forced to conditional, with a warning. It must not enter the counted totals.",
+      "context": "reweight_definite",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "definite_class_rule"
+      ]
+    },
+    {
+      "id": "correction_rule_kept_for_every_type",
+      "description": "A shipping_charge_correction rule (5.00) is kept for every adjustment type: a weight-only correction shows it, handled by the correction policy row.",
+      "context": "correction_flat",
+      "policy": "reweight_pt_correction_manual",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "correction_category"
+      ]
+    },
+    {
+      "id": "mixed_handling_reweight_and_correction_rules",
+      "description": "Reweight 3.00 and correction 5.00 both fire on a weight correction; lines have different handling, so the component handling is mixed.",
+      "context": "reweight_and_correction",
+      "policy": "reweight_pt_correction_manual",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "correction_category",
+        "mixed_handling",
+        "stack_warning"
+      ]
+    },
+    {
+      "id": "policy_absorbed_fee_pass_through_postage",
+      "description": "E2 shipment with postage absorbed and the fee passed through.",
+      "context": "reweight_flat",
+      "policy": "post_absorbed_fee_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "id": "policy_fee_manual_approval",
+      "description": "E2 shipment with the fee under manual approval.",
+      "context": "reweight_flat",
+      "policy": "post_pt_fee_manual",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "id": "policy_fee_absorbed",
+      "description": "E2 shipment with the fee absorbed.",
+      "context": "reweight_flat",
+      "policy": "post_pt_fee_absorbed",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "id": "policy_fee_unconfigured",
+      "description": "E2 shipment where the fee policy row does not exist.",
+      "context": "reweight_flat",
+      "policy": "post_pt_fee_undecided",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "id": "policy_none_all_unconfigured",
+      "description": "E2 shipment with no policy rows at all.",
+      "context": "reweight_flat",
+      "policy": "none",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "id": "policy_remeasure_uses_its_own_row",
+      "description": "Remeasure scenario under the combined_explicit profile: the remeasure rows (pass_through both) decide, not the absorbed reweight rows.",
+      "context": "remeasure_flat",
+      "policy": "combined_explicit",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "length": "14",
+            "width": "10",
+            "height": "8"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "policy"
+      ]
+    },
+    {
+      "id": "policy_reweight_absorbed_rows",
+      "description": "Reweight scenario under the combined_explicit profile: the reweight rows are absorbed.",
+      "context": "reweight_flat",
+      "policy": "combined_explicit",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "policy"
+      ]
+    }
+  ],
+  "historyCases": [
+    {
+      "id": "h01_main_brand_a_january",
+      "description": "Baseline present: brand A, window January only. 12 distinct package keys over 13 rows, one same-ref pair, one row without a reference, weights-only rows, credits, a zero row, an explicit zero fee, a null fee.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        }
+      }
+    },
+    {
+      "id": "h02_main_brand_a_reweight_only",
+      "description": "Same scope, numerator filtered to type reweight: the denominator is unchanged (type filters apply to the numerator only).",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        },
+        "adjustmentType": "reweight"
+      }
+    },
+    {
+      "id": "h03_main_tenant_wide",
+      "description": "Tenant-wide: only the brand-null baseline (4,000 packages) with every brand's January records, including the unmatched-brand row.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": null,
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        }
+      }
+    },
+    {
+      "id": "h04_main_brand_b",
+      "description": "Brand B only uses brand B's own baseline.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-b",
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        }
+      }
+    },
+    {
+      "id": "h05_baseline_absent_brand_c",
+      "description": "Baseline absent: brand C has records but no baseline. Incidence is not computed; averages are still shown.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-c"
+      }
+    },
+    {
+      "id": "h06_no_records_no_baseline",
+      "description": "n = 0: no records and no baseline: nothing is computed.",
+      "records": "k0",
+      "baselines": "empty",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h07_outside_window_no_baseline",
+      "description": "A February window while only a January baseline exists: the baseline is not wholly inside the window, so it is not used (incidence not computed).",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-02-01",
+          "to": "2026-02-28"
+        }
+      }
+    },
+    {
+      "id": "h08_overlapping_baselines_refused",
+      "description": "Two brand-A baselines whose periods overlap: the statistic is refused.",
+      "records": "main",
+      "baselines": "overlap",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h09_scope_mismatch_brand_numerator_tenant_baseline",
+      "description": "A brand-A statistic with an explicitly chosen tenant-wide baseline is refused.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-a",
+        "baselineIds": [
+          "bl-t-jan"
+        ]
+      }
+    },
+    {
+      "id": "h10_scope_mismatch_tenant_numerator_brand_baseline",
+      "description": "A tenant-wide statistic with an explicitly chosen brand-A baseline is refused.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": null,
+        "baselineIds": [
+          "bl-a-jan"
+        ]
+      }
+    },
+    {
+      "id": "h11_adjacent_baselines_sum",
+      "description": "Two adjacent (non-overlapping) brand-A baselines are summed within the scope: N = 1000 + 1200.",
+      "records": "main",
+      "baselines": "adjacent",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h12_k_exceeds_n_refused",
+      "description": "k > N: five distinct packages against a baseline of 3 packages.",
+      "records": "k5",
+      "baselines": "n3",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h13_k0_n500",
+      "description": "k = 0 with N > 0 (and n = 0 records): incidence 0.0000%, Wilson upper bound 0.7625%.",
+      "records": "k0",
+      "baselines": "n500",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h14_wilson_k3_n100",
+      "description": "Wilson k = 3, N = 100.",
+      "records": "k3_n100",
+      "baselines": "n100",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h15_wilson_k20_n1000",
+      "description": "Wilson k = 20, N = 1000.",
+      "records": "k20_n1000",
+      "baselines": "n1000",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h16_half_up_k1_n3200",
+      "description": "k = 1, N = 3200: 0.03125 percent displays 0.0313 (HALF_UP at 4 dp).",
+      "records": "k1",
+      "baselines": "n3200",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h17_median_even",
+      "description": "Even count: median of 1,2,3,4 is 2.50.",
+      "records": "median_even",
+      "baselines": "n100",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h18_median_odd",
+      "description": "Odd count: median of 1,2,3,4,10 is 3.00.",
+      "records": "median_odd",
+      "baselines": "n100",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h19_n29_low_confidence",
+      "description": "n = 29 charge records: severity confidence low.",
+      "records": "n29",
+      "baselines": "n1000",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h20_n30_adequate_confidence",
+      "description": "n = 30 charge records: severity confidence adequate.",
+      "records": "n30",
+      "baselines": "n1000",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h21_two_rows_one_package_ref",
+      "description": "Two rows (reweight and remeasure) on one package reference count once.",
+      "records": "two_rows_one_ref",
+      "baselines": "n100",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h22_rows_without_package_ref",
+      "description": "Rows without a package reference count once per row (perRecordCounting).",
+      "records": "no_refs",
+      "baselines": "n100",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h23_direction_split_credits_r5",
+      "description": "R5: 6 charges of +10.00 and 4 credits of -5.00 in 1000 packages.",
+      "records": "r5_credits",
+      "baselines": "n1000",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h24_mean_half_up_tie_e4",
+      "description": "Mean exactly at a half of one E4 unit: 16 charges totalling 0.18 -> 112.5 E4 -> 113 (HALF_UP).",
+      "records": "mean_tie",
+      "baselines": "n16",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h25_fee_mean_2_025",
+      "description": "Fees 2.02 and 2.03: mean 2.025 exactly (20,250 E4).",
+      "records": "fee_two",
+      "baselines": "n100",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h26_maturity_immature_30",
+      "description": "Window ended 2026-09-30, today 2026-10-16 (16 days), maturityDays 30: immature.",
+      "records": "sep",
+      "baselines": "n1000_end_sep30",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-09-01",
+          "to": "2026-09-30"
+        },
+        "maturityDays": 30,
+        "today": "2026-10-16"
+      }
+    },
+    {
+      "id": "h27_maturity_boundary_16_mature",
+      "description": "Window ended exactly 16 days ago with maturityDays 16: mature (immature only when strictly fewer days than maturityDays).",
+      "records": "sep",
+      "baselines": "n1000_end_sep30",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-09-01",
+          "to": "2026-09-30"
+        },
+        "maturityDays": 16,
+        "today": "2026-10-16"
+      }
+    },
+    {
+      "id": "h28_maturity_boundary_17_immature",
+      "description": "maturityDays 17 with 16 days elapsed: immature.",
+      "records": "sep",
+      "baselines": "n1000_end_sep30",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-09-01",
+          "to": "2026-09-30"
+        },
+        "maturityDays": 17,
+        "today": "2026-10-16"
+      }
+    },
+    {
+      "id": "h29_labels_missing_rates",
+      "description": "Typed baseline with labels_missing_weight = 40 of 1000 packages: missingRatePct 4.0000, correctionRatePct = wms_no_weight packages / 40.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        }
+      }
+    },
+    {
+      "id": "h30_labels_missing_adjacent_sum",
+      "description": "Missing and correction rates over two adjacent baselines: (40 + 30) of 2200.",
+      "records": "main",
+      "baselines": "adjacent",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h31_labels_missing_zero",
+      "description": "labels_missing_weight = 0: missing rate 0.0000, correction rate not computed (division by zero is never 0).",
+      "records": "main",
+      "baselines": "zero_missing",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        }
+      }
+    },
+    {
+      "id": "h32_labels_missing_not_typed",
+      "description": "Brand B baseline without labels_missing_weight: both rates are not computed.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-b",
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        }
+      }
+    },
+    {
+      "id": "h33_service_unresolved_refused",
+      "description": "Service filter ground while one UPS record has no resolved service: refused with the unresolved count.",
+      "records": "svc",
+      "baselines": "svc",
+      "filters": {
+        "brandId": "brand-a",
+        "carrierCode": "ups",
+        "serviceId": "svc-ups-ground"
+      }
+    },
+    {
+      "id": "h34_service_resolved_usps",
+      "description": "Carrier and service filter usps / ground advantage: every record resolved, its own baseline (400 packages).",
+      "records": "svc",
+      "baselines": "svc",
+      "filters": {
+        "brandId": "brand-a",
+        "carrierCode": "usps",
+        "serviceId": "svc-usps-ga"
+      }
+    },
+    {
+      "id": "h35_all_carriers_all_services",
+      "description": "No carrier or service filter: the carrier-null service-null baseline (1000) and all seven records (one unresolved service is fine without a service filter).",
+      "records": "svc",
+      "baselines": "svc",
+      "filters": {
+        "brandId": "brand-a"
+      }
+    },
+    {
+      "id": "h36_carrier_filter_without_matching_baseline",
+      "description": "Carrier filter ups with no service: no baseline has (ups, null), so the denominator is absent (baselines of other keys are never reused).",
+      "records": "svc",
+      "baselines": "svc",
+      "filters": {
+        "brandId": "brand-a",
+        "carrierCode": "ups"
+      }
+    },
+    {
+      "id": "h37_type_and_cause_filters_numerator_only",
+      "description": "Type remeasure and cause carrier_remeasure on the main set: numerator filters only.",
+      "records": "main",
+      "baselines": "main",
+      "filters": {
+        "brandId": "brand-a",
+        "window": {
+          "from": "2026-01-01",
+          "to": "2026-01-31"
+        },
+        "adjustmentType": "remeasure",
+        "cause": "carrier_remeasure"
+      }
+    }
+  ],
+  "riskCases": [
+    {
+      "id": "r1_declared_both_pass_through",
+      "description": "R1: V = 1000, k = 20 of N = 1000 (p = 2%), postage 10.00 and fee 5.00 per affected package, declared weights, both pass_through.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r2_actual_both_pass_through",
+      "description": "R2: as R1 on actual weights: postage is already in the forecast, only the fee is counted here.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r2_actual_postage_absorbed",
+      "description": "R2: actual weights with postage ABSORBED: counted add-on 100.00 (fee), the 200.00 of in-forecast postage is reported as a staff memo with a warning.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "absorbed",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r3_declared_postage_manual_fee_pass_through",
+      "description": "R3: declared, postage manual_approval, fee pass_through.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "manual_approval",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r3_declared_postage_manual_fee_unconfigured",
+      "description": "R3: declared, postage manual_approval, fee unconfigured: 'So far', the identity still totals 300.00.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "manual_approval",
+          "separate_fee": "unconfigured"
+        }
+      }
+    },
+    {
+      "id": "t1_dec_pass_through",
+      "description": "T1: declared_weights weights, postage pass_through, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "t1_dec_manual_approval",
+      "description": "T1: declared_weights weights, postage manual_approval, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "manual_approval",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "t1_dec_absorbed",
+      "description": "T1: declared_weights weights, postage absorbed, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "absorbed",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "t1_dec_unconfigured",
+      "description": "T1: declared_weights weights, postage unconfigured, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "unconfigured",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "t1_act_pass_through",
+      "description": "T1: actual_weights weights, postage pass_through, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "t1_act_manual_approval",
+      "description": "T1: actual_weights weights, postage manual_approval, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "manual_approval",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "t1_act_absorbed",
+      "description": "T1: actual_weights weights, postage absorbed, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "absorbed",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "t1_act_unconfigured",
+      "description": "T1: actual_weights weights, postage unconfigured, fee pass_through (fee is never in a forecast, so it is always counted here).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "unconfigured",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r4_a_v333_p1_5_entered",
+      "description": "R4: V = 333, entered p = 1.5%, postage 0, fee 10.00: affected 4.995 (shown 5.0), total 49.95, per shipment 0.1500, annual 599.40.",
+      "input": {
+        "monthlyVolume": "333",
+        "incidence": {
+          "source": "entered",
+          "pct": "1.5"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 0,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r4_b_fee_mean_2_025",
+      "description": "R4: V = 1000, k = 1 of N = 200 (0.5%), fee severity 2.025 (mean of 2.02 and 2.03): 10.125, shown 10.13, annual 121.50 (not 121.56), per shipment 0.0101.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 1,
+          "N": 200
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 0,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 20250,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r4_c_k1_n3200_v1m",
+      "description": "R4: k = 1, N = 3200 displays 0.0313% but V = 1,000,000 uses 312.5 affected exactly.",
+      "input": {
+        "monthlyVolume": "1000000",
+        "incidence": {
+          "source": "history",
+          "k": 1,
+          "N": 3200
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 0,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 10000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r4_d_e4_then_cents_0_12495",
+      "description": "R4: V = 1000, p = 0.35% entered, severity 0.0357 on both components: each exact amount is 0.12495 -> E4 0.1250 (shown 0.13, not 0.12); counted total is the sum of the rounded components 0.2500 while the exact sum is 0.2499, so per shipment, per 1,000 and annual come from the exact sum.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "entered",
+          "pct": "0.35"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 357,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 357,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r5_credits_excluded_from_exposure",
+      "description": "R5: V = 1000, N = 1000, 6 charges of +10.00 and 4 credits of -5.00: exposure uses the 6 charges only (60.00); credits -20.00 and net 40.00 are memos.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 6,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 0,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        },
+        "credits": {
+          "k": 4,
+          "severityE4": -50000
+        }
+      }
+    },
+    {
+      "id": "r6_k3_n100",
+      "description": "R6: k = 3, N = 100: p 3.0000%, Wilson 1.0254% to 8.4521%.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 3,
+          "N": 100
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r6_k0_n500",
+      "description": "R6: k = 0, N = 500: expected exposure 0.00, Wilson upper bound 0.7625%, high affected 7.6 at V = 1000.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 0,
+          "N": 500
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r6_k20_n1000",
+      "description": "R6: k = 20, N = 1000: Wilson 1.2984% to 3.0690%.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r6_k0_severity_unknown",
+      "description": "k = 0 with the severities unknown: expected exposure is still 0.00 (zero incidence), the high end is null (severity unknown), confidence none.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 0,
+          "N": 500
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          },
+          "separate_fee": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r7_brand_a_own_history",
+      "description": "R7: brand A at V = 1000 from its own history (k = 10, N = 1000): 10.0 affected.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 10,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r7_tenant_rate_applied_to_brand_a",
+      "description": "R7: the same brand with the tenant-wide history (k = 280, N = 10000) chosen explicitly: 28.0 affected (2.8x), labelled by the caller as tenant-wide history.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 280,
+          "N": 10000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "risk_per_1000_declared_v10000_p0_5",
+      "description": "Spec F9: V = 10,000, p = 0.5% entered, postage 2.40, fee 3.00, declared: affected 50.0, total 270.00, per shipment 0.0270, per 1,000 27.00, annual 3,240.00.",
+      "input": {
+        "monthlyVolume": "10000",
+        "incidence": {
+          "source": "entered",
+          "pct": "0.5"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 24000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 30000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "risk_per_1000_actual_v10000_p0_5",
+      "description": "Spec F9 on actual weights: only the fee: total 150.00, per shipment 0.0150, per 1,000 15.00.",
+      "input": {
+        "monthlyVolume": "10000",
+        "incidence": {
+          "source": "entered",
+          "pct": "0.5"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 24000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 30000,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_v0",
+      "description": "V = 0: affected 0.0, totals 0.00, per-shipment null, annual 0.00.",
+      "input": {
+        "monthlyVolume": "0",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_p0_entered",
+      "description": "Entered p = 0: expected exposure 0.00.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "entered",
+          "pct": "0"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_p100_entered",
+      "description": "Entered p = 100: every package is affected.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "entered",
+          "pct": "100"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_no_baseline_history_source",
+      "description": "History source with no baseline (N = 0): incidence null, exposure null with a reason, never 0.00.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 0,
+          "N": 0
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_entered_incidence_overrides",
+      "description": "No baseline at all but incidence entered as 2: computed from the entered value and labelled entered.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "entered",
+          "pct": "2"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_postage_severity_null_declared",
+      "description": "Postage severity unknown, fee known, declared: the postage component is not_computed (listed), the total is flagged at least.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_both_severities_null",
+      "description": "Both severities unknown: nothing is computed, total null.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          },
+          "separate_fee": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_fee_severity_null_actual",
+      "description": "Actual weights with the fee severity unknown: postage is in the forecast, the fee is not_computed, nothing counted here, total null.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "edge_manual_range_both_manual",
+      "description": "Both components manual_approval: the whole 300.00 is a 0..300.00 range.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "manual_approval",
+          "separate_fee": "manual_approval"
+        }
+      }
+    },
+    {
+      "id": "edge_all_four_buckets",
+      "description": "Declared: postage absorbed, fee unconfigured, so the buckets hold absorbed 200.00 and not decided 100.00.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "absorbed",
+          "separate_fee": "unconfigured"
+        }
+      }
+    },
+    {
+      "id": "refuse_k_gt_n",
+      "description": "k > N is refused.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 5,
+          "N": 3
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_p_negative",
+      "description": "Entered p < 0 is refused.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "entered",
+          "pct": "-1"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_p_over_100",
+      "description": "Entered p > 100 is refused.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "entered",
+          "pct": "100.0001"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_v_negative",
+      "description": "Negative monthly volume is refused.",
+      "input": {
+        "monthlyVolume": "-1",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_v_too_large",
+      "description": "Monthly volume above 5,000,000 is refused.",
+      "input": {
+        "monthlyVolume": "5000001",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_v_non_numeric",
+      "description": "Non-numeric monthly volume is refused.",
+      "input": {
+        "monthlyVolume": "abc",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_basis_missing",
+      "description": "The forecast basis has no default: a missing basis is refused.",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": null,
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_severity_negative",
+      "description": "A negative entered severity is refused (credits are never an input to exposure).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 20,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": -100,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 50000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_overflow_e4",
+      "description": "V x p x severity beyond the safe E4 integer range is refused (RangeError in the engine): 5,000,000 x 100% x 1,000,000.00 = 5e12 dollars = 5e16 E4 > 9.007e15.",
+      "input": {
+        "monthlyVolume": "5000000",
+        "incidence": {
+          "source": "entered",
+          "pct": "100"
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 10000000000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 0,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    }
+  ]
+}

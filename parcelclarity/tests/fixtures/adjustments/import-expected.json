@@ -1,0 +1,340 @@
+{
+  "_comment": "Hand-counted validation expectations for the import fixtures. 'sample' is tests/fixtures/adjustments/history-sample.csv (40 FICTIONAL rows, customers Alpha Apparel and Beta Beverages exist in the 3PL's account, Gamma Goods does not). 'errors' is history-errors.csv. 'carrierCost' is history-carrier-cost.csv, which must be refused before anything is stored. Codes: see RULES.md part F.",
+  "sample": {
+    "file": "history-sample.csv",
+    "rows": 40,
+    "errorRows": 0,
+    "committable": true,
+    "acceptedRows": 40,
+    "skippedAlreadyImported": 0,
+    "shipDateRange": {
+      "min": "2026-08-03",
+      "max": "2026-09-11"
+    },
+    "counts": {
+      "credit_row": 4,
+      "no_amounts": 3,
+      "missing_weight": 4,
+      "possible_double_count": 2,
+      "unknown_customer": 3,
+      "invalid_date": 0,
+      "non_positive_weight": 0,
+      "partial_dimensions": 0,
+      "negative_amount": 0,
+      "invalid_amount": 0,
+      "duplicate_reference": 0
+    },
+    "rowNumbers": {
+      "credit_row": [
+        6,
+        14,
+        27,
+        31
+      ],
+      "no_amounts": [
+        11,
+        25,
+        36
+      ],
+      "missing_weight": [
+        3,
+        9,
+        18,
+        22
+      ],
+      "possible_double_count": [
+        8,
+        30
+      ],
+      "unknown_customer": [
+        38,
+        39,
+        40
+      ]
+    },
+    "rowNumbersNote": "1-based data rows (row 1 is the first row under the header).",
+    "distinctCustomerNames": {
+      "Beta Beverages": 20,
+      "Alpha Apparel": 14,
+      "": 3,
+      "Gamma Goods": 3
+    },
+    "byType": {
+      "reweight": 22,
+      "remeasure": 10,
+      "combined": 5,
+      "correction": 3
+    },
+    "byCarrier": {
+      "UPS": 32,
+      "USPS": 8
+    },
+    "weightUnitsPresent": [
+      "lb",
+      "oz",
+      "kg",
+      "g"
+    ],
+    "weightUnitNote": "Rows 17 (kg) and 16 (g) exercise unit conversion; the stored lb values depend on the shared weightToLb factors and are NOT asserted here.",
+    "distinctPackageRefs": 40,
+    "reimportSameFileAfterCommit": {
+      "alreadyImported": 40,
+      "newRows": 0,
+      "note": "every row has a package reference; the unique key (tenant, brand, carrier, package_ref, adjustment_type) makes a second import of the same file skip all 40 rows, counted as 'already imported' (never a duplicate_reference error, never double counted)"
+    },
+    "statisticsAfterCommit": {
+      "note": "All 40 rows committed (Gamma Goods and blank brand left unassigned, Beta Beverages -> brand-b, Alpha Apparel -> brand-a) and ONE tenant-wide baseline of 2000 packages for 2026-08-01..2026-09-30 typed. Derived with the same rules as the history goldens.",
+      "tenantWide": {
+        "status": "ok",
+        "scope": "tenant",
+        "baseline": {
+          "present": true,
+          "ids": [
+            "bl-t-aug-sep"
+          ],
+          "packagesTotal": 2000,
+          "periods": [
+            {
+              "start": "2026-08-01",
+              "end": "2026-09-30"
+            }
+          ],
+          "outsideWindowCount": 0
+        },
+        "excludedOutsideBaseline": 0,
+        "recordsInScope": 40,
+        "affected": 40,
+        "perRecordCounting": false,
+        "incidence": {
+          "k": 40,
+          "N": 2000,
+          "pct4dp": "2.0000",
+          "wilson": {
+            "lowerPct4dp": "1.4722",
+            "upperPct4dp": "2.7119",
+            "lowerPct10dp": "1.4721643767",
+            "upperPct10dp": "2.7118789129"
+          }
+        },
+        "incidenceByDirection": {
+          "increase": {
+            "k": 30,
+            "pct4dp": "1.5000",
+            "wilson": {
+              "lowerPct4dp": "1.0527",
+              "upperPct4dp": "2.1333",
+              "lowerPct10dp": "1.0527030120",
+              "upperPct10dp": "2.1332573952"
+            }
+          },
+          "decrease": {
+            "k": 4,
+            "pct4dp": "0.2000",
+            "wilson": {
+              "lowerPct4dp": "0.0778",
+              "upperPct4dp": "0.5131",
+              "lowerPct10dp": "0.0778014725",
+              "upperPct10dp": "0.5131434405"
+            }
+          },
+          "zero": {
+            "k": 0,
+            "pct4dp": "0.0000",
+            "wilson": {
+              "lowerPct4dp": "0.0000",
+              "upperPct4dp": "0.1917",
+              "lowerPct10dp": "0.0000000000",
+              "upperPct10dp": "0.1917117601"
+            }
+          },
+          "unknown": {
+            "k": 6,
+            "pct4dp": "0.3000",
+            "wilson": {
+              "lowerPct4dp": "0.1376",
+              "upperPct4dp": "0.6530",
+              "lowerPct10dp": "0.1375611146",
+              "upperPct10dp": "0.6530003749"
+            }
+          }
+        },
+        "severity": {
+          "increase": {
+            "postage": {
+              "n": 30,
+              "sumE4": 643800,
+              "meanE4": 21460,
+              "medianE4": 25600,
+              "p90E4": 38300,
+              "maxE4": 40000
+            },
+            "fee": {
+              "n": 27,
+              "sumE4": 1010000,
+              "meanE4": 37407,
+              "medianE4": 30000,
+              "p90E4": 70000,
+              "maxE4": 70000
+            }
+          },
+          "decrease": {
+            "postage": {
+              "n": 4,
+              "sumE4": -88000,
+              "meanE4": -22000,
+              "medianE4": -22000
+            },
+            "fee": {
+              "n": 0,
+              "sumE4": null,
+              "meanE4": null,
+              "medianE4": null
+            }
+          },
+          "zero": {
+            "postage": {
+              "n": 0,
+              "sumE4": null,
+              "meanE4": null,
+              "medianE4": null
+            },
+            "fee": {
+              "n": 0,
+              "sumE4": null,
+              "meanE4": null,
+              "medianE4": null
+            }
+          },
+          "unknown": {
+            "postage": {
+              "n": 0,
+              "sumE4": null,
+              "meanE4": null,
+              "medianE4": null
+            },
+            "fee": {
+              "n": 3,
+              "sumE4": 150000,
+              "meanE4": 50000,
+              "medianE4": 50000
+            }
+          }
+        },
+        "chargesOnly": {
+          "n": 30,
+          "meanE4": 21460
+        },
+        "netOfCredits": {
+          "n": 34,
+          "sumE4": 555800,
+          "meanE4": 16347
+        },
+        "topRecordOver25Pct": {
+          "postage": false,
+          "fee": false
+        },
+        "confidence": {
+          "incidence": "moderate",
+          "postage": "adequate",
+          "fee": "low"
+        },
+        "maturity": null,
+        "missingRatePct": null,
+        "correctionRatePct": null,
+        "labelsMissingWeight": null,
+        "wmsNoWeightAffected": null
+      }
+    }
+  },
+  "errors": {
+    "file": "history-errors.csv",
+    "rows": 12,
+    "errorRows": 10,
+    "cleanRows": 2,
+    "committable": false,
+    "counts": {
+      "invalid_date": 2,
+      "non_positive_weight": 2,
+      "partial_dimensions": 2,
+      "negative_amount": 2,
+      "invalid_amount": 1,
+      "duplicate_reference": 1,
+      "credit_row": 0,
+      "no_amounts": 0,
+      "missing_weight": 0,
+      "possible_double_count": 0,
+      "unknown_customer": 0
+    },
+    "rowNumbers": {
+      "invalid_date": [
+        1,
+        2
+      ],
+      "non_positive_weight": [
+        3,
+        4
+      ],
+      "partial_dimensions": [
+        5,
+        6
+      ],
+      "negative_amount": [
+        7,
+        8
+      ],
+      "duplicate_reference": [
+        10
+      ],
+      "invalid_amount": [
+        11
+      ]
+    },
+    "duplicateHandling": {
+      "refuse": {
+        "errorRows": 10,
+        "duplicate_reference": 1,
+        "merged": 0,
+        "ignored": 0
+      },
+      "sum": {
+        "errorRows": 9,
+        "duplicate_reference": 0,
+        "merged": 1,
+        "ignored": 0,
+        "note": "row 10 is summed into row 9: one record with the amounts of both rows added"
+      },
+      "first": {
+        "errorRows": 9,
+        "duplicate_reference": 0,
+        "merged": 0,
+        "ignored": 1,
+        "note": "row 10 is ignored; row 9 is kept"
+      }
+    },
+    "notes": "Row 11 has the decimal-comma amount '12,50' which is refused (never read as 12.50). Every defective row has exactly one defect, so the per-code counts add up to errorRows (refuse)."
+  },
+  "carrierCost": {
+    "file": "history-carrier-cost.csv",
+    "refused": true,
+    "refusedHeaders": [
+      "Carrier Rate",
+      "Postage Cost"
+    ],
+    "firstRefusedHeader": "Carrier Rate",
+    "storedAnything": false,
+    "messageMustContain": [
+      "Carrier Rate",
+      "Nothing from this file was saved"
+    ],
+    "messageMustNotContain": [
+      "77.31",
+      "71.18",
+      "80.02",
+      "73.45",
+      "66.66",
+      "60.12",
+      "1ZX0000001"
+    ],
+    "note": "No uploaded_files row and no adjustment_imports row may exist afterwards; the refusal names the header, never a cell value."
+  }
+}

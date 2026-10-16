@@ -1,0 +1,469 @@
+{
+  "_comment": "Header-guard table. Rule (RULES.md part F): normalise a header (lower case, every run of non-alphanumeric characters becomes one space, trim). A header whose normalised form equals a normalised TEMPLATE header always passes. Otherwise it is REFUSED when it contains any of the whole words cost, rate, postage, label, carrier, net, wholesale, negotiated, paid, invoice, buy (an optional plural s is allowed). The guard runs over every header of every sheet BEFORE anything is stored. A header that passes auto-maps to a money field only when it is an exact template money header, or it contains 'charged to' or 'billed to', or it contains the word customer together with one of charge, charges, charged, amount, fee, price, total; any other money-like header is left unmapped. The guard is best effort: no rule can prove that a number is customer-facing.",
+  "templateHeaders": [
+    "ship_date",
+    "adjusted_on",
+    "carrier",
+    "service",
+    "brand",
+    "adjustment_type",
+    "cause",
+    "reason",
+    "package_ref",
+    "declared_weight",
+    "actual_weight",
+    "weight_unit",
+    "original_length",
+    "original_width",
+    "original_height",
+    "corrected_length",
+    "corrected_width",
+    "corrected_height",
+    "dimension_unit",
+    "customer_charge_original",
+    "customer_charge_corrected",
+    "customer_adjustment_fee",
+    "handling"
+  ],
+  "cases": [
+    {
+      "header": "Carrier Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Carrier Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Carrier Charge",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Carrier Invoice Amount",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Postage Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Postage Paid",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Label Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Shipping Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Negotiated Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Net Amount",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Net Charge",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Wholesale Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Our Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Buy Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Invoice Amount",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Actual Postage",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Cost to Us",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "carrier_cost_original",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Paid",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Buy Price",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Customer Postage Charge",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Carrier Name",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "documented false positive: the word carrier is forbidden outside the exact template header"
+    },
+    {
+      "header": "Net Weight",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "documented false positive"
+    },
+    {
+      "header": "Label ID",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "documented false positive"
+    },
+    {
+      "header": "Rate Card",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "documented false positive"
+    },
+    {
+      "header": "ship_date",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "adjusted_on",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "carrier",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "service",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "brand",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "adjustment_type",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "cause",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "reason",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "package_ref",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "declared_weight",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "actual_weight",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "weight_unit",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "original_length",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "original_width",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "original_height",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "corrected_length",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "corrected_width",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "corrected_height",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "dimension_unit",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "customer_charge_original",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": "exact template header"
+    },
+    {
+      "header": "customer_charge_corrected",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": "exact template header"
+    },
+    {
+      "header": "customer_adjustment_fee",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": "exact template header"
+    },
+    {
+      "header": "handling",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "exact template header"
+    },
+    {
+      "header": "Customer Charge",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": ""
+    },
+    {
+      "header": "Customer Charge Original",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": ""
+    },
+    {
+      "header": "Customer Charge Corrected",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": ""
+    },
+    {
+      "header": "Charged to Customer",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": ""
+    },
+    {
+      "header": "Billed to Customer",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": ""
+    },
+    {
+      "header": "Amount Charged to Customer",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": ""
+    },
+    {
+      "header": "Customer Adjustment Fee",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": ""
+    },
+    {
+      "header": "Adjustment Amount",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Original Charge",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Corrected Charge",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Billed Amount",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Total",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Amount",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Fee",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Price",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "money-like, passes the guard, never auto-mapped (the 3PL may map it by hand after attesting)"
+    },
+    {
+      "header": "Tracking Number",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Order Number",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Reference",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Customer Name",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Notes",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "Created",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": ""
+    },
+    {
+      "header": "SKU",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": ""
+    }
+  ],
+  "stems": [
+    "cost",
+    "rate",
+    "postage",
+    "label",
+    "carrier",
+    "net",
+    "wholesale",
+    "negotiated",
+    "paid",
+    "invoice",
+    "buy"
+  ]
+}

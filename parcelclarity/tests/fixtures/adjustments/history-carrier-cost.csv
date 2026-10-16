@@ -1,0 +1,4 @@
+ship_date,carrier,service,package_ref,declared_weight,actual_weight,weight_unit,Carrier Rate,Postage Cost
+2026-08-03,UPS,UPS Ground,1ZX0000001,3,5,lb,77.31,71.18
+2026-08-04,UPS,UPS Ground,1ZX0000002,4,6,lb,80.02,73.45
+2026-08-05,USPS,USPS Ground Advantage,9400X00003,7,9,oz,66.66,60.12

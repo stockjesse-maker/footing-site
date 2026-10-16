@@ -1,0 +1,210 @@
+{
+  "_comment": "FICTIONAL typed baselines (packages shipped in a ship-date window) for the statistics goldens. brandId null = tenant-wide baseline covering all brands; carrierCode / serviceId null = all carriers / all services. labelsMissingWeight null = not typed.",
+  "baselineSets": {
+    "main": [
+      {
+        "id": "bl-a-jan",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": 40
+      },
+      {
+        "id": "bl-b-jan",
+        "brandId": "brand-b",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 2000,
+        "labelsMissingWeight": null
+      },
+      {
+        "id": "bl-t-jan",
+        "brandId": null,
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 4000,
+        "labelsMissingWeight": null
+      }
+    ],
+    "adjacent": [
+      {
+        "id": "bl-a-jan",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": 40
+      },
+      {
+        "id": "bl-a-feb",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-02-01",
+        "periodEnd": "2026-02-28",
+        "packagesTotal": 1200,
+        "labelsMissingWeight": 30
+      }
+    ],
+    "overlap": [
+      {
+        "id": "bl-a-jan",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": 40
+      },
+      {
+        "id": "bl-a-jan-mid",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-15",
+        "periodEnd": "2026-02-15",
+        "packagesTotal": 900,
+        "labelsMissingWeight": null
+      }
+    ],
+    "zero_missing": [
+      {
+        "id": "bl-a-jan-zero",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": 0
+      }
+    ],
+    "svc": [
+      {
+        "id": "bl-a-ground",
+        "brandId": "brand-a",
+        "carrierCode": "ups",
+        "serviceId": "svc-ups-ground",
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 600,
+        "labelsMissingWeight": null
+      },
+      {
+        "id": "bl-a-usps",
+        "brandId": "brand-a",
+        "carrierCode": "usps",
+        "serviceId": "svc-usps-ga",
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 400,
+        "labelsMissingWeight": null
+      },
+      {
+        "id": "bl-a-all",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": null
+      }
+    ],
+    "n100": [
+      {
+        "id": "bl-a-x",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 100,
+        "labelsMissingWeight": null
+      }
+    ],
+    "n500": [
+      {
+        "id": "bl-a-x",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 500,
+        "labelsMissingWeight": null
+      }
+    ],
+    "n1000": [
+      {
+        "id": "bl-a-x",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": null
+      }
+    ],
+    "n3200": [
+      {
+        "id": "bl-a-x",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 3200,
+        "labelsMissingWeight": null
+      }
+    ],
+    "n3": [
+      {
+        "id": "bl-a-x",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 3,
+        "labelsMissingWeight": null
+      }
+    ],
+    "n16": [
+      {
+        "id": "bl-a-x",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 16,
+        "labelsMissingWeight": null
+      }
+    ],
+    "n1000_end_sep30": [
+      {
+        "id": "bl-a-x",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-09-01",
+        "periodEnd": "2026-09-30",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": null
+      }
+    ],
+    "empty": []
+  }
+}

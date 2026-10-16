@@ -16,7 +16,7 @@ describe("role model", () => {
   });
 
   it("never gives brand roles any 3PL-only permission", () => {
-    const tenantOnly = ["tenant.manage", "staff.manage", "brand.create", "brand.manage", "audit.view", "ratecard.manage"] as const;
+    const tenantOnly = ["tenant.manage", "staff.manage", "brand.create", "brand.manage", "audit.view", "ratecard.manage", "adjustment.view", "adjustment.manage"] as const;
     for (const role of ["brand_admin", "brand_employee"] as const) for (const p of tenantOnly) expect(can(role, p), `${role} ${p}`).toBe(false);
   });
 
@@ -24,6 +24,13 @@ describe("role model", () => {
     for (const p of ["tenant.manage", "staff.manage", "brand.create", "brand.manage", "audit.view"] as const) {
       expect(can("tenant_admin", p)).toBe(true);
       expect(can("tenant_employee", p)).toBe(false);
+    }
+  });
+
+  it("adjustment risk (policies, imported history, examples, estimates) is administrator-only", () => {
+    for (const p of ["adjustment.view", "adjustment.manage"] as const) {
+      expect(can("tenant_admin", p)).toBe(true);
+      for (const role of ["tenant_employee", "brand_admin", "brand_employee"] as const) expect(can(role, p), `${role} ${p}`).toBe(false);
     }
   });
 

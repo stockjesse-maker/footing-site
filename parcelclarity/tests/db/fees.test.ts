@@ -778,7 +778,9 @@ describe("forecasts from assumptions", () => {
     expect(run).toMatchObject({
       kind: "forecast", status: "completed", pricing_basis: "fixed_date", as_of_date: "2026-03-15", volume_basis: "stated", monthly_orders: "1250.0000", forecast_months: "1.000000",
       fee_schedule_id: main.scheduleId, monthly_fee_schedule_version_id: main.versionId, processing_orders: null, processing_definite: "0.0000", processing_estimated: "1250.0000",
-      monthly_fixed: "216.0000", minimum_topup: "0.0000", minimum_status: "exact", fee_engine_version: "1.0.0", engine_version: "2.2.0", total_shipments: 0, assumptions, reference_data: pins(),
+      monthly_fixed: "216.0000", minimum_topup: "0.0000", minimum_status: "exact", fee_engine_version: "1.0.0", engine_version: "2.2.0", total_shipments: 0, assumptions,
+      // The pins a customer can read carry the number of load issues, never their text (that stays in the staff-only run context).
+      reference_data: { feeScheduleVersionId: main.versionId, rateCardVersionId: rcVersion, ruleVersionIds: [], zipListIds: [], overrideIds: [], loadIssueCount: 0 },
     });
     expect(await asUser(w.brandA.admin.id, "select fee_date::text, fee_schedule_version_id, unavailable_reason from public.simulation_run_fee_contexts where run_id = $1", [run!.id])).toEqual([{ fee_date: "2026-03-15", fee_schedule_version_id: main.versionId, unavailable_reason: null }]);
     expect(await asUser(w.t1.employee.id, "select ship_date::text, rate_card_version_id from public.simulation_run_contexts where run_id = $1", [run!.id])).toEqual([{ ship_date: "2026-03-15", rate_card_version_id: rcVersion }]);

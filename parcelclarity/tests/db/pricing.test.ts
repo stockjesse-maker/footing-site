@@ -336,24 +336,24 @@ describe("surcharge rules", () => {
   it("customer overrides are visible only to staff and the brand they concern", async () => {
     const [o] = await asUser<{ id: string }>(
       w.t1.admin.id,
-      "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'Waived per MSA') returning id",
+      "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date) values ($1, $2, $3, 'exclude', '2026-01-01') returning id",
       [w.t1.id, w.brandA.id, ruleId],
     );
     expect(await asUser(w.brandA.employee.id, "select id from public.customer_surcharge_overrides where id = $1", [o!.id])).toHaveLength(1);
     expect(await asUser(w.brandB.admin.id, "select id from public.customer_surcharge_overrides")).toHaveLength(0);
     expect(await asUser(w.t2.admin.id, "select id from public.customer_surcharge_overrides")).toHaveLength(0);
     expect(await asUser(w.t1.employee.id, "select id from public.customer_surcharge_overrides where id = $1", [o!.id])).toHaveLength(1);
-    await expectDenied(asUser(w.brandA.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'self-serve')", [w.t1.id, w.brandA.id, ruleId]), /row-level security/);
+    await expectDenied(asUser(w.brandA.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date) values ($1, $2, $3, 'exclude', '2026-01-01')", [w.t1.id, w.brandA.id, ruleId]), /row-level security/);
     // Another tenant cannot reference this tenant's rule or brand.
-    await expectDenied(asUser(w.t2.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'x')", [w.t2.id, w.brandC.id, ruleId]), /row-level security/);
-    await expectDenied(asUser(w.t2.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'x')", [w.t2.id, w.brandA.id, ruleId]), /row-level security|foreign key/);
+    await expectDenied(asUser(w.t2.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date) values ($1, $2, $3, 'exclude', '2026-01-01')", [w.t2.id, w.brandC.id, ruleId]), /row-level security/);
+    await expectDenied(asUser(w.t2.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date) values ($1, $2, $3, 'exclude', '2026-01-01')", [w.t2.id, w.brandA.id, ruleId]), /row-level security|foreign key/);
     // Two live exceptions for the same brand and rule may not overlap in time; ending one frees the dates.
     await expectDenied(
-      asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, percent, effective_date, reference) values ($1, $2, $3, 'markup_percent', 10, '2026-06-01', 'Addendum')", [w.t1.id, w.brandA.id, ruleId]),
+      asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, percent, effective_date) values ($1, $2, $3, 'markup_percent', 10, '2026-06-01')", [w.t1.id, w.brandA.id, ruleId]),
       /cso_no_overlap/,
     );
     await asUser(w.t1.admin.id, "update public.customer_surcharge_overrides set ended_at = now() where id = $1", [o!.id]);
-    await asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, percent, effective_date, reference) values ($1, $2, $3, 'markup_percent', 10, '2026-06-01', 'Addendum')", [w.t1.id, w.brandA.id, ruleId]);
+    await asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, percent, effective_date) values ($1, $2, $3, 'markup_percent', 10, '2026-06-01')", [w.t1.id, w.brandA.id, ruleId]);
   });
 
   it("a rule scoped to one brand is delivered only to that brand", async () => {
@@ -496,10 +496,10 @@ describe("review fixes: brand exceptions, hidden notes, archived cards, atomic z
   it("an exception cannot target a rule scoped to another brand", async () => {
     const [scoped] = await sql<{ id: string }>("select id from public.surcharge_rules where rule_key = 'northwind.alpha_handling'");
     await expectDenied(
-      asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'wrong brand')", [w.t1.id, w.brandB.id, scoped!.id]),
+      asUser(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date) values ($1, $2, $3, 'exclude', '2026-01-01')", [w.t1.id, w.brandB.id, scoped!.id]),
       /row-level security/,
     );
-    const [ok] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date, reference) values ($1, $2, $3, 'exclude', '2026-01-01', 'right brand') returning id", [w.t1.id, w.brandA.id, scoped!.id]);
+    const [ok] = await asUser<{ id: string }>(w.t1.admin.id, "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, effective_date) values ($1, $2, $3, 'exclude', '2026-01-01') returning id", [w.t1.id, w.brandA.id, scoped!.id]);
     await asUser(w.t1.admin.id, "update public.customer_surcharge_overrides set ended_at = now() where id = $1", [ok!.id]);
   });
 

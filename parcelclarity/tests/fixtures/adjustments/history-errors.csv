@@ -1,0 +1,13 @@
+ship_date,adjusted_on,carrier,service,brand,adjustment_type,cause,reason,package_ref,declared_weight,actual_weight,weight_unit,original_length,original_width,original_height,corrected_length,corrected_width,corrected_height,dimension_unit,customer_charge_original,customer_charge_corrected,customer_adjustment_fee,handling
+2026-13-45,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000001,3,5,lb,,,,,,,,12.79,13.35,3.00,
+not a date,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000002,3,5,lb,,,,,,,,12.79,13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000003,0,5,lb,,,,,,,,12.79,13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000004,3,-2,lb,,,,,,,,12.79,13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000005,3,5,lb,10,,,,,,,12.79,13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000006,3,5,lb,,,,,8,6,,12.79,13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000007,3,5,lb,,,,,,,,(3.20),13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000008,3,5,lb,,,,,,,,12.79,13.35,-5.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000009,3,5,lb,,,,,,,,12.79,13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000009,3,5,lb,,,,,,,,12.79,13.35,3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000010,3,5,lb,,,,,,,,12.79,"12,50",3.00,
+2026-08-03,2026-08-08,UPS,UPS Ground,Beta Beverages,reweight,carrier_reweigh,Carrier reweigh,1ZE0000011,3,5,lb,,,,,,,,12.79,13.35,3.00,

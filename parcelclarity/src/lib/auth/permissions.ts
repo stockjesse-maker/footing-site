@@ -18,6 +18,8 @@ export const PERMISSIONS = [
   "ratecard.manage",
   "simulation.run",
   "report.view",
+  "adjustment.view",
+  "adjustment.manage",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -25,6 +27,8 @@ export const ROLE_PERMISSIONS: Record<Role, readonly Permission[]> = {
   tenant_admin: [
     "tenant.manage", "staff.manage", "brand.view", "brand.create", "brand.manage", "member.view",
     "member.manage", "audit.view", "ratecard.view", "ratecard.manage", "simulation.run", "report.view",
+    // Milestone 5: adjustment policies, imported history, examples and risk estimates are administrator-only.
+    "adjustment.view", "adjustment.manage",
   ],
   tenant_employee: ["brand.view", "ratecard.view", "simulation.run", "report.view"],
   brand_admin: ["brand.view", "member.view", "member.manage", "simulation.run", "report.view"],

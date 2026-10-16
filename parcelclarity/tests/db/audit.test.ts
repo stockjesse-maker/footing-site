@@ -64,5 +64,10 @@ describe("log_audit_event()", () => {
     // Pricing lifecycle events are trigger-only; a member cannot forge an activation or publication.
     await expectDenied(log(w.brandA.employee.id, w.t1.id, null, "ratecard.version_active"), /not permitted/);
     await expectDenied(log(w.t1.admin.id, w.t1.id, null, "carrier_rule.published"), /not permitted/);
+    // Adjustment events (Milestone 5) are written by database triggers only, never by a client.
+    for (const action of ["adjustment.policy_set", "adjustment.scenario_published", "adjustment.scenario_retired"]) {
+      await expectDenied(log(w.brandA.employee.id, w.t1.id, w.brandA.id, action), /not permitted/);
+      await expectDenied(log(w.t1.admin.id, w.t1.id, null, action), /not permitted/);
+    }
   });
 });

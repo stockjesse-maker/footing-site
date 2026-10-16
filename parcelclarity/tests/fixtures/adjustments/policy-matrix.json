@@ -1,0 +1,575 @@
+{
+  "_comment": "FICTIONAL policy matrix shared by the TypeScript resolveHandling(policies, brandId, type, component, date) and the SQL function app.adjustment_handling(tenant, brand, type, component, on). brandId is symbolic (brandA, brandB, brandC; null = tenant default): the DB test maps each symbol to a real brand of the test tenant. Dates are ISO dates; validFrom and validTo are INCLUSIVE (daterange '[]'). Resolution: the brand's own row in effect beats the tenant default; none = 'unconfigured'; the pair (correction, postage_difference) is invalid and resolves to 'unconfigured'; nothing is ever derived from another type (combined is an explicit row).",
+  "validPairs": [
+    {
+      "adjustmentType": "reweight",
+      "component": "postage_difference"
+    },
+    {
+      "adjustmentType": "reweight",
+      "component": "separate_fee"
+    },
+    {
+      "adjustmentType": "remeasure",
+      "component": "postage_difference"
+    },
+    {
+      "adjustmentType": "remeasure",
+      "component": "separate_fee"
+    },
+    {
+      "adjustmentType": "combined",
+      "component": "postage_difference"
+    },
+    {
+      "adjustmentType": "combined",
+      "component": "separate_fee"
+    },
+    {
+      "adjustmentType": "correction",
+      "component": "separate_fee"
+    }
+  ],
+  "policies": [
+    {
+      "id": "d1",
+      "brandId": null,
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "handling": "pass_through",
+      "validFrom": "2026-01-01",
+      "validTo": null
+    },
+    {
+      "id": "d2",
+      "brandId": null,
+      "adjustmentType": "reweight",
+      "component": "separate_fee",
+      "handling": "absorbed",
+      "validFrom": "2026-01-01",
+      "validTo": null
+    },
+    {
+      "id": "d3",
+      "brandId": null,
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "handling": "pass_through",
+      "validFrom": "2026-01-01",
+      "validTo": "2026-06-30"
+    },
+    {
+      "id": "d4",
+      "brandId": null,
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "handling": "absorbed",
+      "validFrom": "2026-07-01",
+      "validTo": null
+    },
+    {
+      "id": "d5",
+      "brandId": null,
+      "adjustmentType": "remeasure",
+      "component": "separate_fee",
+      "handling": "manual_approval",
+      "validFrom": "2026-01-01",
+      "validTo": null
+    },
+    {
+      "id": "d6",
+      "brandId": null,
+      "adjustmentType": "combined",
+      "component": "separate_fee",
+      "handling": "pass_through",
+      "validFrom": "2026-01-01",
+      "validTo": null
+    },
+    {
+      "id": "d7",
+      "brandId": null,
+      "adjustmentType": "correction",
+      "component": "separate_fee",
+      "handling": "absorbed",
+      "validFrom": "2026-01-01",
+      "validTo": null
+    },
+    {
+      "id": "d8",
+      "brandId": null,
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "handling": "pass_through",
+      "validFrom": "2027-01-01",
+      "validTo": null
+    },
+    {
+      "id": "a1",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "handling": "absorbed",
+      "validFrom": "2026-03-01",
+      "validTo": null
+    },
+    {
+      "id": "a2",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "separate_fee",
+      "handling": "pass_through",
+      "validFrom": "2026-01-01",
+      "validTo": "2026-05-31"
+    },
+    {
+      "id": "a3",
+      "brandId": "brandA",
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "handling": "manual_approval",
+      "validFrom": "2026-02-01",
+      "validTo": null
+    },
+    {
+      "id": "b1",
+      "brandId": "brandB",
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "handling": "pass_through",
+      "validFrom": "2026-01-01",
+      "validTo": "2026-03-31"
+    }
+  ],
+  "queries": [
+    {
+      "id": "brand_row_beats_default",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "on": "2026-10-16",
+      "expected": "absorbed",
+      "why": "brand A row a1 (absorbed, from 2026-03-01) beats default d1 (pass_through)"
+    },
+    {
+      "id": "brand_row_not_started_default_applies",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "on": "2026-02-15",
+      "expected": "pass_through",
+      "why": "a1 starts 2026-03-01; on 2026-02-15 only the default d1 is in effect"
+    },
+    {
+      "id": "brand_row_valid_from_inclusive",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "on": "2026-03-01",
+      "expected": "absorbed",
+      "why": "validFrom is inclusive"
+    },
+    {
+      "id": "day_before_brand_row_default",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "on": "2026-02-28",
+      "expected": "pass_through",
+      "why": "the day before a1 starts the default applies"
+    },
+    {
+      "id": "other_brand_uses_default",
+      "brandId": "brandB",
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "on": "2026-10-16",
+      "expected": "pass_through",
+      "why": "brand B has no reweight/postage row: default d1"
+    },
+    {
+      "id": "tenant_wide_query_uses_default_only",
+      "brandId": null,
+      "adjustmentType": "reweight",
+      "component": "postage_difference",
+      "on": "2026-10-16",
+      "expected": "pass_through",
+      "why": "a null brand reads tenant defaults only (brand rows never apply)"
+    },
+    {
+      "id": "brand_row_valid_to_inclusive",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "separate_fee",
+      "on": "2026-05-31",
+      "expected": "pass_through",
+      "why": "a2 runs through 2026-05-31 inclusive (pass_through beats default d2 absorbed)"
+    },
+    {
+      "id": "expired_brand_row_ignored_default_applies",
+      "brandId": "brandA",
+      "adjustmentType": "reweight",
+      "component": "separate_fee",
+      "on": "2026-06-01",
+      "expected": "absorbed",
+      "why": "a2 expired on 2026-05-31: the default d2 (absorbed) applies"
+    },
+    {
+      "id": "other_brand_default_fee",
+      "brandId": "brandB",
+      "adjustmentType": "reweight",
+      "component": "separate_fee",
+      "on": "2026-10-16",
+      "expected": "absorbed",
+      "why": "default d2 absorbed"
+    },
+    {
+      "id": "brand_row_beats_changed_default",
+      "brandId": "brandA",
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "on": "2026-10-16",
+      "expected": "manual_approval",
+      "why": "a3 (manual_approval) beats d4 (absorbed)"
+    },
+    {
+      "id": "default_before_replacement_end_inclusive",
+      "brandId": "brandB",
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "on": "2026-06-30",
+      "expected": "pass_through",
+      "why": "d3 (pass_through) runs through 2026-06-30"
+    },
+    {
+      "id": "default_replacement_starts",
+      "brandId": "brandB",
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "on": "2026-07-01",
+      "expected": "absorbed",
+      "why": "d4 (absorbed) starts 2026-07-01"
+    },
+    {
+      "id": "default_valid_from_inclusive",
+      "brandId": "brandB",
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "on": "2026-01-01",
+      "expected": "pass_through",
+      "why": "d3 starts 2026-01-01 (inclusive)"
+    },
+    {
+      "id": "before_any_row_unconfigured",
+      "brandId": "brandB",
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "on": "2025-12-31",
+      "expected": "unconfigured",
+      "why": "no row in effect before 2026-01-01: unconfigured"
+    },
+    {
+      "id": "none_configured_is_unconfigured",
+      "brandId": "brandB",
+      "adjustmentType": "remeasure",
+      "component": "postage_difference",
+      "on": "2025-06-01",
+      "expected": "unconfigured",
+      "why": "no row at all"
+    },
+    {
+      "id": "combined_postage_not_derived_from_reweight_remeasure",
+      "brandId": null,
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "on": "2026-10-16",
+      "expected": "unconfigured",
+      "why": "reweight and remeasure postage rows exist but there is no combined/postage row: unconfigured (no hidden precedence)"
+    },
+    {
+      "id": "combined_postage_future_row_starts",
+      "brandId": null,
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "on": "2027-01-01",
+      "expected": "pass_through",
+      "why": "d8 starts 2027-01-01"
+    },
+    {
+      "id": "combined_postage_future_row_not_yet",
+      "brandId": null,
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "on": "2026-12-31",
+      "expected": "unconfigured",
+      "why": "d8 has not started"
+    },
+    {
+      "id": "combined_fee_explicit_row",
+      "brandId": null,
+      "adjustmentType": "combined",
+      "component": "separate_fee",
+      "on": "2026-10-16",
+      "expected": "pass_through",
+      "why": "explicit combined/separate_fee default d6"
+    },
+    {
+      "id": "brand_a_combined_fee_default",
+      "brandId": "brandA",
+      "adjustmentType": "combined",
+      "component": "separate_fee",
+      "on": "2026-10-16",
+      "expected": "pass_through",
+      "why": "brand A has no combined row: default d6"
+    },
+    {
+      "id": "correction_fee_default",
+      "brandId": null,
+      "adjustmentType": "correction",
+      "component": "separate_fee",
+      "on": "2026-10-16",
+      "expected": "absorbed",
+      "why": "default d7 absorbed"
+    },
+    {
+      "id": "correction_postage_invalid_pair",
+      "brandId": null,
+      "adjustmentType": "correction",
+      "component": "postage_difference",
+      "on": "2026-10-16",
+      "expected": "unconfigured",
+      "why": "(correction, postage_difference) is not a valid pair: unconfigured"
+    },
+    {
+      "id": "brand_b_expired_row_ignored_no_default",
+      "brandId": "brandB",
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "on": "2026-10-16",
+      "expected": "unconfigured",
+      "why": "b1 expired on 2026-03-31 and the tenant default d8 starts only in 2027: unconfigured"
+    },
+    {
+      "id": "brand_b_row_in_effect",
+      "brandId": "brandB",
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "on": "2026-02-01",
+      "expected": "pass_through",
+      "why": "b1 in effect (pass_through)"
+    },
+    {
+      "id": "brand_b_row_last_day",
+      "brandId": "brandB",
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "on": "2026-03-31",
+      "expected": "pass_through",
+      "why": "b1 last day inclusive"
+    },
+    {
+      "id": "brand_b_row_day_after",
+      "brandId": "brandB",
+      "adjustmentType": "combined",
+      "component": "postage_difference",
+      "on": "2026-04-01",
+      "expected": "unconfigured",
+      "why": "b1 ended: unconfigured"
+    },
+    {
+      "id": "unknown_brand_uses_defaults",
+      "brandId": "brandC",
+      "adjustmentType": "reweight",
+      "component": "separate_fee",
+      "on": "2026-10-16",
+      "expected": "absorbed",
+      "why": "a brand with no rows reads the defaults"
+    },
+    {
+      "id": "remeasure_fee_manual_default",
+      "brandId": "brandA",
+      "adjustmentType": "remeasure",
+      "component": "separate_fee",
+      "on": "2026-10-16",
+      "expected": "manual_approval",
+      "why": "default d5 manual_approval"
+    }
+  ],
+  "constraintExamples": [
+    {
+      "id": "overlap_tenant_default_open_ended",
+      "rows": [
+        {
+          "id": "x1",
+          "brandId": null,
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        },
+        {
+          "id": "x2",
+          "brandId": null,
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "absorbed",
+          "validFrom": "2026-06-01",
+          "validTo": null
+        }
+      ],
+      "overlap": true,
+      "note": "two open-ended tenant defaults overlap (NULL brand must be coalesced)"
+    },
+    {
+      "id": "overlap_brand_dates",
+      "rows": [
+        {
+          "id": "x1",
+          "brandId": "brandA",
+          "adjustmentType": "remeasure",
+          "component": "postage_difference",
+          "handling": "pass_through",
+          "validFrom": "2026-01-01",
+          "validTo": "2026-06-30"
+        },
+        {
+          "id": "x2",
+          "brandId": "brandA",
+          "adjustmentType": "remeasure",
+          "component": "postage_difference",
+          "handling": "absorbed",
+          "validFrom": "2026-06-30",
+          "validTo": null
+        }
+      ],
+      "overlap": true,
+      "note": "daterange '[]' is inclusive: the day 2026-06-30 is in both"
+    },
+    {
+      "id": "adjacent_ranges_allowed",
+      "rows": [
+        {
+          "id": "x1",
+          "brandId": "brandA",
+          "adjustmentType": "remeasure",
+          "component": "postage_difference",
+          "handling": "pass_through",
+          "validFrom": "2026-01-01",
+          "validTo": "2026-06-30"
+        },
+        {
+          "id": "x2",
+          "brandId": "brandA",
+          "adjustmentType": "remeasure",
+          "component": "postage_difference",
+          "handling": "absorbed",
+          "validFrom": "2026-07-01",
+          "validTo": null
+        }
+      ],
+      "overlap": false,
+      "note": "valid_to = 2026-06-30 then valid_from = 2026-07-01 do not overlap"
+    },
+    {
+      "id": "same_range_other_component_allowed",
+      "rows": [
+        {
+          "id": "x1",
+          "brandId": null,
+          "adjustmentType": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        },
+        {
+          "id": "x2",
+          "brandId": null,
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "absorbed",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        }
+      ],
+      "overlap": false,
+      "note": "different component"
+    },
+    {
+      "id": "same_range_other_type_allowed",
+      "rows": [
+        {
+          "id": "x1",
+          "brandId": null,
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        },
+        {
+          "id": "x2",
+          "brandId": null,
+          "adjustmentType": "remeasure",
+          "component": "separate_fee",
+          "handling": "absorbed",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        }
+      ],
+      "overlap": false,
+      "note": "different type"
+    },
+    {
+      "id": "same_range_other_brand_allowed",
+      "rows": [
+        {
+          "id": "x1",
+          "brandId": "brandA",
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        },
+        {
+          "id": "x2",
+          "brandId": "brandB",
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "absorbed",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        }
+      ],
+      "overlap": false,
+      "note": "different brand"
+    },
+    {
+      "id": "brand_row_and_tenant_default_may_coexist",
+      "rows": [
+        {
+          "id": "x1",
+          "brandId": null,
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        },
+        {
+          "id": "x2",
+          "brandId": "brandA",
+          "adjustmentType": "reweight",
+          "component": "separate_fee",
+          "handling": "absorbed",
+          "validFrom": "2026-01-01",
+          "validTo": null
+        }
+      ],
+      "overlap": false,
+      "note": "a brand exception and the tenant default are different keys"
+    }
+  ],
+  "constraintExamplesNote": "Insert each example's rows in order into adjustment_policies for one tenant (brand symbols mapped to real brands). overlap = true means the second insert must fail with the exclusion violation (SQLSTATE 23P01 inside the table, P0007 when raised by set_adjustment_policy); overlap = false means both inserts succeed."
+}
