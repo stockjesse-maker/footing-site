@@ -16,6 +16,7 @@ import {
   initialFormState,
   preflight,
   reconcileState,
+  saveProblemMessage,
   spreadEvenly,
   type ForecastContext,
   type ForecastFormState,
@@ -118,8 +119,11 @@ function spreadRows<T extends { sharePct: string }>(rows: T[]): T[] {
   return rows.map((r, j) => ({ ...r, sharePct: shares[j]! }));
 }
 
+/** A real calendar date as YYYY-MM-DD ("2026-02-30" is not one). */
 function isoDate(value: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
 }
 
 export function ForecastForm({ audience, brandId, tenantName, context, initial = null, editedFrom = null, startDate = null }: ForecastFormProps) {
@@ -220,7 +224,7 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
         const found = fieldErrorsFromProblems(response.problems);
         setSaveErrors(found.fields);
         // The name's problem is shown on its field; any other one (a date that lost its rates since the preview) has no field here and must still be said.
-        setSaveMessage(found.general[0] ?? Object.entries(found.fields).find(([field]) => field !== "name")?.[1] ?? null);
+        setSaveMessage(saveProblemMessage(found));
       } else if (response.status === "error") setSaveMessage(response.message);
       else setSaveMessage("Some orders cannot be priced; preview again before saving.");
     });
@@ -648,7 +652,7 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
 }
 
 /** The latest outcome as a discriminated union the render reads once (null while there is none). */
-function latestOutcome(outcome: { key: string; response: ForecastPreviewResponse } | null, fresh: boolean, sameInputs: boolean):
+export function latestOutcome(outcome: { key: string; response: ForecastPreviewResponse } | null, fresh: boolean, sameInputs: boolean):
   | { kind: "none" }
   | { kind: "ok"; response: Extract<ForecastPreviewResponse, { status: "ok" }> }
   | { kind: "blocked"; response: Extract<ForecastPreviewResponse, { status: "blocked" }> }

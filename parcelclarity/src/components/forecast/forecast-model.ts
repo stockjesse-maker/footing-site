@@ -331,6 +331,15 @@ export function fieldErrorsFromProblems(problems: string[]): { fields: Record<st
   return { fields, general };
 }
 
+/**
+ * The sentence to show when saving found problems: the first general one, else the first problem that
+ * belongs to a field other than the name (the name has its own field on the save card, and the other
+ * fields are far above it, so a problem there would otherwise be said nowhere); null when there is none.
+ */
+export function saveProblemMessage(found: { fields: Record<string, string>; general: string[] }): string | null {
+  return found.general[0] ?? Object.entries(found.fields).find(([field]) => field !== "name")?.[1] ?? null;
+}
+
 // ---------------------------------------------------------------------------
 // State → assumptions
 // ---------------------------------------------------------------------------

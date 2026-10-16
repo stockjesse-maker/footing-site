@@ -14,7 +14,7 @@ vi.mock("@/app/actions/surcharges", () => ({ addSurchargeRuleVersion: vi.fn(), c
 vi.mock("@/app/actions/forecast", () => ({ previewForecast: vi.fn(), saveForecast: vi.fn(), loadForecastFormContext: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
 
-const { ForecastForm } = await import("@/components/forecast/forecast-form");
+const { ForecastForm, latestOutcome } = await import("@/components/forecast/forecast-form");
 const { ForecastResult, UnpriceableTable } = await import("@/components/forecast/forecast-result");
 const model = await import("@/components/forecast/forecast-model");
 const resultModel = await import("@/components/forecast/result-model");
@@ -657,5 +657,112 @@ describe("the form renders", () => {
     const several = text(renderToStaticMarkup(createElement(ForecastForm, { ...props, context: context({ cards: [{ id: "a", name: "Card A" }, { id: "b", name: "Card B" }], warnings: ["UPS Ground: ZIP code 90001 is not on the zone chart of this rate card."] }) })));
     expect(several).toContain("Rate card");
     expect(several).toContain("not on the zone chart of this rate card");
+  });
+});
+
+describe("adversarial review: figures and wording that read wrong", () => {
+  const partialZones = { zones: [{ zone: "2", sharePct: "80" }, { zone: "9", sharePct: "20" }] };
+  const render = (summary: ForecastSummary, audience: "brand" | "staff" = "brand") => text(renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(summary, audience), audience, onAdd: () => undefined })));
+
+  it("gives each not-included order fee its own order count, not the largest in its category", () => {
+    // No catch-all packaging fee: parcels with no packaging type leave the box and poly mailer fees uncomputed for 50% of orders,
+    // and "pouch" (30%) is on no fee at all. All three are packaging fees; each must name its own share of the 1,250 orders.
+    const noCatchAll = { ...standard, rules: standard.rules.filter((r) => r.key !== "pack_other") };
+    const parcel = (packagingType: string | null, sharePct: string) => ({ weightLb: "0.5", packagingType, sharePct, unknownSize: true });
+    const a = assumptions({ parcels: [parcel(null, "50"), parcel("pouch", "30"), parcel("box", "20")] });
+    const summary = summaryOf(a, deps({ schedule: noCatchAll }));
+    const items = resultModel.notIncludedItems(summary).filter((i) => i.category === "packaging");
+    const pouch = items.find((i) => i.reason === "no charge on the fee schedule covers this packaging")!;
+    expect(pouch.orders).toBe(375);
+    const unknown = items.filter((i) => i.reason === "the packaging was not given");
+    expect(unknown.length).toBeGreaterThan(0);
+    for (const i of unknown) expect(i.orders).toBe(625);
+    expect(items.every((i) => i.orders > 0)).toBe(true);
+  });
+
+  it("says a minimum that counts shipping counted fees and shipping, because the amount includes the shipping", () => {
+    const withShipping = summaryOf(assumptions({ fulfillment: NO_ANSWERS }), deps({ schedule: schedules.minimum_with_shipping! }));
+    expect(withShipping.minimums[0]!.includesShipping).toBe(true);
+    const t = render(withShipping);
+    expect(t).toContain("Fees and shipping counted toward the minimum: $20,431.71 · Minimum: $1,000.00 · Added: $0.00");
+    expect(t).not.toContain("Fees counted toward the minimum");
+    // A minimum that counts fees only still says fees.
+    expect(render(summaryOf(assumptions()))).toContain("Fees counted toward the minimum: $4,710.25");
+  });
+
+  it("describes why a minimum is only an upper bound in this screen's words (not computed, never 'not modeled')", () => {
+    const t = render(summaryOf(assumptions({ fulfillment: NO_ANSWERS })));
+    expect(t).toContain("Pallet storage is not computed");
+    expect(t).not.toContain("not modeled");
+    const partial = render(summaryOf(assumptions(partialZones), deps(), { priceOnlyCovered: true }));
+    expect(partial).toContain("only 80.00% of orders could be priced");
+    expect(partial).not.toContain("shipping priced for");
+  });
+
+  it("does not put the priced share's monthly shipping on all the orders when only part of the volume was priced", () => {
+    const partial = summaryOf(assumptions(partialZones), deps(), { priceOnlyCovered: true });
+    expect(partial.pricedSharePct).toBe("80.00");
+    const t = render(partial);
+    expect(t).toContain(`${"$"}12,809.94 a month, $12.81 per order on average (over the 80.00% of orders that could be priced), from your rate card.`);
+    // Shipping only (fulfillment skipped) shows the same figure in the headline: it names the share it covers.
+    const skipped = summaryOf(assumptions({ ...partialZones, fulfillment: { skip: true, drivers: {}, orderShares: {} } }), deps(), { priceOnlyCovered: true });
+    const s = render(skipped);
+    expect(s).toContain("about $12,809.94 a month over the 80.00% of orders that could be priced");
+    expect(s).not.toContain("a month at 1,250 orders a month");
+    // With every order priced the figure is for all of them, and says so.
+    const whole = render(summaryOf(assumptions({ fulfillment: { skip: true, drivers: {}, orderShares: {} } })));
+    expect(whole).toContain("a month at 1,250 orders a month");
+    expect(whole).not.toContain("of orders that could be priced)");
+  });
+
+  it("says what the volume table holds constant, so a volume price break is not mistaken for no discount", () => {
+    const t = render(summaryOf(assumptions()));
+    expect(t).toContain("Shipping and order fees per order are held the same");
+    expect(t).toContain("Price breaks that depend on your monthly volume are not read again");
+  });
+
+  it("says the parts of the all-in can differ from it by a cent", () => {
+    expect(render(summaryOf(assumptions()))).toContain("Each figure is rounded to cents once, so the parts can differ from the total by a cent.");
+  });
+});
+
+describe("adversarial review: the form", () => {
+  const ctx = context();
+  const blocked = { status: "blocked" as const, cellCount: 4, unpriceable: [], unpriceableSharePct: "20.00" };
+  const ok = { status: "ok" as const, result: {} as never };
+  const invalid = { status: "invalid" as const, problems: ["monthlyOrders: must be between 1 and 5,000,000"] };
+
+  it("keeps the blocked table on screen when only 'price only what the rate card covers' was ticked, so it can be seen and undone", () => {
+    const o = (response: Parameters<typeof latestOutcome>[0] extends infer T ? (T extends { response: infer R } ? R : never) : never) => ({ key: "k1", response });
+    // Ticking the choice changes the key (not fresh) but not the inputs: the table stays.
+    expect(latestOutcome(o(blocked), false, true).kind).toBe("blocked");
+    // Any other change makes a blocked or invalid outcome say nothing about the inputs now.
+    expect(latestOutcome(o(blocked), false, false).kind).toBe("none");
+    expect(latestOutcome(o(invalid), false, true).kind).toBe("none");
+    // A stale result stays (dimmed); a fresh outcome of any kind is shown.
+    expect(latestOutcome(o(ok), false, false).kind).toBe("ok");
+    expect(latestOutcome(o(invalid), true, true).kind).toBe("invalid");
+    expect(latestOutcome(null, true, true).kind).toBe("none");
+  });
+
+  it("says a problem found on saving that belongs to no field of the save card", () => {
+    const found = model.fieldErrorsFromProblems(["asOfDate: your rate card has no rates in effect on Mar 15, 2026. Choose another date."]);
+    expect(found.general).toEqual([]);
+    expect(model.saveProblemMessage(found)).toBe("Your rate card has no rates in effect on Mar 15, 2026. Choose another date.");
+    // The name's problem is on its field; nothing else to say.
+    expect(model.saveProblemMessage(model.fieldErrorsFromProblems(["name: Give the forecast a name."]))).toBeNull();
+    // A general sentence comes first.
+    expect(model.saveProblemMessage({ fields: { monthlyOrders: "x" }, general: ["General."] })).toBe("General.");
+  });
+
+  it("opens on the date it was given, and no longer says the date starts from today", () => {
+    const html = renderToStaticMarkup(createElement(ForecastForm, { audience: "brand", tenantName: "Fixture 3PL", context: context({ asOfDate: "2026-04-01" }), startDate: "2026-04-01", initial: assumptions(), editedFrom: { name: "Spring plan", asOfDate: "2026-03-15" } }));
+    expect(html).toContain('type="date"');
+    expect(html).toContain('value="2026-04-01"');
+    const t = text(html);
+    expect(t).toContain("Saving creates a new forecast; the original stays as it is.");
+    expect(t).not.toContain("The date starts from today");
+    // Not a date: ignored.
+    expect(renderToStaticMarkup(createElement(ForecastForm, { audience: "brand", tenantName: "Fixture 3PL", context: context(), startDate: "2026-02-30" }))).not.toContain('value="2026-02-30"');
   });
 });
