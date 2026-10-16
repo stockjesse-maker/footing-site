@@ -166,10 +166,12 @@ export function summariseHistory(records: readonly HistoryRecord[], baselines: r
     selected = inside;
   }
   selected = [...selected].sort((a, b) => (a.periodStart < b.periodStart ? -1 : a.periodStart > b.periodStart ? 1 : a.periodEnd < b.periodEnd ? -1 : a.periodEnd > b.periodEnd ? 1 : a.id < b.id ? -1 : 1));
-  let reach: HistoryBaseline | null = null;
+  // Sorted by start, and every period valid (start not after end, checked above): a baseline overlaps an earlier one exactly when it starts on or
+  // before the PREVIOUS one ends (a baseline that starts after the previous end also ends after it, so the previous one is always the furthest-reaching).
+  let previous: HistoryBaseline | null = null;
   for (const b of selected) {
-    if (reach && b.periodStart <= reach.periodEnd) return refused("baselines_overlap", "Two baselines for the same scope cover some of the same days; they cannot be added.", { ids: [reach.id, b.id] });
-    if (!reach || b.periodEnd > reach.periodEnd) reach = b;
+    if (previous && b.periodStart <= previous.periodEnd) return refused("baselines_overlap", "Two baselines for the same scope cover some of the same days; they cannot be added.", { ids: [previous.id, b.id] });
+    previous = b;
   }
   const hasBaseline = selected.length > 0;
 

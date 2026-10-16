@@ -129,8 +129,8 @@ describe("history numerator", () => {
     expect(summariseHistory(rs, [base({ packagesTotal: 2 })], { brandId: "b1" })).toMatchObject({ status: "refused", code: "k_exceeds_n", k: 3, N: 2 });
   });
 
-  it("a maturity check without a clock or without a window end reports nothing instead of guessing", () => {
-    expect(stats([rec("a")], [base()], { maturityDays: 30 }).maturity).toBeNull(); // no `today`
+  it("a maturity check without a clock is refused (never answered as mature); without a window end it reports nothing instead of guessing", () => {
+    expect(summariseHistory([rec("a")], [base()], { brandId: "b1", maturityDays: 30 })).toMatchObject({ status: "refused", code: "invalid_filters" }); // no `today`
     expect(stats([rec("a")], [], { maturityDays: 30, today: "2026-10-16" }).maturity).toBeNull(); // no window, no baseline
     expect(stats([rec("a")], [base()], { maturityDays: 30, today: "2026-01-31" }).maturity).toMatchObject({ windowEnd: "2026-01-31", daysSinceWindowEnd: 0, immature: true });
   });

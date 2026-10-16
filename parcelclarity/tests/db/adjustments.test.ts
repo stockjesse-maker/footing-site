@@ -1,4 +1,6 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   asOwnerWithGuardOpen, asOwnerWithoutTriggers, asUser, brandExamples, buildFixture, exampleState, expectCode, expectDenied, liveCopies, publish, publishRule, refusalHint, saveScenario, saveScenarioRaw,
   scenarioInput, scenarioResult, setPolicy, sha256Hex, sql, SENTINEL_PATTERN, SENTINELS, withTx, createBrand, createTenant, createUser, join, type Fixture,
@@ -991,6 +993,602 @@ describe("a suspended tenant", () => {
     await setPolicy(f.dual.id, w.t1.id, w.brandB.id, "combined", "separate_fee", "pass_through");
     expect(Array.isArray(await brandExamples(f.dual.id, w.brandA.id))).toBe(true);
     expect(await brandExamples(f.dual.id, w.brandB.id)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hardening after the phase-3 review (DB-1, DB-3, DB-4, DB-6, DB-10, DB-11, DB-12, F11 and the mutation survivors of DB-14).
+// A fresh account of its own, so nothing above (policies, examples, the 25-example cap) is in the way.
+// ---------------------------------------------------------------------------
+describe("hardening after the phase-3 review", () => {
+  let hw: World;
+  let hf: Fixture;
+  beforeAll(async () => {
+    hw = await buildWorld();
+    hf = await buildFixture(hw);
+  });
+  const ha = () => hw.t1.admin.id;
+  const hA = () => hw.brandA.id;
+  const decide = (type: string, component: string, handling: string, brand: string | null = hA()) => setPolicy(ha(), hw.t1.id, brand, type, component, handling);
+  const utcDay = async (offset = 0) => (await sql<{ d: string }>("select ((now() at time zone 'UTC')::date + $1::int)::text as d", [offset]))[0]!.d;
+  interface Preview { ok: boolean; problems: { code: string; message: string }[]; payload?: { components: { kind: string; handling: string; amount: string }[] }; hidden?: { kind: string; reason: string }[]; validThrough?: string }
+  const previewOf = (id: string, brand = hA()) => asUser<{ r: Preview }>(ha(), "select public.preview_customer_example($1, $2) as r", [id, brand]).then((r) => r[0]!.r);
+  const retireAll = () => asOwnerWithGuardOpen("update public.published_adjustment_examples set retired_at = now() where tenant_id = $1 and retired_at is null", [hw.t1.id]);
+  const bothDecided = async () => { await decide("reweight", "postage_difference", "pass_through"); await decide("reweight", "separate_fee", "pass_through"); };
+  const asBrandA = () => hw.brandA.admin.id;
+  const mine = async (id: string) => (await brandExamples(asBrandA(), hA())).find((e) => e.id === id);
+
+  // -------------------------------------------------------------------------
+  describe("an amount carries one label: mixed handling is refused, an absorbed amount is never published (DB-1)", () => {
+    const pins = () => [hf.rules.reweigh.versionId, hf.rules.correction.versionId];
+    const post = (extra: Record<string, unknown> = {}) => ({ kind: "postage_difference", state: "conditional", amount: "5.30", declaredTotal: "17.83", correctedTotal: "23.13", ...extra });
+    const fee = (amount: string, extra: Record<string, unknown>) => ({ kind: "separate_fee", state: "conditional", amount, ...extra });
+    const line = (ruleKey: string, handling: string, amount: string) => ({ ruleKey, amount, handling });
+    const REWEIGH = "adjtest.reweigh_fee";
+    const CORRECTION = "adjtest.correction_fee";
+    let n = 0;
+    const save = (components: Record<string, unknown>[], over: Record<string, unknown> = {}) => saveScenario(hf, { brand: hA(), name: `mixed handling ${++n}`, ruleVersionIds: pins(), result: scenarioResult({ components }), ...over });
+    const refused = async (id: string, code = "mixed_handling") => {
+      const pv = await previewOf(id);
+      expect(pv.ok, "the preview refuses").toBe(false);
+      expect(pv.problems.map((p) => p.code)).toContain(code);
+      expect(pv.payload).toBeUndefined();
+      expect(await refusalHint(publish(hf, id, { brand: hA() }), "P0001"), "publish refuses with the same code").toBe(pv.problems[0]!.code);
+      expect(await liveCopies(id)).toHaveLength(0);
+      return pv;
+    };
+    afterAll(retireAll);
+
+    it("a separate fee whose fee lines differ ('mixed') is refused, whatever it adds up to", async () => {
+      await bothDecided();
+      await decide("correction", "separate_fee", "absorbed", null);
+      const id = await save([post({ engineHandling: "pass_through", handling: "pass_through" }), fee("8.00", { engineHandling: "mixed", lines: [line(REWEIGH, "pass_through", "3.00"), line(CORRECTION, "absorbed", "5.00")] })]);
+      const pv = await refused(id);
+      expect(pv.problems[0]!.code).toBe("mixed_handling");
+      expect(pv.problems[0]!.message).toMatch(/handled differently/);
+    });
+
+    it("an absorbed-only correction line under a pass-through type row is refused, not published as 'charged to you'", async () => {
+      await bothDecided();
+      await decide("correction", "separate_fee", "absorbed", null);
+      const id = await save([post({ handling: "pass_through" }), fee("5.00", { engineHandling: "absorbed", lines: [line(CORRECTION, "absorbed", "5.00")] })]);
+      await refused(id);
+    });
+
+    it("a pass-through correction line under an absorbed type row is refused, not hidden without a word", async () => {
+      await decide("reweight", "postage_difference", "pass_through");
+      await decide("reweight", "separate_fee", "absorbed");
+      await decide("correction", "separate_fee", "pass_through", null);
+      const id = await save([post({ handling: "pass_through" }), fee("5.00", { engineHandling: "pass_through", lines: [line(CORRECTION, "pass_through", "5.00")] })]);
+      const pv = await refused(id);
+      expect(pv.hidden ?? []).toEqual([]);
+    });
+
+    it("a line whose stored handling is no longer what today's decision for its own row gives (the correction decision moved after saving) is refused", async () => {
+      await bothDecided();
+      await decide("correction", "separate_fee", "pass_through", null);
+      const id = await save([post({ handling: "pass_through" }), fee("8.00", { engineHandling: "pass_through", lines: [line(REWEIGH, "pass_through", "3.00"), line(CORRECTION, "pass_through", "5.00")] })]);
+      expect((await previewOf(id)).ok).toBe(true);
+      await decide("correction", "separate_fee", "manual_approval", null); // not a type row: the saved scenario's own snapshot does not notice
+      await refused(id);
+    });
+
+    it("a postage component whose engine handling is not the type's decision is refused", async () => {
+      await bothDecided();
+      await decide("correction", "separate_fee", "pass_through", null);
+      await refused(await save([post({ engineHandling: "absorbed" }), fee("3.00", { engineHandling: "pass_through", lines: [line(REWEIGH, "pass_through", "3.00")] })]));
+    });
+
+    it("lines that all agree with the decisions are shared under their one label: charged to you, or decided case by case", async () => {
+      await bothDecided();
+      await decide("correction", "separate_fee", "pass_through", null);
+      const id = await save([post({ handling: "pass_through", engineHandling: "pass_through" }), fee("8.00", { handling: "pass_through", engineHandling: "pass_through", lines: [line(REWEIGH, "pass_through", "3.00"), line(CORRECTION, "pass_through", "5.00")] })]);
+      const pv = await previewOf(id);
+      expect(pv.ok).toBe(true);
+      expect(pv.payload!.components).toEqual([{ kind: "postage_difference", handling: "pass_through", amount: "5.30", declaredTotal: "17.83", correctedTotal: "23.13" }, { kind: "separate_fee", handling: "pass_through", amount: "8.00" }]);
+      await publish(hf, id, { brand: hA() });
+      await decide("reweight", "separate_fee", "manual_approval");
+      await decide("correction", "separate_fee", "manual_approval", null);
+      const id2 = await save([post({ handling: "pass_through" }), fee("8.00", { engineHandling: "manual_approval", lines: [line(REWEIGH, "manual_approval", "3.00"), line(CORRECTION, "manual_approval", "5.00")] })]);
+      const shown = (await previewOf(id2)).payload!.components.find((c) => c.kind === "separate_fee");
+      expect(shown).toEqual({ kind: "separate_fee", handling: "manual_approval", amount: "8.00" });
+    });
+
+    it("lines that are all absorbed are withheld: the amount appears nowhere a customer can read", async () => {
+      await decide("reweight", "postage_difference", "pass_through");
+      await decide("reweight", "separate_fee", "absorbed");
+      await decide("correction", "separate_fee", "absorbed", null);
+      const id = await save([post({ handling: "pass_through" }), fee("8.00", { engineHandling: "absorbed", lines: [line(REWEIGH, "absorbed", "3.00"), line(CORRECTION, "absorbed", "5.00")] })]);
+      const pv = await previewOf(id);
+      expect(pv.ok).toBe(true);
+      expect(pv.hidden).toEqual([{ kind: "separate_fee", reason: "absorbed" }]);
+      expect(pv.payload!.components.map((c) => c.kind)).toEqual(["postage_difference"]);
+      const ex = await publish(hf, id, { brand: hA() });
+      const [row] = await sql<{ t: string }>("select payload::text as t from public.published_adjustment_examples where id = $1", [ex]);
+      expect(row!.t).not.toContain("8.00");
+      expect(JSON.stringify(await brandExamples(asBrandA(), hA()))).not.toContain("8.00");
+    });
+
+    it("a line the example did not price with, a line on the postage component and a line of a rule that is not a fee are an invalid result", async () => {
+      await bothDecided();
+      await decide("correction", "separate_fee", "pass_through", null);
+      // Only the reweigh rule is pinned, but a line names the correction rule.
+      await refused(await save([post({ handling: "pass_through" }), fee("5.00", { engineHandling: "pass_through", lines: [line(CORRECTION, "pass_through", "5.00")] })], { ruleVersionIds: [hf.rules.reweigh.versionId] }), "invalid_result");
+      await refused(await save([post({ handling: "pass_through", lines: [line(REWEIGH, "pass_through", "3.00")] }), fee("3.00", { handling: "pass_through" })]), "invalid_result");
+      const residential = await publishRule(hw, "adjtest.residential_line", "residential", "Residential", "2.00");
+      await refused(await save([post({ handling: "pass_through" }), fee("2.00", { engineHandling: "pass_through", lines: [line("adjtest.residential_line", "pass_through", "2.00")] })], { ruleVersionIds: [residential.versionId] }), "invalid_result");
+    });
+
+    it("the saved result's engine fields have a shape: bad handling, a lines list that is not a list, too many lines, a line without a key or a decision (PC001)", async () => {
+      await bothDecided();
+      const bad = (components: Record<string, unknown>[]) => saveScenarioRaw(hf, { brand: hA(), name: "bad shape", result: scenarioResult({ components }) });
+      await expectCode(bad([post(), fee("3.00", { engineHandling: "maybe" })]), "PC001", /component_handling/);
+      await expectCode(bad([post({ engineHandling: 5 }), fee("3.00", {})]), "PC001", /component_handling/);
+      await expectCode(bad([post(), fee("3.00", { lines: "x" })]), "PC001", /component_lines/);
+      await expectCode(bad([post(), fee("3.00", { lines: Array.from({ length: 41 }, () => line(REWEIGH, "pass_through", "3.00")) })]), "PC001", /component_lines/);
+      await expectCode(bad([post(), fee("3.00", { lines: [{ amount: "3.00", handling: "pass_through" }] })]), "PC001", /component_lines/);
+      await expectCode(bad([post(), fee("3.00", { lines: [{ ruleKey: REWEIGH, amount: "3.00" }] })]), "PC001", /component_lines/);
+      await expectCode(bad([post(), fee("3.00", { lines: [{ ruleKey: REWEIGH, handling: "mixed" }] })]), "PC001", /component_lines/);
+      await expectCode(bad([post(), fee("3.00", { lines: [{ ruleKey: "k".repeat(121), handling: "pass_through" }] })]), "PC001", /component_lines/);
+      await expectCode(bad([post(), fee("3.00", { lines: ["x"] })]), "PC001", /component_lines/);
+      // The shapes the engine really stores (extra keys, mixed, unconfigured) are accepted.
+      await saveScenarioRaw(hf, { brand: hA(), name: "engine shape", ruleVersionIds: pins(), result: scenarioResult({ components: [post({ engineHandling: "unconfigured" }), fee("3.00", { engineHandling: "mixed", lines: [{ ruleKey: REWEIGH, label: "Reweigh fee", category: "reweight", packageIndex: null, amount: "3.00", handling: "unconfigured", method: "flat" }] })] }) });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("the pricing context beyond the pinned versions: new rules, ZIP lists, exceptions (DB-4, DB-6)", () => {
+    const fresh = (name: string, over: Record<string, unknown> = {}) => saveScenario(hf, { brand: hA(), name, ruleVersionIds: [hf.rules.reweigh.versionId], ...over });
+    const contextOf = async () => (await sql<{ c: { ruleKeys: string[]; zipListIds: string[] } }>("select app.pricing_context_keys($1, $2, $3, (now() at time zone 'UTC')::date) as c", [hw.t1.id, hA(), hf.cardId]))[0]!.c;
+    const storedContext = async (scenario: string) => (await sql<{ c: { ruleKeysInForce: string[]; zipListVersionIds: string[]; source: string } }>("select pricing_context as c from public.adjustment_scenarios where id = $1", [scenario]))[0]!.c;
+    const saveWithPins = (extra: Record<string, unknown>) =>
+      asUser<{ id: string }>(ha(), "select public.save_adjustment_scenario($1, $2, 'client context', 'reweight', $3::jsonb, $4::jsonb, $5::jsonb, '1.0.0') as id",
+        [hw.t1.id, hA(), JSON.stringify(scenarioInput(hf)), JSON.stringify(scenarioResult()), JSON.stringify({ rateCardVersionId: hf.v1, ruleVersionIds: [hf.rules.reweigh.versionId], overrideIds: [], pricedOn: hf.today, ...extra })]).then((r) => r[0]!.id);
+    const contextProblem = async (id: string) => (await previewOf(id)).problems.map((p) => p.code);
+    afterAll(retireAll);
+
+    it("a rule that did not exist when an example was priced turns it 'under review'; a scenario priced before it cannot be shared; pricing again can", async () => {
+      await bothDecided();
+      const before = await fresh("priced before the new rule");
+      const ex = await publish(hf, await fresh("shared before the new rule"), { brand: hA() });
+      expect(await exampleState(ha(), ex)).toEqual({ state: "current", causes: [] });
+      const added = await publishRule(hw, "adjtest.new_residential", "residential", "New residential fee", "2.00");
+      expect(await exampleState(ha(), ex)).toEqual({ state: "under_review", causes: ["rule_changed"] });
+      expect(await mine(ex)).toMatchObject({ state: "under_review", payload: null });
+      // The same comparison guards preview and publish: it would be born under review.
+      expect(await contextProblem(before)).toEqual(["context_changed"]);
+      expect(await refusalHint(publish(hf, before, { brand: hA() }), "P0001", /changed since it was priced/)).toBe("context_changed");
+      expect(await liveCopies(before)).toHaveLength(0);
+      // Priced again in the new context it is shared and current.
+      const again = await fresh("priced after the new rule");
+      expect((await storedContext(again)).ruleKeysInForce).toContain("adjtest.new_residential");
+      expect((await previewOf(again)).ok).toBe(true);
+      const ex2 = await publish(hf, again, { brand: hA() });
+      expect(await exampleState(ha(), ex2)).toEqual({ state: "current", causes: [] });
+      // A rule that goes away is as much a change: the set of keys in force differs.
+      await asUser(ha(), "select public.retire_surcharge_rule_version($1, (current_date - 1))", [added.versionId]);
+      expect(await exampleState(ha(), ex2)).toEqual({ state: "under_review", causes: ["rule_changed"] });
+      // (An example is current exactly when what is in force is what it was priced with: once the new rule is gone again, the one priced
+      // before it is current again, nothing having been edited.)
+      expect(await exampleState(ha(), ex)).toEqual({ state: "current", causes: [] });
+    });
+
+    it("p_pins without the two optional arrays: the database prices the context itself, at save time, and records that it did", async () => {
+      await bothDecided();
+      const id = await fresh("server context");
+      const ctx = await contextOf();
+      expect(await storedContext(id)).toEqual({ ruleKeysInForce: ctx.ruleKeys, zipListVersionIds: ctx.zipListIds, source: "server" });
+      expect(ctx.ruleKeys).toEqual(expect.arrayContaining(["adjtest.reweigh_fee", "adjtest.remeasure_fee", "adjtest.correction_fee"]));
+      // The keys are the card's carriers' rules in force, whatever the policy says (an absorbed fee rule stays in the set).
+      await decide("reweight", "separate_fee", "absorbed");
+      expect((await contextOf()).ruleKeys).toContain("adjtest.reweigh_fee");
+      await decide("reweight", "separate_fee", "pass_through");
+    });
+
+    it("p_pins with ruleKeysInForce and zipListVersionIds: the caller's context is stored as sent (sorted, distinct) and compared; a context that differs from what is in force refuses at once", async () => {
+      await bothDecided();
+      const ctx = await contextOf();
+      const exact = await saveWithPins({ ruleKeysInForce: [...ctx.ruleKeys].reverse().concat(ctx.ruleKeys[0]!), zipListVersionIds: ctx.zipListIds });
+      expect(await storedContext(exact)).toEqual({ ruleKeysInForce: ctx.ruleKeys, zipListVersionIds: ctx.zipListIds, source: "client" });
+      expect((await previewOf(exact)).ok).toBe(true);
+      // One key missing, or one key that is not in force: what was priced with is not what is in force.
+      const fewer = await saveWithPins({ ruleKeysInForce: ctx.ruleKeys.slice(1), zipListVersionIds: ctx.zipListIds });
+      expect(await contextProblem(fewer)).toEqual(["context_changed"]);
+      const extra = await saveWithPins({ ruleKeysInForce: [...ctx.ruleKeys, "adjtest.never_existed"], zipListVersionIds: ctx.zipListIds });
+      expect(await contextProblem(extra)).toEqual(["context_changed"]);
+      // Only one of the two given: the other is the database's own (recorded as 'mixed').
+      const half = await saveWithPins({ ruleKeysInForce: ctx.ruleKeys });
+      expect(await storedContext(half)).toEqual({ ruleKeysInForce: ctx.ruleKeys, zipListVersionIds: ctx.zipListIds, source: "mixed" });
+      expect((await previewOf(half)).ok).toBe(true);
+      const none = await saveWithPins({ ruleKeysInForce: [] });
+      expect((await storedContext(none)).ruleKeysInForce).toEqual([]);
+      expect(await contextProblem(none)).toEqual(["context_changed"]);
+    });
+
+    it("rejects malformed context arrays: wrong types, too many, empty or over-long keys, unknown or foreign ZIP list versions", async () => {
+      const ctx = await contextOf();
+      for (const [label, extra] of [
+        ["keys not a list", { ruleKeysInForce: "adjtest.x" }], ["keys null", { ruleKeysInForce: null }], ["a non-string key", { ruleKeysInForce: [5] }], ["an empty key", { ruleKeysInForce: [""] }],
+        ["an over-long key", { ruleKeysInForce: ["k".repeat(121)] }], ["501 keys", { ruleKeysInForce: Array.from({ length: 501 }, (_, i) => `k${i}`) }],
+        ["zip ids not a list", { zipListVersionIds: "x" }], ["a zip id that is not a uuid", { zipListVersionIds: ["nope"] }], ["a zip id that is a number", { zipListVersionIds: [5] }], ["201 zip ids", { zipListVersionIds: Array.from({ length: 201 }, () => "00000000-0000-4000-8000-000000000001") }],
+      ] as [string, Record<string, unknown>][]) await expectCode(saveWithPins({ ruleKeysInForce: ctx.ruleKeys, ...extra }), ["PC001", "P0002"], /invalid pins|not found/).catch((e) => { throw new Error(`${label}: ${e.message}`); });
+      await expectCode(saveWithPins({ zipListVersionIds: ["00000000-0000-4000-8000-000000000001"] }), "P0002", /not found/);
+      // Another account's ZIP list version cannot be cited.
+      const [foreign] = await asUser<{ id: string }>(hw.t2.admin.id, "insert into public.zip_lists (tenant_id, carrier_code, key, name, source_reference, verification_status, effective_date) values ($1, 'ups', 'adjtest.foreign', 'Foreign', 'x', 'approved_3pl_config', '2026-01-01') returning id", [hw.t2.id]);
+      await expectCode(saveWithPins({ zipListVersionIds: [foreign!.id] }), "P0002", /not found/);
+    });
+
+    it("a ZIP list that is republished after an example was priced turns it 'under review' (zip_list_changed), and a scenario priced before cannot be shared", async () => {
+      await bothDecided();
+      const today = await utcDay();
+      const publishList = async (version: number, effective: string) => {
+        const [l] = await asUser<{ id: string }>(ha(), "insert into public.zip_lists (tenant_id, carrier_code, key, name, version, source_reference, verification_status, effective_date) values ($1, 'ups', 'adjtest.zl', 'Delivery area ZIPs', $2, 'x', 'approved_3pl_config', $3) returning id", [hw.t1.id, version, effective]);
+        await asUser(ha(), "insert into public.zip_list_entries (list_id, entry) values ($1, '90001')", [l!.id]);
+        await asUser(ha(), "select public.publish_zip_list($1)", [l!.id]);
+        return l!.id;
+      };
+      const v1 = await publishList(1, "2026-01-01");
+      const [rule] = await asUser<{ id: string }>(ha(), "insert into public.surcharge_rules (scope, tenant_id, carrier_code, rule_key, category, name) values ('tenant', $1, 'ups', 'adjtest.das_zip', 'residential', 'Delivery area surcharge') returning id", [hw.t1.id]);
+      const [rv] = await asUser<{ id: string }>(ha(), "insert into public.surcharge_rule_versions (rule_id, tenant_id, version_number, charge_class, method, amount, conditions, effective_date, source_reference, verification_status) values ($1, $2, 1, 'definite', 'flat', 2.50, $3::jsonb, '2026-01-01', 'x', 'approved_3pl_config') returning id", [rule!.id, hw.t1.id, JSON.stringify([{ type: "destination_zip_in_list", listKey: "adjtest.zl" }])]);
+      await asUser(ha(), "select public.publish_surcharge_rule_version($1)", [rv!.id]);
+      const pinsWithRule = { ruleVersionIds: [hf.rules.reweigh.versionId, rv!.id] };
+      const before = await fresh("priced with ZIP list v1", pinsWithRule);
+      expect((await storedContext(before)).zipListVersionIds).toEqual([v1]);
+      const ex = await publish(hf, await fresh("shared with ZIP list v1", pinsWithRule), { brand: hA() });
+      expect(await exampleState(ha(), ex)).toEqual({ state: "current", causes: [] });
+      // Republish: version 1 ends yesterday, version 2 starts today.
+      await asOwnerWithoutTriggers("update public.zip_lists set status = 'retired', expiration_date = (now() at time zone 'UTC')::date - 1 where id = $1", [v1]);
+      const v2 = await publishList(2, today);
+      expect(await exampleState(ha(), ex)).toEqual({ state: "under_review", causes: ["zip_list_changed"] });
+      expect(await mine(ex)).toMatchObject({ state: "under_review", payload: null });
+      expect(await contextProblem(before)).toEqual(["context_changed"]);
+      const again = await fresh("priced with ZIP list v2", pinsWithRule);
+      expect((await storedContext(again)).zipListVersionIds).toEqual([v2]);
+      expect((await previewOf(again)).ok).toBe(true);
+    });
+
+    it("a customer exception, a changed rule version or a changed assignment between saving and sharing makes the example refuse to be shared (it would be born under review)", async () => {
+      await bothDecided();
+      // An exception on a pinned rule.
+      const a = await fresh("exception between save and share");
+      const [o] = await asUser<{ id: string }>(ha(), "insert into public.customer_surcharge_overrides (tenant_id, brand_id, rule_id, mode, amount, effective_date) values ($1, $2, $3, 'override_amount', 1.00, current_date) returning id", [hw.t1.id, hA(), hf.rules.reweigh.ruleId]);
+      expect(await contextProblem(a)).toEqual(["context_changed"]);
+      expect(await refusalHint(publish(hf, a, { brand: hA() }), "P0001")).toBe("context_changed");
+      expect(await liveCopies(a)).toHaveLength(0);
+      await asUser(ha(), "update public.customer_surcharge_overrides set ended_at = now() where id = $1", [o!.id]);
+      expect((await previewOf(a)).ok).toBe(true);
+      // A pinned rule version replaced by a newer one.
+      const rule = await publishRule(hw, "adjtest.ctx_rule", "reweight", "Context rule", "3.00");
+      const b = await fresh("rule replaced between save and share", { ruleVersionIds: [rule.versionId] });
+      await asUser(ha(), "select public.retire_surcharge_rule_version($1, (current_date - 1))", [rule.versionId]);
+      await publishRule(hw, "adjtest.ctx_rule", "reweight", "Context rule", "3.50", { ruleId: rule.ruleId, version: 2, effective: hf.today });
+      expect((await contextProblem(b)).sort()).toEqual(["context_changed", "ended"]); // (and the version it pinned has ended)
+      // The customer's allowed services change.
+      const c = await fresh("assignment between save and share");
+      const [assignment] = await sql<{ id: string }>("select id from public.brand_rate_card_assignments where brand_id = $1 and rate_card_id = $2 and unassigned_at is null", [hA(), hf.cardId]);
+      await asUser(ha(), "update public.brand_rate_card_assignments set allowed_service_ids = $2 where id = $1", [assignment!.id, [hf.uspsGa]]);
+      expect((await contextProblem(c)).sort()).toEqual(["context_changed", "rate_card_not_assigned"]);
+      await asUser(ha(), "update public.brand_rate_card_assignments set allowed_service_ids = null where id = $1", [assignment!.id]);
+      expect((await previewOf(c)).ok).toBe(true); // everything is as it was when c was priced
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("decision dates (DB-10)", () => {
+    const cell = (brand: string | null = hw.brandB.id) => ({ type: "combined", component: "postage_difference", brand });
+    const rows = async () => sql<{ id: string; valid_from: string; valid_to: string | null; handling: string }>("select id, valid_from::text, valid_to::text, handling from public.adjustment_policies where tenant_id = $1 and brand_id = $2 and adjustment_type = 'combined' and component = 'postage_difference' order by valid_from", [hw.t1.id, hw.brandB.id]);
+    const handlingOn = async (offset: number) => (await sql<{ h: string }>("select app.adjustment_handling($1, $2, 'combined', 'postage_difference', (now() at time zone 'UTC')::date + $3::int) as h", [hw.t1.id, hw.brandB.id, offset]))[0]!.h;
+
+    it("a decision starts today or up to a year ahead; infinity and anything beyond are refused, so no cell can be blocked for good", async () => {
+      const c = cell();
+      for (const bad of ["infinity", "-infinity", await utcDay(367), await utcDay(-1), await utcDay(5000)]) {
+        await expectCode(decide(c.type, c.component, "absorbed", c.brand).then(() => setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "absorbed", bad)), "PC001", /today up to a year ahead/);
+      }
+      const top = await setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "pass_through", await utcDay(366));
+      expect(top).toMatch(/^[0-9a-f-]{36}$/);
+      await asUser(ha(), "select public.end_adjustment_policy($1)", [top]); // not started: voided
+      expect(await sql("select 1 from public.adjustment_policies where id = $1", [top])).toHaveLength(0);
+    });
+
+    it("a decision scheduled for later can be voided: its row goes, the decision it was to replace carries on, and the audit says so", async () => {
+      const c = cell();
+      const a = (await rows())[0]!.id; // today's decision from the test above (absorbed)
+      const day30 = await utcDay(30);
+      const b = await setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "pass_through", day30);
+      expect((await rows()).map((r) => [r.valid_from, r.valid_to, r.handling])).toEqual([[await utcDay(), await utcDay(29), "absorbed"], [day30, null, "pass_through"]]);
+      expect(await handlingOn(30)).toBe("pass_through");
+      // A scheduled row blocks a new decision for today until it is voided.
+      await expectCode(setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "manual_approval", await utcDay(10)), "P0007", /overlaps/);
+      const auditBefore = (await sql("select 1 from public.audit_events where action = 'adjustment.policy_ended' and tenant_id = $1", [hw.t1.id])).length;
+      await expectCode(asUser(hw.t1.employee.id, "select public.end_adjustment_policy($1)", [b]), "P0002", /not found/);
+      await asUser(ha(), "select public.end_adjustment_policy($1)", [b]);
+      expect((await rows()).map((r) => [r.id, r.valid_from, r.valid_to, r.handling])).toEqual([[a, await utcDay(), null, "absorbed"]]);
+      expect(await handlingOn(30)).toBe("absorbed"); // the earlier decision runs on
+      const [voided] = await sql<{ metadata: Record<string, unknown>; actor_id: string }>("select metadata, actor_id from public.audit_events where action = 'adjustment.policy_ended' and entity_id = $1", [b]);
+      expect(voided).toMatchObject({ actor_id: ha(), metadata: { voided: true, adjustment_type: "combined", component: "postage_difference" } });
+      expect((await sql("select 1 from public.audit_events where action = 'adjustment.policy_ended' and tenant_id = $1", [hw.t1.id])).length).toBe(auditBefore + 1);
+      // The same cell can be decided today again.
+      expect(await setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "manual_approval")).toBe(a);
+    });
+
+    it("voiding runs the earlier decision up to the NEXT scheduled one, not through it; a scheduled row given a last day is shortened, not voided; a row that started is ended, never deleted", async () => {
+      const c = cell();
+      const a = (await rows())[0]!.id;
+      const b = await setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "pass_through", await utcDay(10));
+      const d = await setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "absorbed", await utcDay(20));
+      await asUser(ha(), "select public.end_adjustment_policy($1, $2)", [b, await utcDay(14)]); // shortened: b runs +10..+14
+      expect((await rows()).find((r) => r.id === b)).toMatchObject({ valid_to: await utcDay(14) });
+      // Void b: a runs until the day before d starts.
+      await asUser(ha(), "select public.end_adjustment_policy($1)", [b]);
+      expect((await rows()).map((r) => [r.id, r.valid_to])).toEqual([[a, await utcDay(19)], [d, null]]);
+      await asUser(ha(), "select public.end_adjustment_policy($1)", [d]);
+      expect((await rows()).map((r) => [r.id, r.valid_to])).toEqual([[a, null]]);
+      // A row that has started is ended (the last day defaults to yesterday, or today when it began today), never deleted.
+      await asUser(ha(), "select public.end_adjustment_policy($1)", [a]);
+      expect((await rows()).map((r) => [r.id, r.valid_to])).toEqual([[a, await utcDay()]]);
+      await expectCode(asOwnerWithGuardOpen("delete from public.adjustment_policies where id = $1", [a]), "42501", /offboarding functions/);
+      // ... and a scheduled row cannot be deleted directly either (only end_adjustment_policy voids it, through the guard's one exception).
+      const later = await setPolicy(ha(), hw.t1.id, c.brand, c.type, c.component, "pass_through", await utcDay(40));
+      await expectDenied(asUser(ha(), "delete from public.adjustment_policies where id = $1", [later]), /permission denied/);
+      await asUser(ha(), "select public.end_adjustment_policy($1)", [later]);
+    });
+
+    it("the same decision, still open, is a no-op: no new row, no change, no audit row, however old it is (DB-14: N24)", async () => {
+      const brand = hw.brandB.id;
+      // An open decision that began ten days ago (written by the owner with the guard open: time cannot be moved otherwise).
+      await asOwnerWithGuardOpen("insert into public.adjustment_policies (tenant_id, brand_id, adjustment_type, component, handling, valid_from) values ($1, $2, 'remeasure', 'postage_difference', 'pass_through', (now() at time zone 'UTC')::date - 10)", [hw.t1.id, brand]);
+      const [old] = await sql<{ id: string }>("select id from public.adjustment_policies where tenant_id = $1 and brand_id = $2 and adjustment_type = 'remeasure' and component = 'postage_difference'", [hw.t1.id, brand]);
+      const auditRows = async () => (await sql("select 1 from public.audit_events where tenant_id = $1 and entity_id = $2", [hw.t1.id, old!.id])).length;
+      const before = await auditRows();
+      expect(await setPolicy(ha(), hw.t1.id, brand, "remeasure", "postage_difference", "pass_through")).toBe(old!.id);
+      expect((await sql("select 1 from public.adjustment_policies where tenant_id = $1 and brand_id = $2 and adjustment_type = 'remeasure' and component = 'postage_difference'", [hw.t1.id, brand]))).toHaveLength(1);
+      expect(await auditRows()).toBe(before);
+      expect(await sql("select valid_to from public.adjustment_policies where id = $1", [old!.id])).toEqual([{ valid_to: null }]);
+      // A different decision closes the old row yesterday and opens a new one today.
+      const next = await setPolicy(ha(), hw.t1.id, brand, "remeasure", "postage_difference", "absorbed");
+      expect(next).not.toBe(old!.id);
+      expect(await sql<{ valid_to: string }>("select valid_to::text from public.adjustment_policies where id = $1", [old!.id])).toEqual([{ valid_to: await utcDay(-1) }]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("what a customer reads while an example is under review or expired (DB-11, DB-12, DB-14)", () => {
+    const publishReal = async (name: string) => {
+      await bothDecided();
+      return publish(hf, await saveScenario(hf, { brand: hA(), name, ruleVersionIds: [hf.rules.reweigh.versionId] }), { brand: hA(), title: "Real title with $5.30 in it", note: "Real note: this adds about $5.30" });
+    };
+    const setValidThrough = (id: string, expr: string) => asOwnerWithoutTriggers(`update public.published_adjustment_examples set valid_through = ${expr} where id = $1`, [id]);
+    afterAll(retireAll);
+
+    it("title and note are returned only while the example is current; under review and expired give a neutral title, no note, no payload (DB-11)", async () => {
+      const ex = await publishReal("projection");
+      expect(await mine(ex)).toMatchObject({ state: "current", title: "Real title with $5.30 in it", note: "Real note: this adds about $5.30" });
+      await decide("reweight", "separate_fee", "absorbed");
+      const review = await mine(ex);
+      expect(review).toMatchObject({ state: "under_review", title: "Example", note: null, payload: null });
+      expect(JSON.stringify(review)).not.toMatch(/5\.30|Real/);
+      expect(JSON.stringify(await brandExamples(hw.t1.employee.id, hA()))).not.toMatch(/5\.30|Real/); // the staff-visible projection is the customer's
+      await decide("reweight", "separate_fee", "pass_through");
+      expect(await mine(ex)).toMatchObject({ state: "current", title: "Real title with $5.30 in it" });
+      await setValidThrough(ex, "(now() at time zone 'UTC')::date - 1");
+      const expired = await mine(ex);
+      expect(expired).toMatchObject({ state: "expired", title: "Example", note: null, payload: null });
+      expect(JSON.stringify(expired)).not.toMatch(/5\.30|Real/);
+    });
+
+    it("valid through is inclusive: an example is current on its last day and expired the day after (DB-14: P03)", async () => {
+      const ex = await publishReal("boundary");
+      await setValidThrough(ex, "(now() at time zone 'UTC')::date");
+      expect(await exampleState(ha(), ex)).toEqual({ state: "current", causes: [] });
+      expect(await mine(ex)).toMatchObject({ state: "current" });
+      await setValidThrough(ex, "(now() at time zone 'UTC')::date - 1");
+      expect(await exampleState(ha(), ex)).toEqual({ state: "expired", causes: ["valid_through_passed"] });
+      await setValidThrough(ex, "(now() at time zone 'UTC')::date + 1");
+      expect(await exampleState(ha(), ex)).toEqual({ state: "current", causes: [] });
+    });
+
+    it("dates follow UTC, not the zone a client asks for (Prefer: timezone): the expiry edge, 'starts today' and the default of a decision (DB-12)", async () => {
+      const ex = await publishReal("time zones");
+      const [{ zone }] = (await sql<{ zone: string }>("select case when (now() at time zone 'Pacific/Kiritimati')::date <> (now() at time zone 'UTC')::date then 'Pacific/Kiritimati' else 'Etc/GMT+12' end as zone")) as [{ zone: string }];
+      const inZone = (userId: string, tz: string, text: string, params: unknown[] = []) => withTx(userId, async (q) => { await q(`set local time zone '${tz}'`); return (await q(text, params)).rows; });
+      // Valid through today (UTC): current in every zone. Yesterday: expired in every zone.
+      for (const [expr, expected] of [["(now() at time zone 'UTC')::date", "current"], ["(now() at time zone 'UTC')::date - 1", "expired"]] as const) {
+        await setValidThrough(ex, expr);
+        for (const tz of ["UTC", zone, "Pacific/Kiritimati", "Etc/GMT+12", "America/Los_Angeles"]) {
+          const [r] = (await inZone(asBrandA(), tz, "select public.brand_adjustment_examples($1) as r", [hA()])) as { r: { id: string; state: string }[] }[];
+          expect(r!.r.find((e) => e.id === ex)?.state, `${expr} in ${tz}`).toBe(expected);
+          const [st] = (await inZone(ha(), tz, "select public.adjustment_example_state($1) as r", [ex])) as { r: { state: string } }[];
+          expect(st!.r.state, `state in ${tz}`).toBe(expected);
+        }
+      }
+      // A decision with no date starts today in UTC, in whatever zone the caller is; a date one day before UTC today is refused in every zone.
+      const brand = hw.brandB.id;
+      await inZone(ha(), zone, "select public.set_adjustment_policy($1, $2, 'combined', 'separate_fee', 'pass_through')", [hw.t1.id, brand]);
+      expect(await sql("select valid_from::text as d from public.adjustment_policies where tenant_id = $1 and brand_id = $2 and adjustment_type = 'combined' and component = 'separate_fee'", [hw.t1.id, brand])).toEqual([{ d: await utcDay() }]);
+      await expectCode(inZone(ha(), zone, "select public.set_adjustment_policy($1, $2, 'combined', 'separate_fee', 'absorbed', $3::date)", [hw.t1.id, brand, await utcDay(-1)]), "PC001", /today up to a year ahead/);
+    });
+
+    it("no function the migrations create reads the session's date: current_date and its relatives appear in none of them", async () => {
+      const text = readFileSync(path.resolve(__dirname, "../../supabase/migrations/20261015000007_adjustments.sql"), "utf8");
+      const names = [...new Set([...text.matchAll(/create (?:or replace )?function (?:public|app)\.(\w+)/gi)].map((m) => m[1]!))];
+      expect(names.length).toBeGreaterThan(60);
+      const offenders = await sql<{ n: string }>(
+        "select p.pronamespace::regnamespace::text || '.' || p.proname as n from pg_proc p where p.pronamespace in ('public'::regnamespace, 'app'::regnamespace) and p.proname = any ($1) and p.prosrc ~* '\\m(current_date|current_timestamp|localtimestamp|localtime|transaction_timestamp|statement_timestamp|clock_timestamp|timeofday)\\M' order by 1", [names]);
+      expect(offenders.map((o) => o.n)).toEqual([]);
+    });
+
+    it("examples come back newest first, then by id (DB-14: P08)", async () => {
+      await bothDecided();
+      const first = await publish(hf, await saveScenario(hf, { brand: hA(), name: "older", ruleVersionIds: [hf.rules.reweigh.versionId] }), { brand: hA(), title: "Older" });
+      const second = await publish(hf, await saveScenario(hf, { brand: hA(), name: "newer", ruleVersionIds: [hf.rules.reweigh.versionId] }), { brand: hA(), title: "Newer" });
+      const ids = (await brandExamples(asBrandA(), hA())).map((e) => e.id);
+      expect(ids.indexOf(second)).toBeLessThan(ids.indexOf(first));
+      expect(ids.indexOf(second)).toBeGreaterThanOrEqual(0);
+      const states = await asUser<{ r: { id: string }[] }>(ha(), "select public.adjustment_example_states($1) as r", [hw.t1.id]);
+      const stateIds = states[0]!.r.map((e) => e.id);
+      expect(stateIds.indexOf(second)).toBeLessThan(stateIds.indexOf(first));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("the mutation survivors of DB-14", () => {
+    it("publishing waits for a policy change that is being made at the same moment, and then refuses (the tenant lock): a publish that ignored the lock would succeed (M27)", async () => {
+      await bothDecided();
+      const id = await saveScenario(hf, { brand: hA(), name: "race with a decision", ruleVersionIds: [hf.rules.reweigh.versionId] });
+      let publishing: Promise<string> | undefined;
+      let settled = false;
+      await withTx(ha(), async (q) => {
+        // Connection A changes the decision and has not committed; B is asked to publish an example priced under the old decision.
+        await q("select public.set_adjustment_policy($1, $2, 'reweight', 'separate_fee', 'absorbed')", [hw.t1.id, hA()]);
+        publishing = publish(hf, id, { brand: hA() }).then((v) => `published ${v}`, (e: { code?: string; hint?: string }) => `${e.code} ${e.hint}`);
+        void publishing.then(() => { settled = true; });
+        await new Promise((r) => setTimeout(r, 500));
+        expect(settled, "the publish is waiting for the other connection").toBe(false);
+      });
+      expect(await publishing).toBe("P0001 policy_changed");
+      expect(await liveCopies(id)).toHaveLength(0);
+      await decide("reweight", "separate_fee", "pass_through");
+    });
+
+    it("a suspended customer cannot be shared with; the refusal names the customer, and nothing is stored (N02)", async () => {
+      await bothDecided();
+      const id = await saveScenario(hf, { brand: hA(), name: "suspended customer", ruleVersionIds: [hf.rules.reweigh.versionId] });
+      await asUser(ha(), "update public.brands set status = 'suspended' where id = $1", [hA()]);
+      try {
+        const pv = await previewOf(id);
+        expect(pv.ok).toBe(false);
+        expect(pv.problems.map((p) => p.code)).toContain("customer_inactive");
+        expect(await refusalHint(publish(hf, id, { brand: hA() }), "P0001", /not active/)).toBe("customer_inactive");
+        expect(await liveCopies(id)).toHaveLength(0);
+      } finally {
+        await asUser(ha(), "update public.brands set status = 'active' where id = $1", [hA()]);
+      }
+      expect((await previewOf(id)).ok).toBe(true);
+    });
+
+    it("offboarding removes the raw history files too, attached or not, and leaves other purposes alone (N21)", async () => {
+      const owner = await createUser("purge-files-owner");
+      const tenant = await createTenant(owner, "Purge Files Freight");
+      const bytes = Buffer.from("ship_date,carrier,package_ref\n2026-01-05,ups,1Z1\n");
+      const insertFile = (purpose: string) => asUser<{ id: string }>(owner.id, "insert into public.uploaded_files (tenant_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, $2, 'h.csv', 'text/csv', $3, decode($4, 'hex'), $5) returning id", [tenant, purpose, bytes.length, sha256Hex(bytes), bytes]).then((r) => r[0]!.id);
+      const orphan = await insertFile("adjustment_import");
+      const attached = await insertFile("adjustment_import");
+      const other = await insertFile("rate_card");
+      await asUser(owner.id, "select public.create_adjustment_import($1, 'attached', $2::jsonb)", [attached, JSON.stringify({ headers: ["ship_date", "carrier", "package_ref"] })]);
+      const purged = (await sql<{ r: Record<string, number> }>("select app.purge_tenant_adjustment_data($1) as r", [tenant]))[0]!.r;
+      expect(purged).toMatchObject({ files: 2, imports: 1 });
+      expect(await sql("select id from public.uploaded_files where id = any ($1)", [[orphan, attached]])).toHaveLength(0);
+      expect(await sql("select id from public.uploaded_files where id = $1", [other])).toHaveLength(1);
+    });
+
+    it("an adjustment record is never edited, whatever opens the guard (N33); only the owner's direct statement without the signal is refused for another reason", async () => {
+      const [imp] = await sql<{ id: string }>("insert into public.adjustment_imports (tenant_id, name, status, accepted_count, committed_count, attested_by, attested_at) values ($1, 'immutable', 'committed', 1, 1, $2, now()) returning id", [hw.t1.id, ha()]);
+      const [rec] = await sql<{ id: string }>("insert into public.adjustment_records (tenant_id, import_id, row_no, ship_date, carrier_code, adjustment_type, cause, declared_weight_basis) values ($1, $2, 1, '2026-01-05', 'ups', 'reweight', 'other', 'missing') returning id", [hw.t1.id, imp!.id]);
+      await expectCode(asOwnerWithGuardOpen("update public.adjustment_records set ship_date = ship_date + 1 where id = $1", [rec!.id]), "42501", /never edited/);
+      await expectCode(asOwnerWithGuardOpen("update public.adjustment_records set cause = 'scale_error' where id = $1", [rec!.id]), "42501", /never edited/);
+      await expectCode(sql("update public.adjustment_records set cause = 'scale_error' where id = $1", [rec!.id]), "42501", /only through its functions/);
+      expect(await sql("select cause, ship_date::text as d from public.adjustment_records where id = $1", [rec!.id])).toEqual([{ cause: "other", d: "2026-01-05" }]);
+    });
+
+    it("an adjustment file with a customer attached is not readable by the account's administrators (the null-brand branch of the read policy) (N17)", async () => {
+      const bytes = Buffer.from("ship_date,carrier\n2026-01-05,ups\n");
+      const [file] = (await asOwnerWithoutTriggers("insert into public.uploaded_files (tenant_id, brand_id, uploaded_by, purpose, filename, mime_type, byte_size, sha256, content) values ($1, $2, $3, 'adjustment_import', 'branded.csv', 'text/csv', $4, decode($5, 'hex'), $6) returning id", [hw.t1.id, hA(), ha(), bytes.length, sha256Hex(bytes), bytes])) as { id: string }[];
+      for (const user of [hw.t1.admin, hw.t1.employee, hw.brandA.admin, hw.platformAdmin]) expect(await asUser(user.id, "select id from public.uploaded_files where id = $1", [file!.id]), user.email).toHaveLength(0);
+      const [plain] = (await asOwnerWithoutTriggers("insert into public.uploaded_files (tenant_id, uploaded_by, purpose, filename, mime_type, byte_size, sha256, content) values ($1, $2, 'adjustment_import', 'plain.csv', 'text/csv', $3, decode($4, 'hex'), $5) returning id", [hw.t1.id, ha(), bytes.length, sha256Hex(bytes), bytes])) as { id: string }[];
+      expect(await asUser(ha(), "select id from public.uploaded_files where id = $1", [plain!.id])).toHaveLength(1);
+      await sql("delete from public.uploaded_files where id = any ($1)", [[file!.id, plain!.id]]);
+    });
+
+    it("an administrator cannot register an adjustment file under a customer: the insert policy demands no customer (N17)", async () => {
+      const bytes = Buffer.from("ship_date,carrier\n2026-01-05,ups\n");
+      // No RETURNING: the read policy would also refuse a file that has a customer, which would hide a hole in the insert policy.
+      const insert = (userId: string, brand: string | null) => asUser(userId, "insert into public.uploaded_files (tenant_id, brand_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, $2, 'adjustment_import', 'n17.csv', 'text/csv', $3, decode($4, 'hex'), $5)", [hw.t1.id, brand, bytes.length, sha256Hex(bytes), bytes]);
+      try {
+        await expectDenied(insert(ha(), hA()), /row-level security/);
+        expect(await sql("select 1 from public.uploaded_files where filename = 'n17.csv'")).toHaveLength(0);
+        await insert(ha(), null);
+        expect(await sql("select 1 from public.uploaded_files where filename = 'n17.csv' and brand_id is null")).toHaveLength(1);
+      } finally {
+        await sql("delete from public.uploaded_files where filename = 'n17.csv'");
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("a reweigh, remeasure or correction fee that is not a conditional charge cannot be published; legacy ones are listed (F11)", () => {
+    const legacyVersion = async (key: string, category: string, charge: string, status: "draft" | "published", extra: { expiration?: string | null; archived?: boolean; tenant?: string; version?: number } = {}) => {
+      const tenant = extra.tenant ?? hw.t1.id;
+      const [r] = await sql<{ id: string }>("insert into public.surcharge_rules (scope, tenant_id, carrier_code, rule_key, category, name) values ('tenant', $1, 'ups', $2, $3, $4) returning id", [tenant, key, category, `Legacy ${key}`]);
+      const [v] = (await asOwnerWithoutTriggers(
+        `insert into public.surcharge_rule_versions (rule_id, tenant_id, version_number, status, charge_class, method, amount, effective_date, expiration_date, source_reference, verification_status, published_at)
+         values ($1, $2, $3, $4, $5, 'flat', 3, '2026-01-01', $6, 'x', 'approved_3pl_config', ${status === "published" ? "now()" : "null"}) returning id`, [r!.id, tenant, extra.version ?? 1, status, charge, extra.expiration ?? null])) as { id: string }[];
+      if (extra.archived) await sql("update public.surcharge_rules set archived_at = now() where id = $1", [r!.id]);
+      return { rule: r!.id, version: v!.id };
+    };
+    const listed = async (userId: string, tenant = hw.t1.id) => (await asUser<{ r: { ruleName: string; versionNumber: number }[] }>(userId, "select public.adjustment_legacy_fee_rules($1) as r", [tenant]))[0]!.r;
+
+    it("a draft of such a rule with another class is refused at publication (23514); made conditional it publishes; other categories are unaffected", async () => {
+      for (const category of ["reweight", "remeasure", "shipping_charge_correction"]) {
+        for (const cls of ["definite", "estimated"]) {
+          const v = await legacyVersion(`adjtest.legacy_draft_${category}_${cls}`, category, cls, "draft");
+          await expectCode(asUser(ha(), "select public.publish_surcharge_rule_version($1)", [v.version]), "23514", /conditional charge/);
+          expect(await sql("select status, charge_class from public.surcharge_rule_versions where id = $1", [v.version])).toEqual([{ status: "draft", charge_class: cls }]);
+          await asUser(ha(), "update public.surcharge_rule_versions set charge_class = 'conditional' where id = $1", [v.version]);
+          await asUser(ha(), "select public.publish_surcharge_rule_version($1)", [v.version]);
+          expect(await sql("select status, charge_class from public.surcharge_rule_versions where id = $1", [v.version])).toEqual([{ status: "published", charge_class: "conditional" }]);
+        }
+      }
+      const other = await legacyVersion("adjtest.legacy_draft_residential", "residential", "definite", "draft");
+      await asUser(ha(), "select public.publish_surcharge_rule_version($1)", [other.version]);
+      expect(await sql("select status from public.surcharge_rule_versions where id = $1", [other.version])).toEqual([{ status: "published" }]);
+    });
+
+    it("lists the published versions that still count as definite or estimated: staff of the account only, with the rule name and version number", async () => {
+      expect(await listed(ha())).toEqual([]);
+      const a = await legacyVersion("adjtest.legacy_published_a", "reweight", "definite", "published");
+      await legacyVersion("adjtest.legacy_published_b", "shipping_charge_correction", "estimated", "published", { version: 2 });
+      await legacyVersion("adjtest.legacy_residential", "residential", "definite", "published"); // another category: never listed
+      await legacyVersion("adjtest.legacy_ok", "remeasure", "conditional", "published"); // already conditional
+      await legacyVersion("adjtest.legacy_draft", "remeasure", "definite", "draft"); // not in force
+      await legacyVersion("adjtest.legacy_expired", "reweight", "definite", "published", { expiration: "2026-02-01" }); // ended
+      await legacyVersion("adjtest.legacy_archived", "reweight", "definite", "published", { archived: true }); // archived rule
+      await legacyVersion("adjtest.legacy_other_tenant", "reweight", "definite", "published", { tenant: hw.t2.id });
+      expect(await listed(ha())).toEqual([{ ruleName: "Legacy adjtest.legacy_published_a", versionNumber: 1 }, { ruleName: "Legacy adjtest.legacy_published_b", versionNumber: 2 }]);
+      expect(await listed(hw.t2.admin.id, hw.t2.id)).toEqual([{ ruleName: "Legacy adjtest.legacy_other_tenant", versionNumber: 1 }]); // each account sees its own
+      // Retiring it takes it off the list.
+      await asOwnerWithoutTriggers("update public.surcharge_rule_versions set status = 'retired', expiration_date = (now() at time zone 'UTC')::date - 1 where id = $1", [a.version]);
+      expect((await listed(ha())).map((x) => x.versionNumber)).toEqual([2]);
+      for (const user of [hw.t1.employee, hw.brandA.admin, hw.brandB.admin, hw.t2.admin, hw.outsider, hw.platformAdmin]) await expectCode(asUser(user.id, "select public.adjustment_legacy_fee_rules($1)", [hw.t1.id]), "42501", /not allowed/);
+      await expectCode(asUser(null, "select public.adjustment_legacy_fee_rules($1)", [hw.t1.id]), "42501", /permission denied/);
+      expect(Object.keys((await listed(ha()))[0]!).sort()).toEqual(["ruleName", "versionNumber"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("the rate-card term sources follow a deleted draft term (DB-3)", () => {
+    it("a draft term that has a source row can be deleted: the source goes with it; an active version's sources are still frozen", async () => {
+      const [v2] = await asUser<{ id: string }>(ha(), "insert into public.rate_card_versions (rate_card_id, tenant_id, version_number) values ($1, $2, 2) returning id", [hf.cardId, hw.t1.id]);
+      const makeTerm = async (service: string) => {
+        const [t] = await asUser<{ id: string }>(ha(), "insert into public.rate_card_service_terms (version_id, service_id, dim_divisor) values ($1, $2, 139) returning id", [v2!.id, service]);
+        await asUser(ha(), "insert into public.rate_card_service_term_sources (term_id, tenant_id, source_reference) values ($1, $2, 'draft source')", [t!.id, hw.t1.id]);
+        return t!.id;
+      };
+      // Control: no source row.
+      const [bare] = await asUser<{ id: string }>(ha(), "insert into public.rate_card_service_terms (version_id, service_id, dim_divisor) values ($1, $2, 139) returning id", [v2!.id, hf.uspsGa]);
+      await asUser(ha(), "delete from public.rate_card_service_terms where id = $1", [bare!.id]);
+      const term = await makeTerm(hf.upsGround);
+      await asUser(ha(), "delete from public.rate_card_service_terms where id = $1", [term]);
+      expect(await sql("select 1 from public.rate_card_service_term_sources where term_id = $1", [term])).toHaveLength(0);
+      // The source of an ACTIVE version's term is frozen, and deleting it directly is refused with the same reason as before.
+      const [active] = await sql<{ id: string }>("select id from public.rate_card_service_terms where version_id = $1", [hf.v1]);
+      await expectDenied(asUser(ha(), "delete from public.rate_card_service_term_sources where term_id = $1", [active!.id]), /not a draft/);
+      // A source of a draft term can still be deleted directly (the term stays).
+      const [v3] = await asUser<{ id: string }>(ha(), "insert into public.rate_card_versions (rate_card_id, tenant_id, version_number) values ($1, $2, 3) returning id", [hf.cardId, hw.t1.id]);
+      const [t3] = await asUser<{ id: string }>(ha(), "insert into public.rate_card_service_terms (version_id, service_id, dim_divisor) values ($1, $2, 139) returning id", [v3!.id, hf.upsGround]);
+      await asUser(ha(), "insert into public.rate_card_service_term_sources (term_id, tenant_id, source_reference) values ($1, $2, 'x')", [t3!.id, hw.t1.id]);
+      await asUser(ha(), "delete from public.rate_card_service_term_sources where term_id = $1", [t3!.id]);
+      expect(await sql("select 1 from public.rate_card_service_terms where id = $1", [t3!.id])).toHaveLength(1);
+    });
   });
 });
 

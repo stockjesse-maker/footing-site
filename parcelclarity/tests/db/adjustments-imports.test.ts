@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  asOwnerWithGuardOpen, asUser, buildFixture, expectCode, expectDenied, sha256Hex, sql, withTx, type Fixture,
+  asOwnerWithGuardOpen, asOwnerWithoutTriggers, asUser, buildFixture, expectCode, expectDenied, sha256Hex, sql, withTx, type Fixture,
 } from "./adjustments-fixture";
 import { buildWorld, type World } from "./world";
 
@@ -54,6 +54,10 @@ const finalize = (userId: string, id: string) => asUser<{ r: Record<string, unkn
 const statusOf = async (id: string) => (await sql<{ status: string; file_id: string | null; committed_count: number; skipped_count: number }>("select status, file_id, committed_count, skipped_count from public.adjustment_imports where id = $1", [id]))[0]!;
 const recordCount = async (id: string) => Number((await sql<{ n: string }>("select count(*)::text as n from public.adjustment_records where import_id = $1", [id]))[0]!.n);
 const fileExists = async (id: string) => (await sql("select 1 from public.uploaded_files where id = $1", [id])).length === 1;
+/** A stored history file inserted by the database owner with the triggers off: what a file that bypassed the insert guard would look like. */
+const ownerFile = async (content: Buffer, over: { filename?: string; mime?: string; tenant?: string; by?: string } = {}) =>
+  (await asOwnerWithoutTriggers("insert into public.uploaded_files (tenant_id, uploaded_by, purpose, filename, mime_type, byte_size, sha256, content) values ($1, $2, 'adjustment_import', $3, $4, $5, decode($6, 'hex'), $7) returning id",
+    [over.tenant ?? w.t1.id, over.by ?? admin(), over.filename ?? "bypass.csv", over.mime ?? "text/csv", content.length, sha256Hex(content), content]))[0]!.id as string;
 
 /** A validated import ready for rows. */
 async function validatedImport(rows: number, userId = admin(), accepted = rows): Promise<{ id: string; file: string }> {
@@ -111,15 +115,24 @@ describe("registering an upload", () => {
     expect(await createImport(w.t2.admin.id, foreign)).toMatchObject({ ok: true }); // their own tenant's administrator may
   });
 
-  it("a file whose header looks like carrier cost data is refused: the file is deleted and nothing is stored", async () => {
+  it("a file whose header looks like carrier cost data is never stored; one that got past the guard anyway is refused and deleted at registration", async () => {
     const importsBefore = Number((await sql<{ n: string }>("select count(*)::text as n from public.adjustment_imports where tenant_id = $1", [w.t1.id]))[0]!.n);
-    for (const bad of ["Carrier Rate", "Postage Cost", "Label Cost", "Shipping Cost", "Negotiated Rate", "Postage Paid"]) {
-      const file = await upload(admin(), csv(["ship_date", "carrier", bad, "package_ref"], [["2026-03-01", "ups", "7.42", "1Z0001"]]));
+    const filesBefore = Number((await sql<{ n: string }>("select count(*)::text as n from public.uploaded_files where tenant_id = $1 and purpose = 'adjustment_import'", [w.t1.id]))[0]!.n);
+    const bads = ["Carrier Rate", "Postage Cost", "Label Cost", "Shipping Cost", "Negotiated Rate", "Postage Paid"];
+    // 1. The insert itself is refused (a BEFORE INSERT trigger reads the first fifty lines of the stored bytes): nothing is stored.
+    for (const bad of bads) {
+      const err = (await upload(admin(), csv(["ship_date", "carrier", bad, "package_ref"], [["2026-03-01", "ups", "7.42", "1Z0001"]])).catch((e) => e)) as { code?: string; hint?: string; detail?: string; message?: string };
+      expect(err, bad).toMatchObject({ code: "P0001", hint: "forbidden_header", detail: bad, message: "this file was not saved" });
+    }
+    expect(Number((await sql<{ n: string }>("select count(*)::text as n from public.uploaded_files where tenant_id = $1 and purpose = 'adjustment_import'", [w.t1.id]))[0]!.n)).toBe(filesBefore);
+    // 2. A file that bypassed the trigger (the owner inserts with triggers off) is refused by create_adjustment_import, which deletes it.
+    for (const bad of bads) {
+      const file = await ownerFile(csv(["ship_date", "carrier", bad, "package_ref"], [["2026-03-01", "ups", "7.42", "1Z0001"]]));
       const out = await createImport(admin(), file, `refused ${bad}`, { headers: ["ship_date", "carrier", "package_ref"] });
       expect(out).toEqual({ ok: false, reason: "forbidden_header", header: bad });
       expect(await fileExists(file), bad).toBe(false);
     }
-    // Also when only the declared details name it (an XLSX cannot be read in SQL), or a sample row's key does.
+    // 3. Also when only the declared details name it (an XLSX cannot be read in SQL), or a sample row's key does.
     const x = await upload(admin(), Buffer.from("PK\u0003\u0004 binary"), { filename: "history.xlsx", mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     expect(await createImport(admin(), x, "xlsx", { headers: ["ship_date", "Carrier Cost"] })).toMatchObject({ ok: false, header: "Carrier Cost" });
     expect(await fileExists(x)).toBe(false);
@@ -542,5 +555,285 @@ describe("saved risk estimates", () => {
     // Records only the account's staff can read; a customer reads no estimate, however it was saved.
     for (const user of [w.brandA.admin, w.brandB.admin, w.t1.employee, w.outsider]) expect(await asUser(user.id, "select id from public.risk_estimates where id = $1", [id]), user.email).toHaveLength(0);
     await expectDenied(asUser(w.brandA.admin.id, "update public.risk_estimates set archived_at = now()"), /permission denied/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Raw history files: refused before they are stored, bounded per account, never orphaned
+// ---------------------------------------------------------------------------
+describe("raw history files: the insert guard, the per-account bound and discarding an orphan", () => {
+  interface Refusal { code?: string; hint?: string; detail?: string; message?: string }
+  const refusal = async (content: Buffer, over: { filename?: string; mime?: string; by?: string; tenant?: string } = {}) =>
+    (await upload(over.by ?? admin(), content, { filename: over.filename, mime: over.mime, tenant: over.tenant }).then(() => null, (e: Refusal) => e)) as Refusal | null;
+  const unattached = async (tenant = w.t1.id) =>
+    Number((await sql<{ n: string }>("select count(*)::text as n from public.uploaded_files f where f.tenant_id = $1 and f.purpose = 'adjustment_import' and not exists (select 1 from public.adjustment_imports i where i.file_id = f.id)", [tenant]))[0]!.n);
+  const clearUnattached = (tenant = w.t1.id) =>
+    sql("delete from public.uploaded_files f where f.tenant_id = $1 and f.purpose = 'adjustment_import' and not exists (select 1 from public.adjustment_imports i where i.file_id = f.id)", [tenant]);
+  const preamble = (n: number) => Array.from({ length: n }, (_, i) => `Weekly report line ${i + 1},Run 7,Acme Logistics`);
+  const COST_HEADER = "ship_date,carrier,adjustment_type,Net Charge,Carrier Cost";
+  const dataRow = "2026-09-01,UPS,reweight,12.00,9.10";
+
+  it("reads the first fifty lines wherever the header sits: a title row, a header under a title block, other delimiters and line endings (F2)", async () => {
+    const file = (lines: string[], eol = "\n") => Buffer.from(lines.join(eol) + eol);
+    // The reported header is the first flagged cell of the first line that can be a header.
+    expect(await refusal(file(["Acme Logistics,Weekly report,Run 7", COST_HEADER, dataRow]))).toMatchObject({ code: "P0001", hint: "forbidden_header", detail: "Net Charge" });
+    expect(await refusal(file([...preamble(12), COST_HEADER, dataRow]))).toMatchObject({ hint: "forbidden_header", detail: "Net Charge" });
+    expect(await refusal(file([...preamble(48), "ship_date,carrier,adjustment_type,Carrier Cost"]))).toMatchObject({ hint: "forbidden_header", detail: "Carrier Cost" }); // line 49
+    expect(await refusal(file([...preamble(49), "ship_date,carrier,adjustment_type,Carrier Cost"]))).toMatchObject({ hint: "forbidden_header", detail: "Carrier Cost" }); // line 50
+    // Line 51 is outside what the database reads (the TypeScript guard fails closed when no header is found in the first rows).
+    expect(await refusal(file([...preamble(50), "ship_date,carrier,adjustment_type,Carrier Cost"]))).toBeNull();
+    // Other delimiters, quoting, CRLF and bare CR, a byte order mark, blank lines (which are not counted toward the fifty).
+    expect(await refusal(file(["ship_date;carrier;adjustment_type;Carrier Cost"]))).toMatchObject({ hint: "forbidden_header" });
+    expect(await refusal(file(["ship_date\tcarrier\tadjustment_type\tCarrier Cost"]))).toMatchObject({ hint: "forbidden_header" });
+    expect(await refusal(file(['"ship_date","carrier","adjustment_type","Carrier Cost"']))).toMatchObject({ hint: "forbidden_header", detail: "Carrier Cost" });
+    expect(await refusal(file([...preamble(2), COST_HEADER], "\r\n"))).toMatchObject({ hint: "forbidden_header" });
+    expect(await refusal(file([...preamble(2), COST_HEADER], "\r"))).toMatchObject({ hint: "forbidden_header" });
+    expect(await refusal(Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), file(["Postage Cost,ship_date,carrier"])]))).toMatchObject({ hint: "forbidden_header", detail: "Postage Cost" });
+    expect(await refusal(file([...Array.from({ length: 30 }, () => ""), ...preamble(3), COST_HEADER]))).toMatchObject({ hint: "forbidden_header" });
+    // Clean files pass: the template header, a title row above it, and the same file as a .txt.
+    const clean = ["ship_date,carrier,adjustment_type,customer_charge_original", dataRow];
+    expect(await refusal(file(clean))).toBeNull();
+    expect(await refusal(file(["Acme Logistics,Weekly report,Run 7", ...clean]))).toBeNull();
+    expect(await refusal(file(clean), { filename: "history.txt", mime: "text/plain" })).toBeNull();
+    await clearUnattached();
+  });
+
+  it("does not read data rows as headers: a service named 'USPS Priority Mail Flat Rate' or a reason 'Carrier adjustment' never refuses a file", async () => {
+    const rows = Array.from({ length: 20 }, (_, i) => `2026-09-${String(1 + (i % 28)).padStart(2, "0")},UPS,reweight,Carrier adjustment,USPS Priority Mail Flat Rate,1Z00${i},${3 + i},12.50`);
+    expect(await refusal(Buffer.from(["ship_date,carrier,adjustment_type,reason,service,package_ref,declared_weight,customer_charge_original", ...rows].join("\n")))).toBeNull();
+    // A text-only row with three or more cells could be a header, and is read like one (a documented, conservative case).
+    expect(await refusal(Buffer.from(["ship_date,carrier,adjustment_type", "Label reprint,USPS Flat Rate Box,Carrier adjustment"].join("\n")))).toMatchObject({ hint: "forbidden_header" });
+    await clearUnattached();
+  });
+
+  it("refuses UTF-16 and NUL-bearing text as unreadable (reason unsupported_encoding), reads Latin-1, and leaves binary files to the declared headers (F3)", async () => {
+    const text = "ship_date,carrier,adjustment_type,Carrier Cost\n2026-09-01,UPS,reweight,9.10\n";
+    const le = Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]);
+    const be = Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, "utf16le").swap16()]);
+    for (const [label, bytes] of [["UTF-16LE with a byte order mark", le], ["UTF-16BE with a byte order mark", be], ["UTF-16LE without one", Buffer.from(text, "utf16le")], ["a NUL byte in a CSV", Buffer.from("ship_date,carrier\n2026-09-01,ups\u0000\n")]] as const) {
+      expect(await refusal(bytes), label).toMatchObject({ code: "P0001", hint: "unsupported_encoding", message: "this file was not saved" });
+      expect(await refusal(bytes, { filename: "x.txt", mime: "text/plain" }), `${label} (.txt)`).toMatchObject({ hint: "unsupported_encoding" });
+    }
+    // Latin-1 text (a windows-1252 e-acute) is read without raising, and so is UTF-8 with a multi-byte character.
+    expect(await refusal(Buffer.from("ship_date,carrier,package_ref,reason\n2026-09-01,ups,A1,caf\xe9\n", "latin1"))).toBeNull();
+    expect(await refusal(Buffer.from("ship_date,carrier,package_ref,reason\n2026-09-01,ups,A1,café 东\n", "utf8"))).toBeNull();
+    expect(await refusal(Buffer.from("ship_date,carrier\n2026-09-01,ups\n" + "x".repeat(70_000)))).toBeNull(); // only the first 64 KB are read
+    // A workbook is binary (it has NUL bytes): it is not read here, so only the headers the caller declares are tested.
+    expect(await refusal(Buffer.from("PK\u0003\u0004\u0000\u0000 binary"), { filename: "history.xlsx", mime: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" })).toBeNull();
+    // A file that bypassed the insert guard and holds UTF-16 is answered, not raised on, and deleted: no orphan.
+    const bypass = await ownerFile(le);
+    expect(await createImport(admin(), bypass, "utf16", { headers: [] })).toEqual({ ok: false, reason: "unsupported_encoding" });
+    expect(await fileExists(bypass)).toBe(false);
+    const bypass2 = await ownerFile(Buffer.from("ship_date,carrier\n2026-09-01,ups\u0000\n"));
+    expect(await createImport(admin(), bypass2, "nul", { headers: [] })).toEqual({ ok: false, reason: "unsupported_encoding" });
+    expect(await fileExists(bypass2)).toBe(false);
+    await clearUnattached();
+  });
+
+  it("an account holds at most five files that no import refers to; attached files and other purposes and accounts do not count (DB-2)", async () => {
+    await clearUnattached();
+    const made: string[] = [];
+    for (let i = 0; i < 5; i++) made.push(await upload(admin(), csv(GOOD_HEADERS), { filename: `waiting${i}.csv` }));
+    expect(await unattached()).toBe(5);
+    expect(await refusal(csv(GOOD_HEADERS))).toMatchObject({ code: "P0001", hint: "too_many_unattached_files", message: expect.stringMatching(/too many uploaded files are waiting/) });
+    // Another purpose and another account are not counted.
+    await upload(admin(), csv(GOOD_HEADERS), { purpose: "rate_card" });
+    expect(await refusal(csv(GOOD_HEADERS), { by: w.t2.admin.id, tenant: w.t2.id })).toBeNull();
+    // An import takes a file out of the count; discarding an unattached file frees a slot.
+    const { importId } = await createImport(admin(), made[0]!, "attached");
+    expect(await unattached()).toBe(4);
+    expect(await refusal(csv(GOOD_HEADERS))).toBeNull();
+    expect(await refusal(csv(GOOD_HEADERS))).toMatchObject({ hint: "too_many_unattached_files" });
+    await asUser(admin(), "select public.discard_unattached_adjustment_file($1)", [made[1]!]);
+    expect(await refusal(csv(GOOD_HEADERS))).toBeNull();
+    // The bound on raw files: five unattached plus the five imports in progress; the files of imports that end are deleted.
+    await asUser(admin(), "select public.discard_adjustment_import($1)", [importId]);
+    expect(await fileExists(made[0]!)).toBe(false);
+    await clearUnattached();
+    await clearUnattached(w.t2.id);
+  });
+
+  it("discard_unattached_adjustment_file removes an orphan after a failed registration; every other case is the same 'not found'", async () => {
+    await clearUnattached();
+    // The failure the server action must clean up after: the registration is refused for its name, and the file stays behind.
+    const orphan = await upload(admin(), csv(GOOD_HEADERS));
+    await expectCode(createImport(admin(), orphan, "   "), "PC001", /name must be/);
+    expect(await fileExists(orphan)).toBe(true);
+    expect(await unattached()).toBe(1);
+    // Nobody else can touch it, and nothing distinguishes that from a file that never existed.
+    for (const user of [w.t1.employee, w.brandA.admin, w.brandA.employee, w.brandB.admin, w.t2.admin, w.outsider, w.platformAdmin]) {
+      await expectCode(asUser(user.id, "select public.discard_unattached_adjustment_file($1)", [orphan]), "P0002", /^not found$/);
+    }
+    await expectCode(asUser(admin(), "select public.discard_unattached_adjustment_file($1)", ["00000000-0000-4000-8000-000000000000"]), "P0002", /^not found$/);
+    await expectCode(asUser(null, "select public.discard_unattached_adjustment_file($1)", [orphan]), "42501", /permission denied/);
+    // A file of another purpose and a file an import holds are not its business either.
+    const rateCardFile = await upload(admin(), csv(GOOD_HEADERS), { purpose: "rate_card" });
+    await expectCode(asUser(admin(), "select public.discard_unattached_adjustment_file($1)", [rateCardFile]), "P0002", /^not found$/);
+    const held = await upload(admin(), csv(GOOD_HEADERS));
+    const { importId } = await createImport(admin(), held, "held");
+    await expectCode(asUser(admin(), "select public.discard_unattached_adjustment_file($1)", [held]), "P0002", /^not found$/);
+    expect(await fileExists(held)).toBe(true);
+    await asUser(admin(), "select public.discard_adjustment_import($1)", [importId]);
+    // The owner of the account removes the orphan; asking again is "not found" (it is gone). Callers have no other way to delete a file.
+    await expectDenied(asUser(admin(), "delete from public.uploaded_files where id = $1", [orphan]), /permission denied/);
+    await asUser(admin(), "select public.discard_unattached_adjustment_file($1)", [orphan]);
+    expect(await fileExists(orphan)).toBe(false);
+    await expectCode(asUser(admin(), "select public.discard_unattached_adjustment_file($1)", [orphan]), "P0002", /^not found$/);
+    expect(await sql("select 1 from public.uploaded_files where id = $1", [rateCardFile])).toHaveLength(1);
+  });
+
+  it("registering a file that is being discarded at the same moment answers 'not found', never a foreign-key error", async () => {
+    await clearUnattached();
+    const file = await upload(admin(), csv(GOOD_HEADERS));
+    let registering: Promise<unknown> | undefined;
+    await withTx(admin(), async (q) => {
+      await q("select public.discard_unattached_adjustment_file($1)", [file]); // holds the account's lock until this transaction ends
+      registering = createImport(admin(), file, "late").then(() => "registered", (e: { code?: string; message?: string }) => `${e.code}: ${e.message}`);
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    expect(await registering).toBe("P0002: not found");
+    expect(await fileExists(file)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The validation report, sample rows, estimate ids, package references
+// ---------------------------------------------------------------------------
+describe("what an import stores about its file", () => {
+  const importWith = async (detected: unknown) => {
+    const file = await upload(admin(), csv(GOOD_HEADERS));
+    const created = await createImport(admin(), file, "stored text", detected);
+    expect(created.ok).toBe(true);
+    return { id: created.importId!, file };
+  };
+  const stored = async (id: string) => (await sql<{ status: string; detected: Record<string, unknown>; validation: Record<string, unknown> | null }>("select status, detected, validation from public.adjustment_imports where id = $1", [id]))[0]!;
+  const NUL = String.fromCharCode(92) + "u0000";
+
+  it("cuts long header and customer text out of the validation report before judging its size, so a good file can always be validated (F9)", async () => {
+    const { id } = await importWith({ headers: GOOD_HEADERS });
+    const ignoredColumns = Array.from({ length: 200 }, (_, i) => ({ index: i + 3, header: `${String.fromCharCode(97 + (i % 26))}`.repeat(120), moneyLike: i % 2 === 0 }));
+    const customers = Array.from({ length: 80 }, (_, i) => ({ text: "c".repeat(300), rows: i + 1, brandId: null }));
+    const report = { counts: { rows: 10, accepted: 9, errorRows: 0 }, byCode: { x: 1 }, shipDateRange: { min: "2026-01-01", max: "2026-01-31" }, ignoredColumns, customers, notice: "n" };
+    expect(JSON.stringify(report).length).toBeGreaterThan(32_768);
+    expect(await setMapping(admin(), id, MAPPING, report, true)).toBe("validated");
+    const { validation } = await stored(id);
+    const v = validation as { counts: Record<string, number>; ignoredColumns: { index: number; header: string; moneyLike: boolean }[]; customers: { text: string; rows: number }[]; byCode: unknown; shipDateRange: unknown; notice: string };
+    expect(v.counts).toEqual({ rows: 10, accepted: 9, errorRows: 0 });
+    expect(v.ignoredColumns).toHaveLength(50);
+    expect(v.ignoredColumns.every((c) => c.header.length === 80)).toBe(true);
+    expect(v.ignoredColumns[0]).toEqual({ index: 3, header: "a".repeat(80), moneyLike: true }); // order and the other fields are kept
+    expect(v.customers).toHaveLength(50);
+    expect(v.customers.every((c) => c.text.length === 120)).toBe(true);
+    expect(v.byCode).toEqual({ x: 1 });
+    expect(v.shipDateRange).toEqual({ min: "2026-01-01", max: "2026-01-31" });
+    const [{ s }] = (await sql<{ s: string }>("select pg_column_size(validation)::text as s from public.adjustment_imports where id = $1", [id])) as [{ s: string }];
+    expect(Number(s)).toBeLessThan(32_768);
+    // Two 60,000-character headers (the review's file) validate too.
+    const huge = { counts: { rows: 3, accepted: 3 }, ignoredColumns: [{ index: 3, header: "x".repeat(60_000) }, { index: 4, header: "y".repeat(60_000) }] };
+    expect(await setMapping(admin(), id, MAPPING, huge, true)).toBe("validated");
+    expect(((await stored(id)).validation as { ignoredColumns: { header: string }[] }).ignoredColumns.map((c) => c.header.length)).toEqual([80, 80]);
+    // What is still too large after the cut, or absurdly large before it, is a clean PC001.
+    await expectCode(setMapping(admin(), id, MAPPING, { counts: { rows: 3, accepted: 3 }, padding: "z".repeat(40_000) }, true), "PC001", /validation report is too large/);
+    await expectCode(setMapping(admin(), id, MAPPING, { counts: { rows: 3, accepted: 3 }, padding: "z".repeat(1_100_000) }, true), "PC001", /validation report is too large/);
+    await expectCode(setMapping(admin(), id, MAPPING, ["x"], true), "PC001", /validation report is too large/);
+    // A NUL cannot be stored in jsonb at all: PostgreSQL refuses it when the argument is converted, before any function runs (22P05),
+    // so the TypeScript layer strips it first (cleanText). This pins the behaviour the action maps to a plain message.
+    const err = await asUser(admin(), "select public.set_adjustment_import_mapping($1, $2::jsonb, $3::jsonb, 'refuse', true)", [id, JSON.stringify(MAPPING), JSON.stringify({ counts: { rows: 1, accepted: 1 }, ignoredColumns: [{ header: "bad@@NUL@@name" }] }).replace("@@NUL@@", NUL)]).then(() => null, (e: { code?: string }) => e);
+    expect(err?.code).toBe("22P05");
+    await asUser(admin(), "select public.discard_adjustment_import($1)", [id]);
+  });
+
+  it("discarding or withdrawing an import also removes what its file showed: sample rows, issue examples, customer names; committing drops the sample rows (DB-8)", async () => {
+    const samples = [{ ship_date: "2026-01-01", package_ref: "1Z-PERSONAL-REF-123" }];
+    const report = { counts: { rows: 3, accepted: 3 }, issues: [{ row: 2, code: "invalid_date", message: "row 2 has an invalid date" }], customers: [{ text: "Jane Doe Outfitters", rows: 3, brandId: null }], rowNumbers: { invalid_date: [2] }, byCode: { invalid_date: 1 } };
+    // Discard (before commit).
+    const a = await importWith({ headers: GOOD_HEADERS, sampleRows: samples });
+    await setMapping(admin(), a.id, MAPPING, report, true);
+    expect(JSON.stringify(await stored(a.id))).toContain("1Z-PERSONAL-REF-123");
+    await asUser(admin(), "select public.discard_adjustment_import($1)", [a.id]);
+    const afterDiscard = await stored(a.id);
+    expect(afterDiscard.status).toBe("discarded");
+    expect(afterDiscard.detected).toEqual({ headers: GOOD_HEADERS });
+    expect(afterDiscard.validation).toEqual({ counts: { rows: 3, accepted: 3 }, byCode: { invalid_date: 1 } });
+    expect(JSON.stringify(afterDiscard)).not.toMatch(/1Z-PERSONAL|Jane Doe|invalid date/);
+    // Commit drops the sample rows (the records are the data now); withdraw drops the examples that remained.
+    const b = await importWith({ headers: GOOD_HEADERS, sampleRows: samples });
+    await setMapping(admin(), b.id, MAPPING, { ...report, counts: { rows: 1, accepted: 1 } }, true);
+    await append(admin(), b.id, 1, rowsFrom(900, 1));
+    await finalize(admin(), b.id);
+    const committed = await stored(b.id);
+    expect(committed.detected).toEqual({ headers: GOOD_HEADERS });
+    expect(JSON.stringify(committed.validation)).toContain("Jane Doe"); // the report of a committed import is still the 3PL's record
+    // Withdraw does not rely on the commit having cleaned the details: put sample rows back as the owner (no function can), then withdraw.
+    await asOwnerWithoutTriggers("update public.adjustment_imports set detected = detected || $2::jsonb where id = $1", [b.id, JSON.stringify({ sampleRows: samples })]);
+    expect(JSON.stringify(await stored(b.id))).toContain("1Z-PERSONAL-REF-123");
+    await asUser(admin(), "select public.withdraw_adjustment_import($1)", [b.id]);
+    const withdrawn = await stored(b.id);
+    expect(withdrawn.status).toBe("withdrawn");
+    expect(withdrawn.detected).toEqual({ headers: GOOD_HEADERS });
+    expect(withdrawn.validation).toEqual({ counts: { rows: 1, accepted: 1 }, byCode: { invalid_date: 1 } });
+    expect(JSON.stringify(withdrawn)).not.toMatch(/1Z-PERSONAL|Jane Doe|invalid date/);
+  });
+
+  it("a saved estimate cites its imports as sorted, distinct, lower-case ids, whatever the spelling it was sent with; withdraw honours every spelling (DB-9)", async () => {
+    const { id } = await validatedImport(1);
+    await append(admin(), id, 1, rowsFrom(910, 1));
+    await finalize(admin(), id);
+    const upper = id.toUpperCase();
+    const estimate = (await asUser<{ id: string }>(admin(), "select public.save_risk_estimate($1, null, 'Upper-case id', $2::jsonb, $3::jsonb, '1.0.0') as id", [w.t1.id, JSON.stringify({ importIds: [upper, id, upper] }), JSON.stringify({ v: 1 })]))[0]!.id;
+    expect((await sql<{ ids: string[] }>("select inputs -> 'importIds' as ids from public.risk_estimates where id = $1", [estimate]))[0]!.ids).toEqual([id]);
+    await expectCode(asUser(admin(), "select public.withdraw_adjustment_import($1)", [id]), "P0001", /saved risk estimates are based on this import/);
+    // Even an estimate row written with the upper-case spelling (by the owner) blocks the withdrawal: the comparison is lower-cased too.
+    await asUser(admin(), "select public.archive_risk_estimate($1)", [estimate]);
+    await asOwnerWithGuardOpen("insert into public.risk_estimates (tenant_id, name, inputs, result, engine_version) values ($1, 'legacy upper', $2::jsonb, '{}', '1.0.0')", [w.t1.id, JSON.stringify({ importIds: [upper] })]);
+    await expectCode(asUser(admin(), "select public.withdraw_adjustment_import($1)", [id]), "P0001", /saved risk estimates are based on this import/);
+    await sql("update public.risk_estimates set archived_at = now() where tenant_id = $1 and name = 'legacy upper'", [w.t1.id]).catch(() => undefined);
+    await asOwnerWithGuardOpen("update public.risk_estimates set archived_at = now() where tenant_id = $1 and name = 'legacy upper'", [w.t1.id]);
+    await asUser(admin(), "select public.withdraw_adjustment_import($1)", [id]);
+  });
+
+  it("package references are stored in one canonical form: 'x', 'X' and ' X' are one package; invisible characters and fullwidth letters fold; bad ones are refused (F12)", async () => {
+    const one = await validatedImport(4);
+    const ref = (r: string | null, i: number, over: Record<string, unknown> = {}) => baseRow(i, { package_ref: r, ...over });
+    // Three spellings in one chunk are one package.
+    await expectCode(append(admin(), one.id, 1, [ref("X", 1), ref("x", 2)]), "PC001", /^row 2: duplicate_package$/);
+    await expectCode(append(admin(), one.id, 1, [ref("X", 1), ref(" X", 2)]), "PC001", /^row 2: duplicate_package$/);
+    await expectCode(append(admin(), one.id, 1, [ref("1Z0001AB", 1), ref("1z0001 ab\u{200b}", 2)].map((r) => r)), "PC001", /^row 2: duplicate_package$/);
+    // The stored form is canonical.
+    expect(await append(admin(), one.id, 1, [
+      ref(` 1z 0001-ab${String.fromCodePoint(0x200b)}`, 1),
+      ref("\u{ff21}\u{ff22}\u{ff11}\u{ff12}", 2), // fullwidth ab12 in capitals
+      ref("9400 1118\t9922", 3),
+      ref(`${String.fromCodePoint(0xfeff)}q${String.fromCodePoint(0xad)}r`, 4),
+    ])).toMatchObject({ inserted: 4 });
+    expect((await sql<{ r: string }>("select string_agg(package_ref, ',' order by row_no) as r from public.adjustment_records where import_id = $1", [one.id]))[0]!.r).toBe("1Z0001-AB,AB12,940011189922,QR");
+    expect(await finalize(admin(), one.id)).toMatchObject({ committed: 4, skipped: 0 });
+    // A later file with the same packages spelled differently is skipped and counted, never stored twice.
+    const two = await validatedImport(3);
+    expect(await append(admin(), two.id, 1, [ref("1z0001-ab", 1), ref("ab 12", 2), ref("new-ref", 3)])).toMatchObject({ applied: true, inserted: 1, skipped: 2 });
+    expect(await finalize(admin(), two.id)).toMatchObject({ committed: 1, skipped: 2 });
+    // The same reference as another carrier, type or customer is another package.
+    const three = await validatedImport(3);
+    expect(await append(admin(), three.id, 1, [ref("1z0001ab", 1, { carrier_code: "usps", service_id: null }), ref("1z0001ab", 2, { adjustment_type: "remeasure" }), ref("1z0001ab", 3, { brand_id: null })])).toMatchObject({ inserted: 3, skipped: 0 });
+    await asUser(admin(), "select public.discard_adjustment_import($1)", [three.id]);
+    // Refused: replacement characters, nothing left after whitespace and invisible characters, over-long raw text, text that grows past the column when normalised.
+    const four = await validatedImport(1);
+    const bad: [string, string][] = [
+      ["invalid_package_ref", `AB${String.fromCharCode(0xfffd)}CD`],
+      ["invalid_package_ref", "   "],
+      ["invalid_package_ref", String.fromCodePoint(0x200b)],
+      ["invalid_package_ref", "a".repeat(121)],
+      ["invalid_package_ref", "\u{fdfa}".repeat(10)], // ten characters that normalise to 180
+    ];
+    for (const [code, value] of bad) expect(((await append(admin(), four.id, 1, [ref(value, 1)]).catch((e) => e)) as { message?: string }).message, JSON.stringify(value)).toBe(`row 1: ${code}`);
+    await asUser(admin(), "select public.discard_adjustment_import($1)", [four.id]);
+    // The column itself only ever holds the canonical form (even for the owner).
+    const imp = await validatedImport(1);
+    await expectCode(
+      asOwnerWithGuardOpen("insert into public.adjustment_records (tenant_id, import_id, row_no, ship_date, carrier_code, adjustment_type, cause, declared_weight_basis, package_ref) values ($1, $2, 99, '2026-01-01', 'ups', 'reweight', 'other', 'missing', 'not canonical')", [w.t1.id, imp.id]),
+      "23514", /adjustment_records_package_ref_canonical/,
+    );
+    await asUser(admin(), "select public.discard_adjustment_import($1)", [imp.id]);
+    for (const x of [one.id, two.id]) await asUser(admin(), "select public.withdraw_adjustment_import($1)", [x]);
   });
 });

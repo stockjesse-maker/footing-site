@@ -218,7 +218,16 @@ describe("risk forecast: exact arithmetic against an independent oracle", () => 
       const d = draw(rng(seed), { terminating: false });
       if (d.inputs.incidence.source !== "history" || d.inputs.incidence.N === 0) continue;
       const f = okForecast(d.inputs);
-      if (!f.range || f.range.lowE4 === null || f.range.highE4 === null || f.exactCountedHereE4 === null) continue;
+      if (!f.range) continue;
+      // lowE4 is null only when no counted-here severity is known AND the lower bound is not exactly 0; k = 0 always gives 0 (the exact Wilson edge)
+      if (d.inputs.incidence.k === 0) expect(f.range.lowE4, `seed ${seed} k = 0`).toBe(0);
+      if (f.range.lowE4 === null) {
+        expect(f.range.highE4, `seed ${seed}`).toBeNull();
+        expect(d.inputs.incidence.k, `seed ${seed}`).toBeGreaterThan(0);
+        expect(f.perAffectedE4, `seed ${seed}`).toBeNull();
+        continue;
+      }
+      if (f.range.highE4 === null || f.exactCountedHereE4 === null) continue;
       const exact = new HP(f.exactCountedHereE4);
       expect(new HP(f.range.lowE4).minus(0.5).lessThanOrEqualTo(exact), `seed ${seed} low`).toBe(true);
       expect(new HP(f.range.highE4).plus(0.5).greaterThanOrEqualTo(exact), `seed ${seed} high`).toBe(true);
@@ -342,6 +351,8 @@ const ctxOf = (name: string) => {
   return c;
 };
 const DATES = ["2026-10-15", "2026-09-15", "2026-12-01"] as const;
+/** Contexts whose fee rule carries something that means nothing for a fee charged after shipping (a definite class, a suppression list, a floor, a shared group, a companion). */
+const MISCONFIGURED = new Set(["reweight_definite", "reweight_excludes_residential", "reweight_pp_das_group", "reweight_pp_das_group_low", "reweight_with_companion", "reweight_pp_floor20", "reweight_pct_all_excl_residential"]);
 
 function randomShipment(r: () => number, withDims: boolean): { shipment: ShipmentInput; dims: ([string, string, string] | null)[] } {
   const n = int(r, 1, 3);
@@ -376,7 +387,7 @@ describe("scenario evaluation properties", () => {
     let shown = 0;
     for (let seed = 1; seed <= 400; seed++) {
       const r = rng(seed * 17);
-      const profile = pick(r, PROFILES.filter((p) => p !== "reweight_definite")); // a definite-class fee rule is misconfigured by definition (the engine warns and forces it conditional)
+      const profile = pick(r, PROFILES.filter((p) => !MISCONFIGURED.has(p))); // these contexts carry a fee rule that is misconfigured by definition (the engine warns and isolates it: see adjustments-engine-review.test.ts)
       const { shipment } = randomShipment(r, r() < 0.7);
       const corrections = shipment.packages.map((p) => (r() < 0.7 ? { weight: new HP(p.weight).plus(int(r, 1, 200) / 10).toFixed(1), weightUnit: "lb" as const } : {}));
       if (corrections.every((c) => Object.keys(c).length === 0)) corrections[0] = { weight: new HP(shipment.packages[0]!.weight).plus(2).toFixed(1), weightUnit: "lb" };
@@ -463,7 +474,7 @@ describe("what leaves the engine", () => {
     expect(names.filter((n) => /customer|publish|brandVisible|projection|toPayload/i.test(n))).toEqual([]);
   });
 
-  it("planted sentinels in source references, override references, the rate card name and ZIP-list references never reach the stored scenario documents (deep walk, all 61 golden inputs)", () => {
+  it("planted sentinels in source references, override references, the rate card name and ZIP-list references never reach the stored scenario documents (deep walk, every golden input)", () => {
     const { scenarios } = fixture<{ scenarios: { id: string; context: string; policy: string; input: AdjustmentScenarioInput }[] }>("scenarios.json");
     const walk = (v: unknown, visit: (key: string, value: unknown) => void): void => {
       if (Array.isArray(v)) v.forEach((x) => walk(x, visit));
@@ -487,7 +498,7 @@ describe("what leaves the engine", () => {
       expect(JSON.stringify(doc.value), s.id).not.toContain(SENTINEL);
       expect(JSON.stringify(input), s.id).not.toContain(SENTINEL);
       // Only whitelisted keys appear anywhere in the stored result (deep walk).
-      const allowed = new Set(["v", "status", "adjustmentType", "direction", "basis", "components", "totalsE4", "undecided", "warnings", "notices", "engineVersion", "pricingEngineVersion", "kind", "state", "amount", "declaredTotal", "correctedTotal", "handling", "engineHandling", "creditAmount", "upTo", "lines", "ruleKey", "label", "category", "packageIndex", "method", "customerPays", "decidedCaseByCase", "notBilledToCustomer", "notDecided", "side"]);
+      const allowed = new Set(["v", "status", "adjustmentType", "direction", "basis", "components", "totalsE4", "undecided", "warnings", "notices", "engineVersion", "pricingEngineVersion", "kind", "state", "amount", "declaredTotal", "correctedTotal", "handling", "engineHandling", "creditAmount", "upTo", "lines", "ruleKey", "label", "category", "packageIndex", "coveredPackageIndexes", "method", "customerPays", "decidedCaseByCase", "notBilledToCustomer", "notDecided", "side"]);
       walk(doc.value, (key) => {
         if (/^\d+$/.test(key)) return;
         expect(allowed.has(key), `${s.id}: unexpected key ${key}`).toBe(true);

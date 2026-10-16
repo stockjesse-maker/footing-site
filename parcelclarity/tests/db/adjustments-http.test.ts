@@ -9,14 +9,17 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * the explicit projection.
  *
  * It needs the local stack's API and database (see TESTING.md: `npm run stack:up`, `cp /var/lib/parcelclarity-stack/env .env.local`,
- * then load it into the environment). Without them every test here is skipped, and says so. It creates its own uniquely named
- * tenants in the stack's database (as the end-to-end tests do) and leaves them there.
+ * then load it into the environment). Without them every test here is skipped with a visible console warning, UNLESS the environment
+ * variable PC_REQUIRE_HTTP=1 is set (CI sets it): then an unconfigured environment or an unreachable API makes every test FAIL, so the
+ * protections these tests prove can never go unchecked without somebody noticing. It creates its own uniquely named tenants in the
+ * stack's database (as the end-to-end tests do) and leaves them there.
  */
 const URL_ = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const DB = process.env.PC_DATABASE_URL;
 const configured = Boolean(URL_ && ANON && SERVICE && DB);
+const required = process.env.PC_REQUIRE_HTTP === "1";
 
 const SENTINEL = /SENTINEL_|7\.3719|42\.6143|91317\.29/;
 const run = randomUUID().slice(0, 8);
@@ -138,7 +141,10 @@ afterAll(async () => {
 
 const T = (name: string, fn: () => Promise<void>) => it(name, async (ctx) => {
   if (!configured || !reachable) {
-    console.warn(`skipped (${configured ? "the local stack's API is not reachable" : "no local stack configured; see TESTING.md"}): ${name}`);
+    const why = configured ? "the local stack's API is not reachable" : "no local stack configured; see TESTING.md";
+    // PC_REQUIRE_HTTP=1: an environment that cannot run these tests is a failure, never a silent pass.
+    if (required) throw new Error(`PC_REQUIRE_HTTP=1 but ${why}: ${name}`);
+    console.warn(`SKIPPED (${why}; set PC_REQUIRE_HTTP=1 to make this a failure): ${name}`);
     ctx.skip();
     return;
   }
@@ -229,6 +235,34 @@ describe("the Data API, with real customer tokens", () => {
     }
     // The offboarding functions live in a schema the API does not expose.
     expect((await api("POST", "/rest/v1/rpc/purge_tenant_adjustment_data", { token: tokens.admin, body: { p_tenant: tenantId } })).status).toBe(404);
+  });
+
+  T("a customer cannot move the expiry edge of an example by asking for another time zone (Prefer: timezone)", async () => {
+    // The example is valid through today in UTC: current in every zone, expired the day after, whatever zone the request names.
+    const original = (await pool.query("select valid_through::text as v from public.published_adjustment_examples where id = $1", [exampleId])).rows[0].v as string;
+    const setThrough = async (expr: string) => {
+      const c = await pool.connect();
+      try {
+        await c.query("begin");
+        await c.query("set local session_replication_role = replica");
+        await c.query(`update public.published_adjustment_examples set valid_through = ${expr} where id = $1`, [exampleId]);
+        await c.query("commit");
+      } finally { c.release(); }
+    };
+    const stateIn = async (zone: string | null) => {
+      const r = await api("POST", "/rest/v1/rpc/brand_adjustment_examples", { token: tokens.brandA, body: { p_brand: brandA }, headers: zone ? { Prefer: `timezone=${zone}` } : {} });
+      expect(r.status, `zone ${zone}`).toBe(200);
+      const e = r.body.find((x: { id: string }) => x.id === exampleId);
+      return { state: e.state as string, payload: e.payload !== null };
+    };
+    try {
+      await setThrough("(now() at time zone 'UTC')::date");
+      for (const zone of [null, "UTC", "Pacific/Kiritimati", "Etc/GMT+12", "America/Los_Angeles"]) expect(await stateIn(zone), `valid through today, zone ${zone}`).toEqual({ state: "current", payload: true });
+      await setThrough("(now() at time zone 'UTC')::date - 1");
+      for (const zone of [null, "UTC", "Pacific/Kiritimati", "Etc/GMT+12", "America/Los_Angeles"]) expect(await stateIn(zone), `valid through yesterday, zone ${zone}`).toEqual({ state: "expired", payload: false });
+    } finally {
+      await setThrough(`'${original}'::date`);
+    }
   });
 
   T("the one function a customer may call returns only the projection, and only for their own customer", async () => {

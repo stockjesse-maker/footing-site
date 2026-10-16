@@ -295,6 +295,219 @@
       "carrierCode": "ups",
       "category": "reweight",
       "name": "Reweigh fee, delivery-area ZIPs only (if needed)"
+    },
+    {
+      "scope": "tenant",
+      "serviceCodes": null,
+      "chargeClass": "conditional",
+      "method": "flat",
+      "amount": "3.00",
+      "percent": null,
+      "perUnit": null,
+      "base": {
+        "kind": "base_rate"
+      },
+      "conditions": [],
+      "exclusivityGroup": null,
+      "exclusivityPriority": 0,
+      "excludesRuleKeys": [
+        "fixture.ups.residential"
+      ],
+      "perPackage": false,
+      "effectiveDate": "2026-01-01",
+      "expirationDate": null,
+      "sourceReference": "FIXTURE: fictional amount for adjustment goldens",
+      "sourceUrl": null,
+      "verificationStatus": "approved_3pl_config",
+      "key": "fixture.adj.reweight_excl_residential",
+      "ruleId": "adj-reweight_excl_residential",
+      "versionId": "adj-reweight_excl_residential-1",
+      "version": 1,
+      "carrierCode": "ups",
+      "category": "reweight",
+      "name": "Reweigh fee that also lists the residential surcharge as suppressed (if needed)"
+    },
+    {
+      "scope": "tenant",
+      "serviceCodes": null,
+      "chargeClass": "conditional",
+      "method": "flat",
+      "amount": "3.00",
+      "percent": null,
+      "perUnit": null,
+      "base": {
+        "kind": "base_rate"
+      },
+      "conditions": [],
+      "exclusivityGroup": "ups.das",
+      "exclusivityPriority": 5,
+      "excludesRuleKeys": [],
+      "perPackage": true,
+      "effectiveDate": "2026-01-01",
+      "expirationDate": null,
+      "sourceReference": "FIXTURE: fictional amount for adjustment goldens",
+      "sourceUrl": null,
+      "verificationStatus": "approved_3pl_config",
+      "key": "fixture.adj.reweight_pp_das_group",
+      "ruleId": "adj-reweight_pp_das_group",
+      "versionId": "adj-reweight_pp_das_group-1",
+      "version": 1,
+      "carrierCode": "ups",
+      "category": "reweight",
+      "name": "Reweigh fee per package in the delivery-area exclusivity group (if needed)"
+    },
+    {
+      "scope": "tenant",
+      "serviceCodes": null,
+      "chargeClass": "definite",
+      "method": "flat",
+      "amount": "1.50",
+      "percent": null,
+      "perUnit": null,
+      "base": {
+        "kind": "base_rate"
+      },
+      "conditions": [
+        {
+          "type": "rule_applied",
+          "ruleKey": "fixture.adj.reweight_flat"
+        }
+      ],
+      "exclusivityGroup": null,
+      "exclusivityPriority": 0,
+      "excludesRuleKeys": [],
+      "perPackage": false,
+      "effectiveDate": "2026-01-01",
+      "expirationDate": null,
+      "sourceReference": "FIXTURE: fictional amount for adjustment goldens",
+      "sourceUrl": null,
+      "verificationStatus": "approved_3pl_config",
+      "key": "fixture.adj.peak_on_reweigh",
+      "ruleId": "adj-peak_on_reweigh",
+      "versionId": "adj-peak_on_reweigh-1",
+      "version": 1,
+      "carrierCode": "ups",
+      "category": "peak",
+      "name": "Peak surcharge that only applies when the reweigh fee applies (companion)"
+    },
+    {
+      "scope": "tenant",
+      "serviceCodes": null,
+      "chargeClass": "conditional",
+      "method": "flat",
+      "amount": "3.00",
+      "percent": null,
+      "perUnit": null,
+      "base": {
+        "kind": "base_rate"
+      },
+      "conditions": [],
+      "exclusivityGroup": null,
+      "exclusivityPriority": 0,
+      "excludesRuleKeys": [],
+      "perPackage": true,
+      "effectiveDate": "2026-01-01",
+      "expirationDate": null,
+      "sourceReference": "FIXTURE: fictional amount for adjustment goldens",
+      "sourceUrl": null,
+      "verificationStatus": "approved_3pl_config",
+      "key": "fixture.adj.reweight_pp_floor20",
+      "ruleId": "adj-reweight_pp_floor20",
+      "versionId": "adj-reweight_pp_floor20-1",
+      "version": 1,
+      "carrierCode": "ups",
+      "category": "reweight",
+      "name": "Reweigh fee per package that carries a 20 lb billable-weight floor (if needed)",
+      "billableWeightFloorLb": "20"
+    },
+    {
+      "scope": "tenant",
+      "serviceCodes": null,
+      "chargeClass": "conditional",
+      "method": "percent",
+      "amount": null,
+      "percent": "10.00",
+      "perUnit": null,
+      "base": {
+        "kind": "base_plus_all_surcharges"
+      },
+      "conditions": [],
+      "exclusivityGroup": null,
+      "exclusivityPriority": 0,
+      "excludesRuleKeys": [],
+      "perPackage": false,
+      "effectiveDate": "2026-01-01",
+      "expirationDate": null,
+      "sourceReference": "FIXTURE: fictional amount for adjustment goldens",
+      "sourceUrl": null,
+      "verificationStatus": "approved_3pl_config",
+      "key": "fixture.adj.reweight_pct_all_surcharges",
+      "ruleId": "adj-reweight_pct_all_surcharges",
+      "versionId": "adj-reweight_pct_all_surcharges-1",
+      "version": 1,
+      "carrierCode": "ups",
+      "category": "reweight",
+      "name": "Reweigh fee, percent of base rate plus all surcharges (if needed)"
+    },
+    {
+      "scope": "tenant",
+      "serviceCodes": null,
+      "chargeClass": "conditional",
+      "method": "flat",
+      "amount": "3.00",
+      "percent": null,
+      "perUnit": null,
+      "base": {
+        "kind": "base_rate"
+      },
+      "conditions": [],
+      "exclusivityGroup": "ups.das",
+      "exclusivityPriority": 0,
+      "excludesRuleKeys": [],
+      "perPackage": true,
+      "effectiveDate": "2026-01-01",
+      "expirationDate": null,
+      "sourceReference": "FIXTURE: fictional amount for adjustment goldens",
+      "sourceUrl": null,
+      "verificationStatus": "approved_3pl_config",
+      "key": "fixture.adj.reweight_pp_das_group_low",
+      "ruleId": "adj-reweight_pp_das_group_low",
+      "versionId": "adj-reweight_pp_das_group_low-1",
+      "version": 1,
+      "carrierCode": "ups",
+      "category": "reweight",
+      "name": "Reweigh fee per package in the delivery-area exclusivity group, lowest priority (if needed)"
+    },
+    {
+      "scope": "tenant",
+      "serviceCodes": null,
+      "chargeClass": "conditional",
+      "method": "percent",
+      "amount": null,
+      "percent": "10.00",
+      "perUnit": null,
+      "base": {
+        "kind": "base_plus_all_surcharges"
+      },
+      "conditions": [],
+      "exclusivityGroup": null,
+      "exclusivityPriority": 0,
+      "excludesRuleKeys": [
+        "fixture.ups.residential"
+      ],
+      "perPackage": false,
+      "effectiveDate": "2026-01-01",
+      "expirationDate": null,
+      "sourceReference": "FIXTURE: fictional amount for adjustment goldens",
+      "sourceUrl": null,
+      "verificationStatus": "approved_3pl_config",
+      "key": "fixture.adj.reweight_pct_all_excl_residential",
+      "ruleId": "adj-reweight_pct_all_excl_residential",
+      "versionId": "adj-reweight_pct_all_excl_residential-1",
+      "version": 1,
+      "carrierCode": "ups",
+      "category": "reweight",
+      "name": "Reweigh fee, percent of base plus all surcharges, that lists the residential surcharge as suppressed (if needed)"
     }
   ],
   "contexts": {
@@ -408,6 +621,55 @@
         "fixture.adj.reweight_das_only"
       ],
       "withZipLists": false
+    },
+    "reweight_excludes_residential": {
+      "description": "A reweight rule 3.00 that lists the residential surcharge in excludesRuleKeys (a combination with no meaning for a fee charged after shipping).",
+      "ruleKeys": [
+        "fixture.adj.reweight_excl_residential"
+      ]
+    },
+    "reweight_pp_das_group": {
+      "description": "A per-package reweight rule 3.00 in exclusivity group ups.das at priority 5, the group of the DAS surcharges.",
+      "ruleKeys": [
+        "fixture.adj.reweight_pp_das_group"
+      ]
+    },
+    "reweight_with_companion": {
+      "description": "Reweight 3.00 plus a definite peak surcharge 1.50 conditioned on the reweight rule (rule_applied).",
+      "ruleKeys": [
+        "fixture.adj.reweight_flat",
+        "fixture.adj.peak_on_reweigh"
+      ]
+    },
+    "reweight_pp_floor20": {
+      "description": "A per-package reweight rule 3.00 that carries a 20 lb billable-weight floor.",
+      "ruleKeys": [
+        "fixture.adj.reweight_pp_floor20"
+      ]
+    },
+    "remeasure_pp": {
+      "description": "Per-package conditional remeasure rule, 4.00 per package.",
+      "ruleKeys": [
+        "fixture.adj.remeasure_pp"
+      ]
+    },
+    "reweight_pct_all_surcharges": {
+      "description": "Percent reweight rule, 10.00 percent of the base rate PLUS all surcharges (shipment-level).",
+      "ruleKeys": [
+        "fixture.adj.reweight_pct_all_surcharges"
+      ]
+    },
+    "reweight_pp_das_group_low": {
+      "description": "A per-package reweight rule 3.00 in exclusivity group ups.das at priority 0: the DAS surcharge (priority 1) outranks it inside the group.",
+      "ruleKeys": [
+        "fixture.adj.reweight_pp_das_group_low"
+      ]
+    },
+    "reweight_pct_all_excl_residential": {
+      "description": "Percent reweight rule (10.00 percent of base plus all surcharges) that lists the residential surcharge in excludesRuleKeys.",
+      "ruleKeys": [
+        "fixture.adj.reweight_pct_all_excl_residential"
+      ]
     }
   },
   "contextSchema": "A context profile is {description, ruleKeys: [overlay rule keys appended to the fixture rules], withOverrides?: load tests/fixtures/pricing/fixture-overrides.json, extraOverrides?: [SurchargeOverride objects appended], withZipLists?: false removes the ZIP lists (fixtureContext({withZipLists:false})), serviceTermsPatch?: {'<carrier>/<service>': {includedSurchargeKeys: [...]}} replaces that field of the matching ServiceTerms}. Build: ctx = {...fixtureContext({withOverrides, withZipLists}), rules: [...fixtureRules, ...overlay], overrides: [...fixtureOverrides?, ...extraOverrides]} then apply serviceTermsPatch."

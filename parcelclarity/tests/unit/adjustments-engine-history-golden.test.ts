@@ -3,7 +3,7 @@ import { summariseHistory, type HistoryBaseline, type HistoryFilters, type Histo
 import { fixture, mismatches } from "./adjustments-engine-support";
 
 /**
- * History goldens: all 37 cases of scenarios.json "historyCases" against expected.json "history". Expected values
+ * History goldens: all 39 cases of scenarios.json "historyCases" against expected.json "history". Expected values
  * come from the hand derivation (and a second Fraction-based implementation) of RULES.md part C; Wilson values compare
  * exactly at 4 dp and to 1e-9 percent at 10 dp.
  */
@@ -46,8 +46,8 @@ const at = (obj: unknown, path: string): unknown => path.replace(/^\$\.?/, "").s
 }, obj);
 
 describe("history statistics goldens", () => {
-  it("covers every case (37) with an expectation", () => {
-    expect(historyCases).toHaveLength(37);
+  it("covers every case (39) with an expectation", () => {
+    expect(historyCases).toHaveLength(39);
     expect(Object.keys(expected).sort()).toEqual(historyCases.map((c) => c.id).sort());
   });
 

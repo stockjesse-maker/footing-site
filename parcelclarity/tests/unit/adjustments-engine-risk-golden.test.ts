@@ -3,7 +3,7 @@ import { forecastAdjustmentRisk, type RiskInputs } from "@/engine/adjustments";
 import { fixture, mismatches } from "./adjustments-engine-support";
 
 /**
- * Risk goldens: all 45 cases of scenarios.json "riskCases" against expected.json "risk" (R1-R7, the truth table
+ * Risk goldens: all 49 cases of scenarios.json "riskCases" against expected.json "risk" (R1-R7, the truth table
  * T1 in both bases, rounding ties, null severity, V = 0, p = 0 and 100, k = 0, the manual-approval range, all four
  * buckets, the refusals). Expected amounts are integer E4 derived by hand and by a Fraction-based second implementation.
  */
@@ -16,8 +16,8 @@ const { riskCases } = fixture<{ riskCases: RiskCase[] }>("scenarios.json");
 const expected = fixture<{ risk: Record<string, Record<string, unknown>> }>("expected.json").risk;
 
 describe("adjustment risk forecast goldens", () => {
-  it("covers every case (45) with an expectation", () => {
-    expect(riskCases).toHaveLength(45);
+  it("covers every case (49) with an expectation", () => {
+    expect(riskCases).toHaveLength(49);
     expect(Object.keys(expected).sort()).toEqual(riskCases.map((c) => c.id).sort());
   });
 

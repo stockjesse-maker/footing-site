@@ -2301,6 +2301,64 @@
         "separateFee": "3.00",
         "postageDifference": "3.00"
       }
+    ],
+    "two_brands_one_reference": [
+      {
+        "id": "t01",
+        "brandId": "brand-a",
+        "carrierCode": "ups",
+        "serviceId": "svc-ups-ground",
+        "shipDate": "2026-01-05",
+        "adjustmentType": "reweight",
+        "cause": "carrier_reweigh",
+        "packageRef": "1ZSHARED",
+        "originalCharge": "10.00",
+        "correctedCharge": "12.00",
+        "separateFee": "3.00",
+        "postageDifference": "2.00"
+      },
+      {
+        "id": "t02",
+        "brandId": "brand-b",
+        "carrierCode": "ups",
+        "serviceId": "svc-ups-ground",
+        "shipDate": "2026-01-06",
+        "adjustmentType": "reweight",
+        "cause": "carrier_reweigh",
+        "packageRef": "1ZSHARED",
+        "originalCharge": "10.00",
+        "correctedCharge": "13.00",
+        "separateFee": "3.00",
+        "postageDifference": "3.00"
+      },
+      {
+        "id": "t03",
+        "brandId": "brand-a",
+        "carrierCode": "ups",
+        "serviceId": "svc-ups-ground",
+        "shipDate": "2026-01-05",
+        "adjustmentType": "remeasure",
+        "cause": "carrier_remeasure",
+        "packageRef": "1ZSHARED",
+        "originalCharge": "10.00",
+        "correctedCharge": "10.50",
+        "separateFee": "4.00",
+        "postageDifference": "0.50"
+      },
+      {
+        "id": "t04",
+        "brandId": "brand-a",
+        "carrierCode": "ups",
+        "serviceId": "svc-ups-ground",
+        "shipDate": "2026-01-07",
+        "adjustmentType": "reweight",
+        "cause": "carrier_reweigh",
+        "packageRef": "1ZALONE",
+        "originalCharge": "10.00",
+        "correctedCharge": "11.00",
+        "separateFee": "3.00",
+        "postageDifference": "1.00"
+      }
     ]
   }
 }

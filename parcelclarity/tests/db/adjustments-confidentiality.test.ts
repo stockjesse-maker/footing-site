@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import {
-  asUser, buildFixture, createUser, expectCode, publish, saveScenario, scenarioInput, scenarioResult, setPolicy, sha256Hex, sql, SENTINEL_PATTERN, SENTINELS, type Fixture, type TestUser,
+  asUser, buildFixture, createUser, expectCode, expectDenied, publish, saveScenario, scenarioInput, scenarioResult, setPolicy, sha256Hex, sql, SENTINEL_PATTERN, SENTINELS, withTx, type Fixture, type TestUser,
 } from "./adjustments-fixture";
 import { buildWorld, type World } from "./world";
 
@@ -71,7 +71,7 @@ beforeAll(async () => {
   ])]);
   // A second import is left part-way, with its raw file still stored.
   const [file2] = await asUser<{ id: string }>(admin, "insert into public.uploaded_files (tenant_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, 'adjustment_import', $2, 'text/csv', $3, decode($4, 'hex'), $5) returning id", [w.t1.id, `${sentinel("OPEN_FILE")}.csv`, content.length, sha256Hex(content), content]);
-  await asUser(admin, "select public.create_adjustment_import($1, $2, '{}')", [file2!.id, sentinel("OPEN_IMPORT")]);
+  await asUser(admin, "select public.create_adjustment_import($1, $2, $3::jsonb)", [file2!.id, sentinel("OPEN_IMPORT"), JSON.stringify({ headers: ["ship_date", "carrier", "package_ref", "customer_charge_original"], sampleRows: [{ ship_date: sentinel("SAMPLE_ROW") }] })]);
   await asUser(admin, "select public.finalize_adjustment_import($1)", [imp]);
 
   // Another 3PL's own data (neither t1's staff nor customers may see it) and a third 3PL that gets suspended.
@@ -371,7 +371,9 @@ describe("functions: inventory, search_path, privileges, platform administrators
     expect(open).toEqual([]);
     const internal = ["adjustment_policy_at", "adjustment_handling", "adjustment_lock", "adjustment_rows_problem", "build_customer_example", "example_state", "scenario_result_problem", "example_packages",
       "purge_tenant_adjustment_data", "purge_brand_adjustment_data", "guard_adjustment_write", "audit_adjustments", "customer_json_ok", "shape_published_payload", "shape_brand_example", "plain_text_ok",
-      "adjustment_header_forbidden", "try_date", "try_uuid", "try_dec", "add_problem", "summary_without_load_issues"];
+      "adjustment_header_forbidden", "adjustment_header_words_forbidden", "adjustment_template_headers", "adjustment_header_fold", "adjustment_header_norm", "adjustment_scan_file", "guard_adjustment_file_insert", "guard_adjustment_fee_class_publish",
+      "canon_package_ref", "utc_today", "clean_import_validation", "pricing_context_keys", "context_causes", "sweep_realtime_publication",
+      "try_date", "try_uuid", "try_dec", "add_problem", "summary_without_load_issues"];
     for (const fn of internal) {
       const rows = await sql<{ ok: boolean }>("select has_function_privilege('authenticated', p.oid, 'execute') as ok from pg_proc p where p.pronamespace = 'app'::regnamespace and p.proname = $1", [fn]);
       expect(rows.length, fn).toBeGreaterThan(0);
@@ -387,9 +389,153 @@ describe("functions: inventory, search_path, privileges, platform administrators
     expect(app.map((r) => r.n)).toEqual(APP_FUNCTIONS);
     // Every one of the M5 functions above is a staff or customer entry point named in the design.
     const m5 = pub.map((r) => r.n.split("(")[0]!).filter((n) => /adjustment|customer_example|risk_estimate/.test(n)).sort();
-    expect(m5).toEqual(["adjustment_example_state", "adjustment_example_states", "adjustment_records_json", "append_adjustment_records", "archive_adjustment_scenario", "archive_risk_estimate", "brand_adjustment_examples", "create_adjustment_import",
-      "delete_adjustment_baseline", "discard_adjustment_import", "end_adjustment_policy", "finalize_adjustment_import", "preview_customer_example", "publish_customer_example", "reset_adjustment_import",
+    expect(m5).toEqual(["adjustment_example_state", "adjustment_example_states", "adjustment_legacy_fee_rules", "adjustment_records_json", "append_adjustment_records", "archive_adjustment_scenario", "archive_risk_estimate", "brand_adjustment_examples", "create_adjustment_import",
+      "delete_adjustment_baseline", "discard_adjustment_import", "discard_unattached_adjustment_file", "end_adjustment_policy", "finalize_adjustment_import", "preview_customer_example", "publish_customer_example", "reset_adjustment_import",
       "retire_customer_example", "save_adjustment_baseline", "save_adjustment_scenario", "save_risk_estimate", "set_adjustment_import_mapping", "set_adjustment_policy", "withdraw_adjustment_import"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Defence in depth (DB-13): the write guard, the EXECUTE sweep, the realtime publication
+// ---------------------------------------------------------------------------
+describe("defence in depth: the write guard does not rest on grants alone", () => {
+  it("the Data API roles hold no INSERT, UPDATE, DELETE or TRUNCATE on any M5 table, at table or column level, directly or through PUBLIC", async () => {
+    for (const table of M5_TABLES) {
+      for (const role of ["anon", "authenticated"]) {
+        for (const priv of ["INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]) {
+          const [r] = await sql<{ t: boolean }>("select has_table_privilege($1, ('public.' || $2)::regclass, $3) as t", [role, table, priv]);
+          expect(r!.t, `${role} ${priv} on ${table}`).toBe(false);
+          if (["INSERT", "UPDATE", "REFERENCES"].includes(priv)) {
+            const [c] = await sql<{ c: boolean }>("select has_any_column_privilege($1, ('public.' || $2)::regclass, $3) as c", [role, table, priv]);
+            expect(c!.c, `${role} ${priv} on a column of ${table}`).toBe(false);
+          }
+        }
+      }
+      const acl = await sql<{ grantee: string; privilege_type: string }>(
+        "select case when a.grantee = 0 then 'PUBLIC' else a.grantee::regrole::text end as grantee, a.privilege_type from pg_class c, aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a where c.oid = ('public.' || $1)::regclass and a.grantee <> c.relowner order by 1, 2", [table]);
+      expect(acl.filter((a) => a.privilege_type !== "SELECT" && !["service_role", "postgres"].includes(a.grantee)), table).toEqual([]);
+      expect(await sql("select 1 from pg_attribute a, aclexplode(a.attacl) x where a.attrelid = ('public.' || $1)::regclass and a.attacl is not null and x.privilege_type <> 'SELECT' and x.grantee::regrole::text in ('anon', 'authenticated', '-')", [table]), `${table} column acl`).toHaveLength(0);
+    }
+  });
+
+  it("every M5 table carries the guard on insert, update and delete, and it is the same function", async () => {
+    const rows = await sql<{ t: string; fn: string; ins: boolean; upd: boolean; del: boolean; before: boolean; row: boolean }>(
+      `select c.relname as t, p.proname as fn, (g.tgtype & 4) <> 0 as ins, (g.tgtype & 16) <> 0 as upd, (g.tgtype & 8) <> 0 as del, (g.tgtype & 2) <> 0 as before, (g.tgtype & 1) <> 0 as row
+         from pg_trigger g join pg_class c on c.oid = g.tgrelid join pg_proc p on p.oid = g.tgfoid
+        where c.relnamespace = 'public'::regnamespace and not g.tgisinternal and p.proname = 'guard_adjustment_write' order by 1`);
+    expect(rows.map((r) => r.t)).toEqual([...M5_TABLES].sort());
+    for (const r of rows) expect(r, r.t).toMatchObject({ ins: true, upd: true, del: true, before: true, row: true });
+  });
+
+  it("with a grant AND a permissive policy added later, a Data API role still cannot insert, update or delete, whatever it set the 'open' signals to (shown on scratch copies of the tables carrying the same guard; nothing is committed)", async () => {
+    const results: Record<string, string> = {};
+    await withTx(null, async (q) => {
+      await q("create schema zz_guard");
+      await q("grant usage on schema zz_guard to authenticated");
+      for (const table of M5_TABLES) {
+        await q(`create table zz_guard.${table} (like public.${table} including defaults)`);
+        await q(`insert into zz_guard.${table} select * from public.${table} limit 1`); // the owner may insert: the guard asks nothing of it
+        await q(`create trigger ${table}_guard before insert or update or delete on zz_guard.${table} for each row execute function app.guard_adjustment_write()`);
+        await q(`grant select, insert, update, delete on zz_guard.${table} to authenticated`); // no row level security: the grants are all that is left, and they are open
+      }
+      await q("set local role authenticated");
+      await q("select set_config('request.jwt.claims', $1, true), set_config('request.jwt.claim.sub', $2, true)", [JSON.stringify({ sub: w.t1.admin.id, role: "authenticated" }), w.t1.admin.id]);
+      await q("select set_config('app.adjustment_rpc', 'on', true), set_config('app.adjustment_purge', 'on', true)");
+      const attempt = async (label: string, text: string) => {
+        await q("savepoint s");
+        try { await q(text); results[label] = "ALLOWED"; } catch (e) { results[label] = `${(e as { code?: string }).code}: ${(e as Error).message}`; }
+        await q("rollback to savepoint s");
+      };
+      for (const table of M5_TABLES) {
+        expect((await q(`select count(*)::int as n from zz_guard.${table}`)).rows[0]!.n, `${table} has a row to attack`).toBe(1);
+        await attempt(`update ${table}`, `update zz_guard.${table} set tenant_id = tenant_id`);
+        await attempt(`delete ${table}`, `delete from zz_guard.${table}`);
+        await attempt(`insert ${table}`, `insert into zz_guard.${table} select * from zz_guard.${table}`);
+      }
+    }, { commit: false });
+    expect(Object.values(results).length).toBe(M5_TABLES.length * 3);
+    for (const [label, outcome] of Object.entries(results)) expect(outcome, label).toBe("42501: adjustment data changes only through its functions");
+    expect(await sql("select 1 from pg_namespace where nspname = 'zz_guard'")).toHaveLength(0);
+  });
+
+  it("the owner and the functions still write: the guard refuses only the Data API roles, not a function's owner, and an insert needs no signal", async () => {
+    const [p] = await sql<{ id: string }>("select id from public.adjustment_policies where tenant_id = $1 limit 1", [w.t1.id]);
+    const change = "update public.adjustment_policies set internal_note = coalesce(internal_note, '') || 'x' where id = $1";
+    await expectCode(sql(change, [p!.id]), "42501", /only through its functions/); // a real change without the signal: refused for the owner too
+    await withTx(null, async (q) => { await q("select set_config('app.adjustment_rpc', 'on', true)"); await q(change, [p!.id]); }, { commit: false }); // inside a function: allowed
+  });
+});
+
+describe("defence in depth: the functions that lost EXECUTE in the schema sweep are needed by nothing a signed-in user runs", () => {
+  const LOST = ["audit_fees", "audit_modeling", "dataset_period", "default_sharing", "fee_decimal_ok", "fee_line_amount", "fee_monthly_lines", "fee_resolve_rate", "fee_rule_guard", "fee_rule_problem",
+    "fee_tier_amount", "fee_version_problem", "guard_dataset_update", "guard_fee_children", "guard_fee_schedule_update", "guard_fee_version_update", "limit_file_inserts", "normalise_packaging",
+    "order_line_counts", "run_minimums", "validate_fulfillment"];
+  const locked = () => sql<{ oid: string; proname: string }>("select p.oid::text as oid, p.proname from pg_proc p where p.pronamespace = 'app'::regnamespace and not has_function_privilege('authenticated', p.oid, 'execute') order by 2");
+
+  it("the 21 functions named in the migration header exist and signed-in users cannot execute them (a behaviour change this migration documents)", async () => {
+    const names = (await locked()).map((r) => r.proname);
+    for (const fn of LOST) expect(names, fn).toContain(fn);
+    expect(LOST).toHaveLength(21);
+  });
+
+  it("no policy, column default, view, index or generated column depends on a function a signed-in user cannot execute; a CHECK constraint does only on a table they cannot write", async () => {
+    const deps = await sql<{ kind: string; rel: string | null; fn: string }>(
+      `select d.classid::regclass::text as kind, l.proname as fn,
+              case d.classid when 'pg_constraint'::regclass then (select conrelid::regclass::text from pg_constraint where oid = d.objid)
+                             when 'pg_attrdef'::regclass then (select adrelid::regclass::text from pg_attrdef where oid = d.objid)
+                             when 'pg_policy'::regclass then (select polrelid::regclass::text from pg_policy where oid = d.objid)
+                             when 'pg_rewrite'::regclass then (select ev_class::regclass::text from pg_rewrite where oid = d.objid)
+                             when 'pg_class'::regclass then (select indrelid::regclass::text from pg_index where indexrelid = d.objid) end as rel
+         from pg_proc l join pg_depend d on d.refclassid = 'pg_proc'::regclass and d.refobjid = l.oid and d.deptype = 'n'
+        where l.pronamespace = 'app'::regnamespace and not has_function_privilege('authenticated', l.oid, 'execute')
+          and d.classid in ('pg_constraint'::regclass, 'pg_attrdef'::regclass, 'pg_policy'::regclass, 'pg_rewrite'::regclass, 'pg_class'::regclass)`);
+    const byKind = (k: string) => deps.filter((d) => d.kind === k);
+    expect(byKind("pg_policy"), "policies").toEqual([]);
+    expect(byKind("pg_attrdef"), "defaults").toEqual([]);
+    expect(byKind("pg_rewrite"), "views").toEqual([]);
+    expect(byKind("pg_class"), "indexes").toEqual([]);
+    const checks = byKind("pg_constraint");
+    expect(checks.length).toBeGreaterThan(0);
+    for (const c of checks) {
+      const [priv] = await sql<{ w: boolean }>("select (has_table_privilege('authenticated', $1::regclass, 'INSERT') or has_table_privilege('authenticated', $1::regclass, 'UPDATE') or has_any_column_privilege('authenticated', $1::regclass, 'INSERT') or has_any_column_privilege('authenticated', $1::regclass, 'UPDATE')) as w", [c.rel]);
+      expect(priv!.w, `${c.rel} (CHECK calling ${c.fn}) must not be writable by signed-in users`).toBe(false);
+    }
+  });
+
+  it("no SECURITY INVOKER function a signed-in user can run calls one they cannot execute, and the one invoker trigger that does refuses the Data API roles first", async () => {
+    const lockedNames = (await locked()).map((r) => r.proname);
+    const invokers = await sql<{ n: string; trg: boolean; src: string }>(
+      `select n.nspname || '.' || p.proname as n, p.prorettype = 'trigger'::regtype as trg, p.prosrc as src
+         from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+        where n.nspname in ('public', 'app') and not p.prosecdef and p.prolang = (select oid from pg_language where lanname = 'sql') or (n.nspname in ('public', 'app') and not p.prosecdef and p.prolang = (select oid from pg_language where lanname = 'plpgsql'))`);
+    const callers = invokers.filter((f) => lockedNames.some((l) => new RegExp(`\\b${l}\\b`).test(f.src)) && !f.n.startsWith("app."));
+    expect(callers.map((c) => c.n), "public invoker functions that call a locked function").toEqual([]);
+    const triggerCallers = invokers.filter((f) => f.trg && lockedNames.some((l) => new RegExp(`\\b${l}\\b`).test(f.src)));
+    expect(triggerCallers.map((c) => c.n)).toEqual(["app.guard_adjustment_write"]);
+    // ... which refuses signed-in users before it reaches the call (utc_today is in its DELETE branch).
+    const src = triggerCallers[0]!.src;
+    expect(src.indexOf("current_user in ('anon', 'authenticated', 'authenticator')")).toBeGreaterThan(-1);
+    expect(src.indexOf("current_user in")).toBeLessThan(src.indexOf("utc_today"));
+  });
+});
+
+describe("defence in depth: the realtime publication holds no public table", () => {
+  it("app.sweep_realtime_publication empties supabase_realtime of public tables, where a publication exists (it is not callable by users)", async () => {
+    expect((await sql<{ n: number }>("select app.sweep_realtime_publication() as n"))[0]!.n).toBe(0); // the test database has none
+    await expectDenied(asUser(w.t1.admin.id, "select app.sweep_realtime_publication()"), /permission denied/);
+    const listed = async (q: (t: string, p?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>) => (await q("select schemaname || '.' || tablename as t from pg_publication_tables where pubname = 'supabase_realtime' order by 1")).rows.map((r) => r.t);
+    await withTx(null, async (q) => {
+      await q("create publication supabase_realtime for table public.brands, public.adjustment_policies, public.published_adjustment_examples");
+      expect(await listed(q)).toHaveLength(3);
+      expect((await q("select app.sweep_realtime_publication() as n")).rows[0]!.n).toBe(3);
+      expect(await listed(q)).toEqual([]);
+      expect((await q("select app.sweep_realtime_publication() as n")).rows[0]!.n).toBe(0);
+    }, { commit: false });
+    await withTx(null, async (q) => {
+      await q("create publication supabase_realtime for all tables");
+      expect((await q("select app.sweep_realtime_publication() as n")).rows[0]!.n).toBe(-1); // cannot be emptied table by table: it warns
+    }, { commit: false });
+    expect(await sql("select 1 from pg_publication where pubname = 'supabase_realtime'")).toHaveLength(0);
   });
 });
 
@@ -571,6 +717,7 @@ const COLUMN_SNAPSHOT: Record<string, string[]> = {
     "rule_version_ids",
     "override_ids",
     "policy_snapshot",
+    "pricing_context",
     "priced_on",
     "archived_at",
     "created_by",
@@ -1248,6 +1395,7 @@ const PUBLIC_FUNCTIONS: string[] = [
   "activate_rate_card_version(p_version uuid, p_effective date, p_expiration date)",
   "adjustment_example_state(p_example uuid)",
   "adjustment_example_states(p_tenant uuid)",
+  "adjustment_legacy_fee_rules(p_tenant uuid)",
   "adjustment_records_json(p_import uuid, p_from integer, p_limit integer)",
   "advance_simulation_run(p_run uuid, p_from_row bigint, p_to_row bigint, p_results jsonb, p_partial jsonb, p_contexts jsonb, p_order_results jsonb, p_fee_contexts jsonb)",
   "append_adjustment_records(p_import uuid, p_from_row integer, p_rows jsonb)",
@@ -1269,6 +1417,7 @@ const PUBLIC_FUNCTIONS: string[] = [
   "delete_adjustment_baseline(p_id uuid)",
   "discard_adjustment_import(p_import uuid)",
   "discard_order_dataset(p_dataset uuid)",
+  "discard_unattached_adjustment_file(p_file uuid)",
   "end_adjustment_policy(p_policy uuid, p_last_day date)",
   "end_fee_schedule_version(p_version uuid, p_expiration date)",
   "end_rate_card_version(p_version uuid, p_expiration date)",

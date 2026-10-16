@@ -4,8 +4,8 @@ import type { ConfidenceLevel, WilsonBounds } from "./types";
 /**
  * Wilson score interval for a proportion k / N at 95 percent (z = 1.96 exactly), closed form:
  *   ((p + z^2 / 2N) +- z * sqrt(p (1 - p) / N + z^2 / 4N^2)) / (1 + z^2 / N)
- * evaluated with 60 significant digits (Decimal sqrt). The lower bound is clamped at 0 and the upper at 1; the edges
- * k = 0 and k = N are computed in closed form, so they are exactly 0 and exactly 1.
+ * evaluated with 60 significant digits (Decimal sqrt). The edges k = 0 and k = N are computed in closed form, so the bounds
+ * are exactly 0 and exactly 1 there; every other k lies strictly inside (0, 1).
  * The interval reflects INCIDENCE uncertainty only (severity uncertainty is not included).
  */
 export const WILSON_Z = "1.96";
@@ -34,9 +34,9 @@ export function wilsonFraction(k: number, N: number): WilsonFraction | null {
   const denominator = new D60(1).plus(z2.div(n));
   const centre = p.plus(z2.div(n.times(2)));
   const radius = z.times(p.times(new D60(1).minus(p)).div(n).plus(z2.div(n.times(n).times(4))).sqrt());
-  const lower = D60.max(new D60(0), centre.minus(radius).div(denominator));
-  const upper = D60.min(new D60(1), centre.plus(radius).div(denominator));
-  return { lower, upper };
+  // For 0 < k < N both bounds are strictly inside (0, 1) (centre^2 - z^2 x radicand = p^2 (1 + z^2 / N) > 0, and the mirror for the upper bound), by
+  // far more than the 1e-60 of rounding, so no clamp is needed; the edges, the only place a clamp could ever act, are handled above.
+  return { lower: centre.minus(radius).div(denominator), upper: centre.plus(radius).div(denominator) };
 }
 
 /** A fraction as a percent string, rounded HALF_UP once. */

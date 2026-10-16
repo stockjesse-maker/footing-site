@@ -1,5 +1,5 @@
 {
-  "_comment": "Header-guard table. Rule (RULES.md part F): normalise a header (lower case, every run of non-alphanumeric characters becomes one space, trim). A header whose normalised form equals a normalised TEMPLATE header always passes. Otherwise it is REFUSED when it contains any of the whole words cost, rate, postage, label, carrier, net, wholesale, negotiated, paid, invoice, buy (an optional plural s is allowed). The guard runs over every header of every sheet BEFORE anything is stored. A header that passes auto-maps to a money field only when it is an exact template money header, or it contains 'charged to' or 'billed to', or it contains the word customer together with one of charge, charges, charged, amount, fee, price, total; any other money-like header is left unmapped. The guard is best effort: no rule can prove that a number is customer-facing.",
+  "_comment": "Header-guard table. Rule (RULES.md part F): normalise a header (lower case, every run of non-alphanumeric characters becomes one space, trim). A header whose normalised form equals a normalised TEMPLATE header always passes. Otherwise it is REFUSED when it contains any of the whole words cost, rate, postage, label, carrier, net, wholesale, negotiated, paid, invoice, buy (an optional plural s is allowed). The guard runs over every header of every sheet BEFORE anything is stored. A header that passes auto-maps to a money field only when it is an exact template money header, or it contains 'charged to' or 'billed to', or it contains the word customer together with one of charge, charges, charged, amount, fee, price, total; any other money-like header is left unmapped. The guard is best effort: no rule can prove that a number is customer-facing. HOSTILE BLOCK (group 'hostile', appended in the database hardening pass): headers written to get past the word list. Expected outcomes follow the same rule with these steps added before the word test: (1) Unicode compatibility normalisation (NFKC or NFKD) so fullwidth and styled letters become plain ones; (2) every invisible format character (zero-width space, non-joiner, joiner, soft hyphen, word joiner, left-to-right mark, byte order mark) and every combining mark is removed; (3) common Cyrillic and Greek look-alikes are folded to the Latin letter they imitate (or a header that mixes scripts is refused); (4) camelCase is split BEFORE lower-casing, so 'UPSCost' is 'ups cost' and 'FedEx' is 'fed ex' (a carrier brand is recognised in any of those spellings: ups, usps, fedex, dhl, ontrac, lasership); (5) a number on either end of a word is trimmed ('cost1'); (6) stems wholesale, negotiated, postage and invoice are refused inside a longer word; (7) a carrier brand (or 'carrier') beside a money word (charge, fee, amount, price, total, billed, cost, rate, paid) is refused unless the header contains customer, 'charged to' or 'billed to'; (8) a NON-EMPTY header that normalises to nothing (only invisible characters or punctuation: '#', '$', '...') is refused, because the 3PL can rename it, unless it is an exact template header. Every 'refuse' row of the block is an obfuscated or hidden cost header; every 'pass' row is harmless. The SQL backstop must agree on every row of the block (tests/db/adjustments-header-sql.test.ts); the TypeScript guard (src/lib/adjustments/header-guard.ts) is held to the same rows by tests/unit/adjustments-import.test.ts.",
   "templateHeaders": [
     "ship_date",
     "adjusted_on",
@@ -451,6 +451,475 @@
       "guard": "pass",
       "autoMapsToMoney": false,
       "note": ""
+    },
+    {
+      "header": "Co\u200bst",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "zero-width space inside Cost",
+      "group": "hostile"
+    },
+    {
+      "header": "Cos\u200dt",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "zero-width joiner inside Cost",
+      "group": "hostile"
+    },
+    {
+      "header": "Co\u00adst",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "soft hyphen inside Cost",
+      "group": "hostile"
+    },
+    {
+      "header": "C\u200b\u200bo\u200cs\u2060t",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "several invisible characters inside Cost",
+      "group": "hostile"
+    },
+    {
+      "header": "\ufeffPostage Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "byte order mark in front of a refused header",
+      "group": "hostile"
+    },
+    {
+      "header": "Carrier\u200bCost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "zero-width space instead of a space, then camelCase",
+      "group": "hostile"
+    },
+    {
+      "header": "Net\u200e Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "left-to-right mark inside Net Rate",
+      "group": "hostile"
+    },
+    {
+      "header": "\u0421ost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "Cyrillic Es for C",
+      "group": "hostile"
+    },
+    {
+      "header": "C\u043est",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "Cyrillic o",
+      "group": "hostile"
+    },
+    {
+      "header": "N\u0435t Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "Cyrillic e in Net Rate",
+      "group": "hostile"
+    },
+    {
+      "header": "\u0392uy Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "Greek capital Beta for B in Buy Rate",
+      "group": "hostile"
+    },
+    {
+      "header": "C\u03bfst",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "Greek omicron",
+      "group": "hostile"
+    },
+    {
+      "header": "P\u043estage",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "Cyrillic o in Postage",
+      "group": "hostile"
+    },
+    {
+      "header": "Carri\u0435r Cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "Cyrillic e in Carrier Cost",
+      "group": "hostile"
+    },
+    {
+      "header": "\uff23\uff2f\uff33\uff34",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "fullwidth COST",
+      "group": "hostile"
+    },
+    {
+      "header": "\uff23\uff41\uff52\uff52\uff49\uff45\uff52\u3000\uff23\uff4f\uff53\uff54",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "fullwidth Carrier Cost",
+      "group": "hostile"
+    },
+    {
+      "header": "\uff23\uff2f\uff33\uff34\uff11",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "fullwidth COST1",
+      "group": "hostile"
+    },
+    {
+      "header": "\uff49\uff4e\uff56\uff4f\uff49\uff43\uff45\uff3f\uff54\uff4f\uff54\uff41\uff4c",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "fullwidth invoice_total",
+      "group": "hostile"
+    },
+    {
+      "header": "Co\u0338st",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "combining long solidus overlay on the o",
+      "group": "hostile"
+    },
+    {
+      "header": "CarrierCost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "camelCase",
+      "group": "hostile"
+    },
+    {
+      "header": "ShipCost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "camelCase",
+      "group": "hostile"
+    },
+    {
+      "header": "NetRate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "camelCase",
+      "group": "hostile"
+    },
+    {
+      "header": "UPSCost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "camelCase after an acronym",
+      "group": "hostile"
+    },
+    {
+      "header": "BuyRate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "camelCase",
+      "group": "hostile"
+    },
+    {
+      "header": "PostageCost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "camelCase",
+      "group": "hostile"
+    },
+    {
+      "header": "InvoiceNumber",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "camelCase",
+      "group": "hostile"
+    },
+    {
+      "header": "wholesaleprice",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "long stem inside a longer word",
+      "group": "hostile"
+    },
+    {
+      "header": "negotiatedrate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "long stem inside a longer word",
+      "group": "hostile"
+    },
+    {
+      "header": "postagecost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "long stem inside a longer word",
+      "group": "hostile"
+    },
+    {
+      "header": "cost1",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "trailing digit",
+      "group": "hostile"
+    },
+    {
+      "header": "Cost 2",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "trailing number word",
+      "group": "hostile"
+    },
+    {
+      "header": "rate_3",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "trailing digit after an underscore",
+      "group": "hostile"
+    },
+    {
+      "header": "1cost",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "leading digit",
+      "group": "hostile"
+    },
+    {
+      "header": "Net2Rate",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "digit between words",
+      "group": "hostile"
+    },
+    {
+      "header": "UPS Charge",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier brand and a money word",
+      "group": "hostile"
+    },
+    {
+      "header": "FedEx Billed",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier brand (camelCase) and billed",
+      "group": "hostile"
+    },
+    {
+      "header": "USPS Amount",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier brand and amount",
+      "group": "hostile"
+    },
+    {
+      "header": "DHL Fee",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier brand and fee",
+      "group": "hostile"
+    },
+    {
+      "header": "OnTrac Total",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier brand (camelCase) and total",
+      "group": "hostile"
+    },
+    {
+      "header": "LaserShip Price",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier brand (camelCase) and price",
+      "group": "hostile"
+    },
+    {
+      "header": "ups_charge_original",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier brand with underscores",
+      "group": "hostile"
+    },
+    {
+      "header": "Carrier Total",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "carrier word and total",
+      "group": "hostile"
+    },
+    {
+      "header": "\u200b",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "only an invisible character",
+      "group": "hostile"
+    },
+    {
+      "header": "\u2060\u2060",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "only word joiners",
+      "group": "hostile"
+    },
+    {
+      "header": "#",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "punctuation only: a non-empty header that normalises to nothing",
+      "group": "hostile"
+    },
+    {
+      "header": "$",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "currency sign only",
+      "group": "hostile"
+    },
+    {
+      "header": "...",
+      "guard": "refuse",
+      "autoMapsToMoney": false,
+      "note": "dots only",
+      "group": "hostile"
+    },
+    {
+      "header": "Ship\u200b Date",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "zero-width space before a space",
+      "group": "hostile"
+    },
+    {
+      "header": "Tracking\u00a0Number",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "no-break space",
+      "group": "hostile"
+    },
+    {
+      "header": "\uff33\uff48\uff49\uff50\u3000\uff24\uff41\uff54\uff45",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "fullwidth Ship Date",
+      "group": "hostile"
+    },
+    {
+      "header": "TrackingNumber",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "camelCase, harmless words",
+      "group": "hostile"
+    },
+    {
+      "header": "ShipDate",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "camelCase, harmless words",
+      "group": "hostile"
+    },
+    {
+      "header": "OrderNumber",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "camelCase, harmless words",
+      "group": "hostile"
+    },
+    {
+      "header": "CustomerName",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "camelCase, harmless words",
+      "group": "hostile"
+    },
+    {
+      "header": "SKU1",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "digit after letters",
+      "group": "hostile"
+    },
+    {
+      "header": "Zone 5",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "number word",
+      "group": "hostile"
+    },
+    {
+      "header": "Weight (lb)",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "unit in brackets",
+      "group": "hostile"
+    },
+    {
+      "header": "Length1",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "digit after a harmless word",
+      "group": "hostile"
+    },
+    {
+      "header": "Package\u200bRef",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "zero-width space inside a harmless header",
+      "group": "hostile"
+    },
+    {
+      "header": "UPS Service",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "carrier brand beside a word that is not money",
+      "group": "hostile"
+    },
+    {
+      "header": "UPS Ground",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "carrier brand beside a service name",
+      "group": "hostile"
+    },
+    {
+      "header": "FedEx Home Delivery",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "carrier brand (camelCase) beside harmless words",
+      "group": "hostile"
+    },
+    {
+      "header": "Ship_Date",
+      "guard": "pass",
+      "autoMapsToMoney": false,
+      "note": "template-like with a capital",
+      "group": "hostile"
+    },
+    {
+      "header": "Customer\u200b Charge",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": "customer charge with an invisible character",
+      "group": "hostile"
+    },
+    {
+      "header": "\uff43\uff55\uff53\uff54\uff4f\uff4d\uff45\uff52\uff3f\uff43\uff48\uff41\uff52\uff47\uff45\uff3f\uff4f\uff52\uff49\uff47\uff49\uff4e\uff41\uff4c",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": "fullwidth template header",
+      "group": "hostile"
+    },
+    {
+      "header": "UPS Charge to Customer",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": "carrier brand and money word, but it says it is the customer's",
+      "group": "hostile"
+    },
+    {
+      "header": "Charged to Customer\u200b",
+      "guard": "pass",
+      "autoMapsToMoney": true,
+      "note": "charged-to header with an invisible character",
+      "group": "hostile"
     }
   ],
   "stems": [

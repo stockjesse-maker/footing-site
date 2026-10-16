@@ -205,6 +205,28 @@
         "labelsMissingWeight": null
       }
     ],
-    "empty": []
+    "empty": [],
+    "tenant_1000_and_a_400": [
+      {
+        "id": "bl-t-jan",
+        "brandId": null,
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 1000,
+        "labelsMissingWeight": null
+      },
+      {
+        "id": "bl-a-jan",
+        "brandId": "brand-a",
+        "carrierCode": null,
+        "serviceId": null,
+        "periodStart": "2026-01-01",
+        "periodEnd": "2026-01-31",
+        "packagesTotal": 400,
+        "labelsMissingWeight": null
+      }
+    ]
   }
 }

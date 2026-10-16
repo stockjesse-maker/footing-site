@@ -2341,6 +2341,701 @@
       "tags": [
         "policy"
       ]
+    },
+    {
+      "id": "f2_fee_rule_excludes_residential_postage_unchanged",
+      "description": "F2 (b). A reweigh fee rule that lists the residential surcharge as suppressed: the postage difference is still the plain +0.57 and the fee is still 3.00; only a warning is added.",
+      "context": "reweight_excludes_residential",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "excludes_ignored",
+        "residential"
+      ]
+    },
+    {
+      "id": "f2_fee_rule_in_das_group_no_adjustment",
+      "description": "F2 (c). A per-package reweigh rule in the DAS exclusivity group (priority 5), destination 93920 (a DAS ZIP), correction 3.0 -> 3.0001 lb: the billable weight does not move, so nothing is adjusted.",
+      "context": "reweight_pp_das_group",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "93920",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "3.0001",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "group_ignored",
+        "no_adjustment"
+      ]
+    },
+    {
+      "id": "f2_fee_rule_in_das_group_increase",
+      "description": "F2 (c). The same rule and destination with a real correction 3 -> 5 lb: the DAS surcharge stays on both sides, postage +0.42, fee 3.00 for package 0.",
+      "context": "reweight_pp_das_group",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "93920",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "group_ignored",
+        "das"
+      ]
+    },
+    {
+      "id": "f2_companion_rule_on_fee_rule_postage_unchanged",
+      "description": "F2 (d). A definite peak surcharge (1.50) conditioned on the reweigh rule applying: the postage difference does not contain it.",
+      "context": "reweight_with_companion",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "companion_ignored"
+      ]
+    },
+    {
+      "id": "f2_fee_rule_floor_no_adjustment",
+      "description": "F2 (e). A per-package reweigh rule with a 20 lb billable-weight floor, correction 3.0 -> 3.5 lb: the floor must not reach the postage.",
+      "context": "reweight_pp_floor20",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "3.5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "floor_ignored",
+        "no_adjustment"
+      ]
+    },
+    {
+      "id": "f2_fee_rule_floor_increase",
+      "description": "F2 (e). The same floor rule with a real correction 3 -> 5 lb: postage +0.56, fee 3.00 for package 0.",
+      "context": "reweight_pp_floor20",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "floor_ignored"
+      ]
+    },
+    {
+      "id": "f2_percent_fee_base_includes_other_surcharges",
+      "description": "A percent fee on 'base rate plus all surcharges': the fee pass keeps the 3PL's other surcharges as context, so the base includes the residential line (1.66, not 1.16).",
+      "context": "reweight_pct_all_surcharges",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "percent_fee",
+        "residential"
+      ]
+    },
+    {
+      "id": "f4_unmoved_package_draws_no_fee_beside_a_moved_one",
+      "description": "F4. Two packages with a per-package reweigh rule: package 0 is corrected on paper 3.0 -> 3.4 lb but still bills 4 lb at the same price; package 1 really moves 3 -> 8 lb. Only package 1 draws the fee (3.00, not 6.00).",
+      "context": "reweight_pp",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "3.4",
+            "weightUnit": "lb"
+          },
+          {
+            "weight": "8",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F4",
+        "multi_package",
+        "per_package_fee"
+      ]
+    },
+    {
+      "id": "f4_no_package_moved_is_no_adjustment",
+      "description": "F4. Two packages with a per-package reweigh rule, both corrected on paper (3.0 -> 3.4 and 3.0 -> 3.3 lb), neither bills differently: no_adjustment.",
+      "context": "reweight_pp",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "3.4",
+            "weightUnit": "lb"
+          },
+          {
+            "weight": "3.3",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F4",
+        "multi_package",
+        "no_adjustment"
+      ]
+    },
+    {
+      "id": "f4_package_with_changed_rounded_dimensions_only_counts_as_corrected",
+      "description": "F4 (decision as written: billable weight, rounded dimensions OR counted price). Package 0 is 20 lb and gets one inch taller (10x8x6 -> 10x8x7): its billable weight and price do not change, its rounded dimensions do; package 1 really moves. Both draw the per-package remeasure fee.",
+      "context": "remeasure_pp",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "20",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "height": "7"
+          },
+          {
+            "length": "14",
+            "width": "10",
+            "height": "8"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F4",
+        "multi_package",
+        "rounded_dimensions",
+        "remeasure"
+      ]
+    },
+    {
+      "id": "f5_percent_fee_one_of_two_packages_corrected",
+      "description": "F5. A shipment-level 10 percent reweigh fee on two 3 lb packages, only package 1 corrected to 8 lb: the fee is 10 percent of package 1's base rate only (1.30) and the line says it covers package 1.",
+      "context": "reweight_pct",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {},
+          {
+            "weight": "8",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F5",
+        "multi_package",
+        "percent_fee",
+        "covered_packages"
+      ]
+    },
+    {
+      "id": "f5_percent_fee_two_of_two_packages_corrected",
+      "description": "F5. The same fee with both packages corrected to 8 lb: each package's percent is rounded to cents and the two are added (2.60), not one rounding of the whole (2.61); the line covers packages 0 and 1.",
+      "context": "reweight_pct",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "8",
+            "weightUnit": "lb"
+          },
+          {
+            "weight": "8",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F5",
+        "multi_package",
+        "percent_fee",
+        "covered_packages"
+      ]
+    },
+    {
+      "id": "f5_flat_fee_two_packages_corrected_covers_nothing_listed",
+      "description": "F5. A shipment-level FLAT fee is one charge per shipment whatever the package count: its line lists no covered packages (null).",
+      "context": "reweight_flat",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            },
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "8",
+            "weightUnit": "lb"
+          },
+          {
+            "weight": "8",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F5",
+        "multi_package",
+        "flat_fee",
+        "covered_packages"
+      ]
+    },
+    {
+      "id": "f11_no_adjustment_with_no_fee_rule_is_not_triggered",
+      "description": "F11. no_adjustment with NO fee rule configured at all: the fee is not_triggered (design v2 3.1(6)), not not_configured.",
+      "context": "none",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3.0",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "3.4",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F11",
+        "no_adjustment",
+        "not_triggered"
+      ]
+    },
+    {
+      "id": "f11_plateau_with_no_fee_rule_is_not_configured",
+      "description": "F11. The price plateau (status ok, direction none) with NO fee rule configured: the fee is not_configured (it is not a no_adjustment case: a billable weight changed).",
+      "context": "none",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "90210",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "1",
+              "weightUnit": "lb",
+              "length": "6",
+              "width": "4",
+              "height": "2"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "2",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F11",
+        "plateau",
+        "not_configured"
+      ]
+    },
+    {
+      "id": "f2_fee_rule_outranked_in_das_group_still_shows_its_fee",
+      "description": "F2 (c). The per-package reweigh rule sits in the DAS group at the LOWEST priority: inside the group DAS would win and the fee line would be dropped. The fee must still be shown: exclusivity is kept among fee rules only.",
+      "context": "reweight_pp_das_group_low",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "93920",
+          "residential": false,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "group_ignored",
+        "das"
+      ]
+    },
+    {
+      "id": "f2_percent_fee_that_lists_residential_as_suppressed",
+      "description": "F2. A percent fee on 'base plus all surcharges' that lists the residential surcharge in excludesRuleKeys: the list is ignored, so the base still holds the 5.00 residential line (1.66) and the postage keeps it too (+0.57).",
+      "context": "reweight_pct_all_excl_residential",
+      "policy": "all_pt",
+      "input": {
+        "shipment": {
+          "shipDate": "2026-10-15",
+          "originZip": "90001",
+          "destinationZip": "85001",
+          "residential": true,
+          "carrierCode": "ups",
+          "serviceCode": "ground",
+          "packages": [
+            {
+              "weight": "3",
+              "weightUnit": "lb",
+              "length": "10",
+              "width": "8",
+              "height": "6"
+            }
+          ]
+        },
+        "corrections": [
+          {
+            "weight": "5",
+            "weightUnit": "lb"
+          }
+        ],
+        "declaredSource": "entered"
+      },
+      "tags": [
+        "F2",
+        "percent_fee",
+        "excludes_ignored",
+        "residential"
+      ]
     }
   ],
   "historyCases": [
@@ -2743,6 +3438,24 @@
         },
         "adjustmentType": "remeasure",
         "cause": "carrier_remeasure"
+      }
+    },
+    {
+      "id": "h38_one_reference_in_two_brands_tenant_wide",
+      "description": "F11 / amendment A2: the same package reference 1ZSHARED on two customers is two packages (a reference alone is not unique across customers): tenant-wide k = 3 (not 2) from 4 records.",
+      "records": "two_brands_one_reference",
+      "baselines": "tenant_1000_and_a_400",
+      "filters": {
+        "brandId": null
+      }
+    },
+    {
+      "id": "h39_one_reference_two_records_one_customer",
+      "description": "F11 / amendment A2: customer A's two records on its one package 1ZSHARED (a reweight and a remeasure) count once: k = 2 from 3 records, over customer A's own 400-package baseline.",
+      "records": "two_brands_one_reference",
+      "baselines": "tenant_1000_and_a_400",
+      "filters": {
+        "brandId": "brand-a"
       }
     }
   ],
@@ -4043,6 +4756,126 @@
         "handling": {
           "postage_difference": "pass_through",
           "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r5b_credits_actual_weights_net_memo_null",
+      "description": "F6: R5's history (6 charges of +10.00 and 4 credits of -5.00 in 1000 packages) on ACTUAL weights: the postage of the 6 charges is already in the user's forecast (60.00, in_forecast), the fee severity is 0, so what is counted here is 0.00; the credit memo is -20.00 but the net memo is null (a postage credit has no counterpart in a fee-only total: it used to read 0.00 - 20.00 = -20.00, a net gain).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 6,
+          "N": 1000
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 100000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 0,
+            "n": null
+          }
+        },
+        "basis": "actual_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        },
+        "credits": {
+          "k": 4,
+          "severityE4": -50000
+        }
+      }
+    },
+    {
+      "id": "r6_k0_n3_severity_unknown_exact_zero_lower",
+      "description": "F3: k = 0 of N = 3 with unknown severities: the Wilson lower bound is exactly 0, so the low end of the range is 0 (not null); the high end stays null (severity unknown).",
+      "input": {
+        "monthlyVolume": "1000",
+        "incidence": {
+          "source": "history",
+          "k": 0,
+          "N": 3
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          },
+          "separate_fee": {
+            "source": "history",
+            "e4": null,
+            "n": 0
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "r7_k_eq_n_6_upper_bound_exactly_one",
+      "description": "F3: k = N = 6 at V = 42,946.95: the Wilson upper bound is exactly 1, so the high end of the affected range equals V (42,947.0 at one decimal, HALF_UP) and the high exposure is V x 100% x the severities.",
+      "input": {
+        "monthlyVolume": "42946.95",
+        "incidence": {
+          "source": "history",
+          "k": 6,
+          "N": 6
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "entered",
+            "e4": 1000,
+            "n": null
+          },
+          "separate_fee": {
+            "source": "entered",
+            "e4": 1000,
+            "n": null
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "pass_through",
+          "separate_fee": "pass_through"
+        }
+      }
+    },
+    {
+      "id": "refuse_overflow_severity_sum",
+      "description": "F7: two severities whose sum exceeds the safe integer range (17,996 + 9,007,199,254,740,991 = 9,007,199,254,758,987 > 9,007,199,254,740,991) are refused with overflow, even at V = 0.",
+      "input": {
+        "monthlyVolume": "0",
+        "incidence": {
+          "source": "history",
+          "k": 2,
+          "N": 2
+        },
+        "severity": {
+          "postage_difference": {
+            "source": "history",
+            "e4": 17996,
+            "n": 30
+          },
+          "separate_fee": {
+            "source": "example",
+            "e4": 9007199254740991,
+            "n": 29
+          }
+        },
+        "basis": "declared_weights",
+        "handling": {
+          "postage_difference": "unconfigured",
+          "separate_fee": "unconfigured"
         }
       }
     }

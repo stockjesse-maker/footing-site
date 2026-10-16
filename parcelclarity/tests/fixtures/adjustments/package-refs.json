@@ -1,0 +1,195 @@
+{
+  "_comment": "Shared list for app.canon_package_ref (SQL, supabase/migrations/20261015000007_adjustments.sql) and its TypeScript twin (src/lib/adjustments). The canonical form of a package reference is: Unicode compatibility normalisation (NFKC), then EVERY whitespace character (including U+0085, U+00A0, U+2028, U+3000) and every invisible format character (Unicode category Cf: zero-width space, non-joiner, joiner, soft hyphen, word joiner, left-to-right and right-to-left marks and overrides, byte order mark, tag characters) removed, then the ASCII letters a-z upper-cased (other letters keep their case). The canonical form is null when the input holds the replacement character U+FFFD or nothing is left. Hyphens, underscores, dots and slashes are kept. Every pair was derived by hand; none was read from either implementation.",
+  "cases": [
+    {
+      "input": "1Z0001AB",
+      "canonical": "1Z0001AB",
+      "note": "already canonical"
+    },
+    {
+      "input": "1z0001ab",
+      "canonical": "1Z0001AB",
+      "note": "lower case"
+    },
+    {
+      "input": " 1Z0001 AB ",
+      "canonical": "1Z0001AB",
+      "note": "spaces inside and around"
+    },
+    {
+      "input": "1Z0001AB\u200b",
+      "canonical": "1Z0001AB",
+      "note": "zero-width space at the end"
+    },
+    {
+      "input": "1\u200dZ0001AB",
+      "canonical": "1Z0001AB",
+      "note": "zero-width joiner inside"
+    },
+    {
+      "input": "1Z\u00ad0001AB",
+      "canonical": "1Z0001AB",
+      "note": "soft hyphen inside"
+    },
+    {
+      "input": "\ufeff1Z0001AB",
+      "canonical": "1Z0001AB",
+      "note": "byte order mark in front"
+    },
+    {
+      "input": "\uff11\uff3a\uff10\uff10\uff10\uff11\uff21\uff22",
+      "canonical": "1Z0001AB",
+      "note": "fullwidth letters and digits (NFKC)"
+    },
+    {
+      "input": "\uff11\uff5a\uff10\uff10\uff10\uff11\uff41\uff42",
+      "canonical": "1Z0001AB",
+      "note": "fullwidth lower case (NFKC, then upper case)"
+    },
+    {
+      "input": "1z 00 01\tab\n",
+      "canonical": "1Z0001AB",
+      "note": "tab, newline and spaces"
+    },
+    {
+      "input": "9400 1118 9922 3456 7890 12",
+      "canonical": "9400111899223456789012",
+      "note": "a tracking number printed in groups"
+    },
+    {
+      "input": "ab\u00a0cd",
+      "canonical": "ABCD",
+      "note": "no-break space"
+    },
+    {
+      "input": "ab\u3000cd",
+      "canonical": "ABCD",
+      "note": "ideographic space"
+    },
+    {
+      "input": "ab\u2003cd",
+      "canonical": "ABCD",
+      "note": "em space"
+    },
+    {
+      "input": "ab\u2028cd",
+      "canonical": "ABCD",
+      "note": "line separator"
+    },
+    {
+      "input": "xyz\u00851",
+      "canonical": "XYZ1",
+      "note": "next-line character U+0085 counts as whitespace here (JavaScript's \\s does not include it: add it)"
+    },
+    {
+      "input": "AB-12",
+      "canonical": "AB-12",
+      "note": "hyphen is kept"
+    },
+    {
+      "input": "ab_12",
+      "canonical": "AB_12",
+      "note": "underscore is kept"
+    },
+    {
+      "input": "ab.12/3",
+      "canonical": "AB.12/3",
+      "note": "dot and slash are kept"
+    },
+    {
+      "input": "a\uff0db",
+      "canonical": "A-B",
+      "note": "fullwidth hyphen-minus becomes a hyphen (NFKC)"
+    },
+    {
+      "input": "x\u200e",
+      "canonical": "X",
+      "note": "left-to-right mark"
+    },
+    {
+      "input": "x\u202ey",
+      "canonical": "XY",
+      "note": "right-to-left override"
+    },
+    {
+      "input": "tba",
+      "canonical": "TBA",
+      "note": "plain word"
+    },
+    {
+      "input": "\ufb01x",
+      "canonical": "FIX",
+      "note": "fi ligature (NFKC)"
+    },
+    {
+      "input": "\u2177",
+      "canonical": "VIII",
+      "note": "small roman numeral eight (NFKC)"
+    },
+    {
+      "input": "\u2460\u2461",
+      "canonical": "12",
+      "note": "circled digits (NFKC)"
+    },
+    {
+      "input": "\u00e91x",
+      "canonical": "\u00e91X",
+      "note": "only the letters a-z are upper-cased: a non-ASCII letter keeps its case (so SQL and TypeScript agree whatever the locale)"
+    },
+    {
+      "input": "\u00c0B",
+      "canonical": "\u00c0B",
+      "note": "an upper-case non-ASCII letter is kept"
+    },
+    {
+      "input": "\t1Z\n",
+      "canonical": "1Z",
+      "note": "tab and newline around"
+    },
+    {
+      "input": "AbC\u00a0\u00a0",
+      "canonical": "ABC",
+      "note": "trailing no-break spaces"
+    },
+    {
+      "input": "00001234567890",
+      "canonical": "00001234567890",
+      "note": "leading zeros are kept"
+    },
+    {
+      "input": "AB\ufffdCD",
+      "canonical": null,
+      "note": "the replacement character U+FFFD (bytes that were not valid text): refused"
+    },
+    {
+      "input": "\ufffd",
+      "canonical": null,
+      "note": "only the replacement character"
+    },
+    {
+      "input": "",
+      "canonical": null,
+      "note": "empty"
+    },
+    {
+      "input": "   ",
+      "canonical": null,
+      "note": "only spaces"
+    },
+    {
+      "input": "\u200b",
+      "canonical": null,
+      "note": "only a zero-width space"
+    },
+    {
+      "input": "\ufeff\u200b\u00ad",
+      "canonical": null,
+      "note": "only invisible characters"
+    },
+    {
+      "input": "\u2060",
+      "canonical": null,
+      "note": "only a word joiner"
+    }
+  ]
+}

@@ -40,32 +40,6 @@ export const MAPPING_MAX_BYTES = 7_000;
 const MAX_DISTINCT = 500;
 const SERVICE_CONFIDENCE = 0.75;
 
-type PlainField = Exclude<AdjustmentField, MoneyField>;
-
-/** Synonyms per field, normalised (lower case, non-alphanumerics to spaces). Exact matches only: a column is never guessed from a fragment. */
-const SYNONYMS: Record<PlainField, string[]> = {
-  shipDate: ["ship date", "shipped date", "shipped on", "date shipped", "shipment date", "shipped at", "ship dt"],
-  adjustedOn: ["adjusted on", "adjustment date", "date adjusted", "adjusted date", "adjusted at", "adjustment posted", "adjustment posted date", "posted date", "correction date", "reweigh date"],
-  carrier: ["carrier", "courier", "shipper", "shipping company"],
-  service: ["service", "service name", "service level", "shipping method", "ship method", "shipping service", "method", "service type", "ship via"],
-  brand: ["brand", "customer", "customer name", "client", "client name", "account", "account name", "merchant", "merchant name", "company"],
-  adjustmentType: ["adjustment type", "type", "correction type", "adjustment kind", "adjustment category", "kind"],
-  cause: ["cause", "root cause", "adjustment cause", "cause code"],
-  reason: ["reason", "adjustment reason", "reason code", "reason for adjustment", "reweigh reason", "adjustment reason code"],
-  packageRef: ["package ref", "package reference", "package id", "package number", "tracking number", "tracking no", "tracking id", "tracking", "parcel id", "parcel number", "pro number"],
-  declaredWeight: ["declared weight", "original weight", "shipped weight", "entered weight", "weight declared", "declared wt"],
-  actualWeight: ["actual weight", "corrected weight", "adjusted weight", "measured weight", "new weight", "reweigh weight", "weight actual"],
-  weightUnit: ["weight unit", "weight units", "weight uom", "unit of weight"],
-  originalLength: ["original length", "orig length", "declared length", "entered length", "length declared"],
-  originalWidth: ["original width", "orig width", "declared width", "entered width", "width declared"],
-  originalHeight: ["original height", "orig height", "declared height", "entered height", "height declared"],
-  correctedLength: ["corrected length", "adjusted length", "new length", "actual length", "remeasured length"],
-  correctedWidth: ["corrected width", "adjusted width", "new width", "actual width", "remeasured width"],
-  correctedHeight: ["corrected height", "adjusted height", "new height", "actual height", "remeasured height"],
-  dimensionUnit: ["dimension unit", "dimensions unit", "dim unit", "dimension uom", "unit of dimension"],
-  handling: ["handling", "handling recorded", "who paid", "absorbed"],
-};
-
 /** Fields in the order they claim columns. */
 const PLAIN_ORDER: PlainField[] = [
   "shipDate", "adjustedOn", "carrier", "service", "brand", "adjustmentType", "cause", "reason", "packageRef", "declaredWeight", "actualWeight", "weightUnit",

@@ -2,6 +2,8 @@
 
 These rules restate `m5-design-v2.md` sections 3.1 to 3.4, 5 and 9 precisely enough to compute every case in `scenarios.json` by hand. The expectations in `expected.json`, `policy-matrix.json` and `import-expected.json` were derived from THIS document and the M2 fixtures (`tests/fixtures/pricing/**`, untouched), never from engine code: the engine for this milestone did not exist when they were written. All data is fictional.
 
+Cases added after the first engine existed (engine review p3: F2, F3, F4, F5, F6, F7, F11) were derived from the AMENDED text of this file by the independent script `m_v3.py` (derivation README section 9), not from engine output; no existing expectation changed. Amended rules are tagged **[F2]**, **[F4]**, and so on after the finding that drove them.
+
 Each rule is tagged **[v2 §x]** when design v2 states it, and **[G-n]** when v2 is silent or ambiguous and the golden writer had to choose. Every `G-n` is a decision for the lead to confirm; the cases that pin it are named so it can be reversed by editing the case. If a `G-n` and a later design text disagree, the design wins and the named cases change.
 
 Money: amounts in fixtures are decimal strings (cents). `E4` = integer ten-thousandths of a dollar (12500 = $1.25). Rounding is HALF_UP (ties away from zero) on exact decimals, once per reported figure, the M4 convention [v2 §3.3, PRICING_ENGINE.md]. Weights are decimal strings (`"4.0"`), compare numerically.
@@ -58,15 +60,20 @@ For `invalid_input`: `adjustmentType`, `direction`, `basis` are null; `component
 
 ### A3 Classification from the INPUT diff [v2 §3.1 (1); G-2]
 
-`weightChanged` = any package whose weight in exact lb differs; `dimensionsChanged` = any package whose merged `(length, width, height)` differs from the declared one AS ENTERED (not the rounded dimensions: 15.4 -> 15.3 is a remeasure although both round to 15). Dimensions added where none were known are a change. Result: both -> `combined`, weight only -> `reweight`, dimensions only -> `remeasure`. A package is "corrected" (for A7) when its own weight or dimensions changed.
+`weightChanged` = any package whose weight in exact lb differs; `dimensionsChanged` = any package whose merged `(length, width, height)` differs from the declared one AS ENTERED (not the rounded dimensions: 15.4 -> 15.3 is a remeasure although both round to 15). Dimensions added where none were known are a change. Result: both -> `combined`, weight only -> `reweight`, dimensions only -> `remeasure`. The input diff classifies the TYPE only; which packages carry a fee is decided by A3b.
 
-### A4 Rules priced on each side [v2 §3.1 (2), (3)]
+### A3b Corrected packages for the fee [F4; G-36]
+
+A package is **corrected for the fee** when, between the declared and the corrected (postage) pricing, its billable weight, its rounded dimensions (compared numerically; no dimensions on one side and dimensions on the other is a change) or its counted price (the sum of that package's counted lines) changed. A package whose weight or dimensions changed on paper but that still bills the same weight, at the same rounded dimensions and the same price is NOT corrected: alone it is `no_adjustment`, and beside a package that really moved it draws no fee (cases `f4_unmoved_package_draws_no_fee_beside_a_moved_one`, `f4_no_package_moved_is_no_adjustment`). When a SHIPMENT-level counted line (a charge no single package owns) differs between the two pricings, the change cannot be attributed to one package, so every package changed on the input diff joins the scope. Known edge, kept on purpose: a package whose ONLY change is its rounded dimensions (billable weight and price equal) is corrected for the fee, while the status rule (A6) is unchanged, so alone it is still `no_adjustment` (case `f4_package_with_changed_rounded_dimensions_only_counts_as_corrected`).
+
+### A4 Rules priced on each side [v2 §3.1 (2), (3); F2, G-35]
 
 * Adjustment-fee categories are `reweight`, `remeasure`, `shipping_charge_correction`.
-* DECLARED pricing: every adjustment-fee rule removed.
-* CORRECTED pricing: keep rules of category `reweight` for a reweight, `remeasure` for a remeasure, both for a combined, and `shipping_charge_correction` for every type; drop the other adjustment-fee categories BEFORE pricing so engine exclusivity behaves as configured.
-* Every kept adjustment-fee rule is forced to charge class `conditional`. A kept rule whose stored class was not `conditional` adds the scenario warning `adjustment_fee_rule_not_conditional` (once) [v2 §3.1 (2)]. A forced rule never enters a counted total.
-* All other rules, the overrides, the rate card, the service, ZIPs, ship date and options are identical on both sides.
+* Rule resolution comes first: one rule per key (a tenant rule shadows a platform rule with the same key, then the highest version wins) among the rules in force for the carrier, service and ship date. THEN the rules are split by category, so a superseded version of a rule never comes back.
+* POSTAGE pricings (declared AND corrected): every adjustment-fee rule is absent, and so is every rule that depends (`rule_applied`) on an adjustment-fee rule (without its parent it never applies). The postage difference is therefore pure shipping charge: nothing a fee rule carries (a list of rules it suppresses, a billable-weight floor, an exclusivity group, a companion rule) can move it (cases `f2_*`).
+* FEE pass (the corrected shipment): the in-scope fee rules, namely `reweight` for a reweight, `remeasure` for a remeasure, both for a combined, and `shipping_charge_correction` for every type (and not in the service's `excludedSurchargeKeys`), plus the 3PL's other rules as READ-ONLY context (a percent fee's base can include them: base rate plus all surcharges; a fee can be conditioned on them). Each in-scope fee rule is ISOLATED: forced to charge class `conditional` (a rule whose stored class was not conditional adds the scenario warning `adjustment_fee_rule_not_conditional` once; a forced rule never enters a counted total), its `excludesRuleKeys` emptied, its `billableWeightFloorLb` removed, and its exclusivity group renamed so that it competes only with other fee rules. The other rules cannot suppress a fee rule (fee keys are removed from their `excludesRuleKeys`) and do not depend on it (a `rule_applied` on a fee rule never applies in this pass either).
+* Warnings (A11) tell staff that a rule carried a combination that has no meaning for a fee charged after shipping and that it was ignored.
+* All other rules, the overrides, the rate card, the service, ZIPs, ship date and options are identical on every pass. `sides.corrected` reports the counted total of the postage pricing and the unresolved lines and warnings of the fee pass.
 
 ### A5 Status [v2 §3.1 (7); G-3]
 
@@ -79,21 +86,24 @@ For `invalid_input`: `adjustmentType`, `direction`, `basis` are null; `component
 * `direction`: `increase` (> 0), `decrease` (< 0), `none` (= 0).
 * `status = no_adjustment` when `countedTotal` is equal AND every package's `billableLb` is equal; otherwise `ok`. When the totals are equal but a billable weight differs (a price plateau, case `plateau_billable_differs_zero_delta`), the status is `ok`, the amount `0.00` and the direction `none` [G-4]; the fee is then not shown because v2 shows it only for `increase`.
 * `postage_difference.state` = `computed`, or `credit` when the direction is `decrease` (the amount is negative and `creditAmount` is its absolute value) [G-6].
+* The postage difference and `status` are computed from the two postage pricings (A4) only.
 
-### A7 Separate fee component [v2 §3.1 (5), (6); G-5]
+### A7 Separate fee component [v2 §3.1 (5), (6); G-5, F4, F5, F11]
 
 * Candidates = adjustment-fee rules KEPT by A4 that are carrier-matched, service-matched (`serviceCodes`), effective on the ship date and not in the service's `excludedSurchargeKeys` (whether or not their conditions apply).
-* Fee lines = lines of those rules on the corrected pricing, kept only where `packageIndex` is null or the package is corrected (a per-package rule never fires for an untouched package).
+* Fee lines = lines of those rules in the FEE pass (A4), kept only where `packageIndex` is null or the package is corrected for the fee (A3b: a per-package rule never fires for an untouched package).
 * State, first match wins:
-  1. no candidate -> `not_configured` (never 0.00);
+  0. status `no_adjustment` -> `not_triggered`, whether or not a fee rule exists (v2 3.1(6); case `f11_no_adjustment_with_no_fee_rule_is_not_triggered`);
+  1. no candidate -> `not_configured` (never 0.00); this includes the price plateau (status `ok`, direction `none`) with no rule (case `f11_plateau_with_no_fee_rule_is_not_configured`);
   2. direction is not `increase` -> `not_triggered`;
   3. no kept line (candidates exist but none applies, or only untouched packages) -> `not_triggered`;
   4. any kept line is `unknown` -> `undecided`, `amount` null, `upTo` = sum of the unknown lines' amounts;
   5. any kept line is `conditional` -> `conditional`, `amount` = sum of the conditional lines, `lines` listed;
   6. any kept line is `waived` -> `waived_for_customer` (no amount);
   7. otherwise (`included`) -> `included_in_rate` (no amount).
-* A waived line is a customer exception (`exclude` override) on the rule; an included line is a rule key in the service's `includedSurchargeKeys`. Percent fees use the engine's own basis: `10.00%` of the corrected `base_rate` line (E7: 1.16, not 0.06 and not 1.34), no fuel on it.
-* `lines[]` = `{ruleKey, label, category, packageIndex, amount, handling}` sorted by `(ruleKey, packageIndex)`.
+* A waived line is a customer exception (`exclude` override) on the rule; an included line is a rule key in the service's `includedSurchargeKeys`. Percent fees use the engine's own basis: `10.00%` of the corrected `base_rate` line (E7: 1.16, not 0.06 and not 1.34), or of base plus the other surcharges when the rule's base says so (case `f2_percent_fee_base_includes_other_surcharges`: 1.66); no fuel on it.
+* A shipment-level PERCENT fee over several packages [F5; G-37]: the pricing engine computes a percent per package, each package's base times the percent rounded to cents (as a carrier rounds), and the amounts of the CORRECTED packages are summed into ONE line (`packageIndex` null) whose `coveredPackageIndexes` lists those packages. It is not the percent of the whole shipment unless every package is listed (case `f5_percent_fee_one_of_two_packages_corrected`: 10% of package 1's base only, 1.30, covered [1]), and it is not one rounding of the whole shipment (`f5_percent_fee_two_of_two_packages_corrected`: 1.30 + 1.30 = 2.60, not 2.61, covered [0, 1]). When the rule's base includes surcharges (base plus all surcharges, or plus some categories), the shipment-level counted charges (a signature, say) are included whole: one more amount, the percent of those charges rounded on its own, is added to the same line. A flat or per-unit shipment-level fee is one charge per shipment whatever the package count: `coveredPackageIndexes` null (`f5_flat_fee_two_packages_corrected_covers_nothing_listed`); a per-package line is identified by its `packageIndex`, covered null.
+* `lines[]` = `{ruleKey, label, category, packageIndex, coveredPackageIndexes, amount, handling, method}` sorted by `(ruleKey, packageIndex)`; `method` is the rule's method (`flat`, `percent`, `per_unit`).
 
 ### A8 Basis [v2 §3.1 (9)]
 
@@ -113,7 +123,7 @@ For `invalid_input`: `adjustmentType`, `direction`, `basis` are null; `component
 
 ### A11 Scenario warnings [G-10]
 
-`warnings` (scenario level, compare as a set): `adjustment_fee_rule_not_conditional` (A4), and `adjustment_fee_rules_stack` when the conditional fee lines come from two or more distinct rule keys (two in-scope fee rules both fire; v2 asks the builder to warn). Engine warnings are in `sides.<side>.warnings` (informational).
+`warnings` (scenario level, compare as a set): `adjustment_fee_rule_not_conditional` (A4), and `adjustment_fee_rules_stack` when the conditional fee lines come from two or more distinct rule keys (two in-scope fee rules both fire; v2 asks the builder to warn). Four more [F2; G-35] say that a combination which has no meaning for a fee charged after shipping was ignored: `adjustment_fee_rule_excludes_ignored` (an in-scope fee rule lists rules it suppresses, or another rule lists an in-scope fee rule as suppressed), `adjustment_fee_rule_floor_ignored` (an in-scope fee rule carries a billable-weight floor), `adjustment_fee_rule_group_ignored` (an in-scope fee rule shares an exclusivity group with a rule that is not a fee rule), `adjustment_fee_rule_companion_ignored` (another rule is conditioned on an in-scope fee rule). Engine warnings are in `sides.<side>.warnings` (informational).
 
 ### A12 Echo fields
 
@@ -121,7 +131,7 @@ For `invalid_input`: `adjustmentType`, `direction`, `basis` are null; `component
 
 ### Asserted fields for scenarios
 
-Assert (exactly): `status`, `adjustmentType`, `direction`, `basis`, `declaredSource`, `sides.<side>.status`, `unavailableReason`, `countedTotal`, `unresolved`, `packages[].billableLb` (numerically) and `roundedDimensionsIn`, `components.postage_difference.{state, amount, declaredTotal, correctedTotal, handling, creditAmount}`, `components.separate_fee.{state, amount, upTo, handling, lines[].{ruleKey, category, packageIndex, amount, handling}}`, `undecided[].{label, upTo, side}`, `totalsE4`, `policySnapshot`, `warnings` (set). Informational (assert if your result exposes them): `sides.<side>.warnings`, `zone`, `packages[].basis`, `lines[].label`, `undecided[].packageIndex`. `messageContains` is a list of substrings the message must contain.
+Assert (exactly): `status`, `adjustmentType`, `direction`, `basis`, `declaredSource`, `sides.<side>.status`, `unavailableReason`, `countedTotal`, `unresolved`, `packages[].billableLb` (numerically) and `roundedDimensionsIn`, `components.postage_difference.{state, amount, declaredTotal, correctedTotal, handling, creditAmount}`, `components.separate_fee.{state, amount, upTo, handling, lines[].{ruleKey, category, packageIndex, coveredPackageIndexes, amount, handling, method}}` (the last two are asserted by the cases added after the engine review), `undecided[].{label, upTo, side}`, `totalsE4`, `policySnapshot`, `warnings` (set). Informational (assert if your result exposes them): `sides.<side>.warnings`, `zone` (asserted by the added cases), `packages[].basis`, `lines[].label`, `undecided[].packageIndex`. The engine tests also check, for EVERY case, the fields no expectation names: `rateCardVersionId` and `service` against the fixture context, `zone` against the expected corrected side, `message` (null when priced, the engine's own words with the side named when a side is unavailable), `pricingEngineVersion`, and each fee line's `label` and `method` against its overlay rule. `messageContains` is a list of substrings the message must contain.
 
 ## Part B. Scenario catalogue (what each group pins)
 
@@ -142,6 +152,10 @@ Assert (exactly): `status`, `adjustmentType`, `direction`, `basis`, `declaredSou
 | WMS fallback | `wms_fallback_dims_known_1lb_to_5lb`, `wms_fallback_no_dimensions_combined` |
 | rule misconfiguration, correction category | `definite_class_rule_forced_conditional_warning`, `correction_rule_kept_for_every_type`, `mixed_handling_reweight_and_correction_rules` |
 | policy resolution inside a scenario | `policy_*` (absorbed, manual approval, unconfigured, none, combined_explicit rows, remeasure and reweight rows) |
+| F2: a fee rule never moves the postage difference | `f2_fee_rule_excludes_residential_postage_unchanged`, `f2_fee_rule_in_das_group_no_adjustment`, `f2_fee_rule_in_das_group_increase`, `f2_fee_rule_outranked_in_das_group_still_shows_its_fee`, `f2_companion_rule_on_fee_rule_postage_unchanged`, `f2_fee_rule_floor_no_adjustment`, `f2_fee_rule_floor_increase`, `f2_percent_fee_base_includes_other_surcharges`, `f2_percent_fee_that_lists_residential_as_suppressed` |
+| F4: only a moved package draws a fee | `f4_unmoved_package_draws_no_fee_beside_a_moved_one`, `f4_no_package_moved_is_no_adjustment`, `f4_package_with_changed_rounded_dimensions_only_counts_as_corrected` |
+| F5: shipment-level percent fee covers the corrected packages | `f5_percent_fee_one_of_two_packages_corrected`, `f5_percent_fee_two_of_two_packages_corrected`, `f5_flat_fee_two_packages_corrected_covers_nothing_listed` |
+| F11: no_adjustment without a fee rule, plateau without a fee rule | `f11_no_adjustment_with_no_fee_rule_is_not_triggered`, `f11_plateau_with_no_fee_rule_is_not_configured` |
 
 The shared fixtures: UPS Ground, ship 2026-10-15, origin 90001, destination 85001 (zone 5), declared 3 lb 10x8x6, fuel v2 15.50 percent, except where a case says otherwise. Hand arithmetic for each case is in `README.md` of the derivation folder (scratchpad `m5-golden-derivation`).
 
@@ -159,11 +173,15 @@ Baseline: `{id, brandId, carrierCode, serviceId, periodStart, periodEnd, package
 3. With `window`: only baselines wholly inside it (`window.from <= periodStart and periodEnd <= window.to`); `baseline.outsideWindowCount` counts the others.
 4. Two selected baselines whose periods overlap (a later start on or before an earlier end) -> refused `baselines_overlap`. Adjacent periods (31 Jan, 1 Feb) do not overlap and are summed: `N = sum(packagesTotal)`.
 
+### C1b Input checks [F9; G-40, G-41]
+
+Refused with a named code, never an exception and never a NaN: `filters` missing (`invalid_filters`); `window` not two real ISO dates, or ending before it starts (`invalid_filters`); `baselineIds` not a list of ids (`invalid_filters`); `maturityDays` not a whole number of at least 0, or given without a valid `today` (`invalid_filters`: a statistic without a clock must not call an immature window mature); a record whose `shipDate` is not a real ISO date or whose `postageDifference` / `separateFee` is not a decimal string (`invalid_records`); a SELECTED baseline whose packages shipped is not a whole number above zero, whose period is not two ISO dates with start not after end, or whose labels without a weight is not a whole number from 0 to its packages (`invalid_baselines`). An explicit EMPTY `baselineIds` list means "no baselines" (no incidence, `incidenceReason: "no_baseline"`); only null or an absent list lets the scope choose its baselines. A sum of amounts above 2^53 - 1 E4 throws `AdjustmentOverflowError` (a RangeError) rather than returning an imprecise figure.
+
 ### C2 Numerator [v2 §3.2; G-15]
 
 Candidate records match brand (tenant-wide: every record, including `brandId` null), carrier, type and cause. If a `serviceId` filter is set and any candidate lying in scope has `serviceId` null -> refused `service_unresolved` with `unresolvedCount` (the filter is disabled, never silently ignored); otherwise candidates are limited to that service. The numerator is the candidates whose `shipDate` lies in a selected baseline period (or, with no baseline, in the window when one is given, else all). `excludedOutsideBaseline` counts the candidates left out (records, not keys). Denominator filters are brand, carrier, service and window only; type and cause filter the numerator only.
 
-`affected` (k) = count of distinct `packageRef ?? id` over the numerator [v2 §3.2]: two records on one reference count once; a record without a reference counts once by itself and `perRecordCounting` is true. `k > N` -> refused `k_exceeds_n`. No selected baseline -> `incidence`, `incidenceByDirection` null with `incidenceReason: "no_baseline"` and only severity statistics are produced (never 0.00).
+`affected` (k) = count of distinct `(brandId (null = unmatched), carrierCode, packageRef)` over the numerator [v2 §3.2; amendment A2; F11]: two records on one reference of the same customer and carrier count once (a reweight and a remeasure of one package); one reference on TWO customers (or two carriers) is two packages, because a package reference alone is not unique (the database unique index is `(tenant, brand, carrier, package_ref, adjustment_type)`); a record without a reference counts once by itself and `perRecordCounting` is true (cases `h38_one_reference_in_two_brands_tenant_wide`, `h39_one_reference_two_records_one_customer`). `k > N` -> refused `k_exceeds_n`. No selected baseline -> `incidence`, `incidenceByDirection` null with `incidenceReason: "no_baseline"` and only severity statistics are produced (never 0.00).
 
 ### C3 Incidence, direction, Wilson [v2 §3.2; G-16, G-23]
 
@@ -194,7 +212,7 @@ Input: `{monthlyVolume (decimal string), incidence: {source:"history", k, N} | {
 
 ### D1 Refusals (status `refused`, `code`) [v2 §3.3; edge cases; G-30]
 
-`volume_invalid` (not a decimal), `volume_negative`, `volume_too_large` (> 5,000,000), `basis_required` (no default), `k_exceeds_n`, `k_negative`, `p_out_of_range` (entered outside 0..100), `severity_negative` (credits are never an exposure input), `overflow` (an E4 figure above 2^53 - 1: the engine throws RangeError like `wholeE4`).
+`inputs_invalid` (no inputs object at all) [F9], `volume_invalid` (not a decimal), `volume_negative`, `volume_too_large` (> 5,000,000), `basis_required` (no default), `k_exceeds_n`, `k_negative`, `p_out_of_range` (entered outside 0..100), `severity_negative` (credits are never an exposure input), `overflow` (any E4 figure above 2^53 - 1: an amount, a total, the SUM of the severities per affected package, a memo; case `refuse_overflow_severity_sum` [F7]: the engine throws `AdjustmentOverflowError` like `wholeE4` and turns it into the refusal).
 
 ### D2 Incidence and affected [v2 §3.3]
 
@@ -219,12 +237,12 @@ Component amount (exact, E4) = affected x severity_e4, rounded HALF_UP to an int
 
 ### D4 Totals, identity, derived figures [v2 §3.3; G-25, G-27, G-31, G-32]
 
-* `countedHereE4` = the SUM of the integer E4 amounts of the counted-here components; `buckets` (`customerPays`, `decidedCaseByCase`, `notBilledToCustomer`, `notDecided`) sum to it exactly in E4 (asserted). `decidedCaseByCaseRangeE4 = {lowE4: 0, highE4: bucket}` (the 3PL's own possible cost, no assumed approval share).
+* `countedHereE4` = the SUM of the integer E4 amounts of the counted-here components; `buckets` (`customerPays`, `decidedCaseByCase`, `notBilledToCustomer`, `notDecided`) sum to it exactly in E4 (asserted). `decidedCaseByCaseRangeE4 = {lowE4: 0, highE4: bucket}` (foregone revenue at customer-facing rates, 0 to the whole bucket; no assumed approval share) [F12].
 * `perShipmentE4`, `per1000E4`, `annualE4` are computed from the EXACT (unrounded) sum of the counted-here components, rounded HALF_UP once: per shipment = exact sum / V, per 1,000 = exact sum x 1000 / V, annual = exact sum x 12 (never a rounded monthly x 12). `perShipmentE4` and `per1000E4` are null when V = 0. Case `r4_d_e4_then_cents_0_12495` pins the difference: components 0.12495 -> 0.1250 each, total 2500 E4, exact sum 2499 E4, per shipment 2, per 1,000 2499, annual 29988.
 * `perAffectedE4` = sum of the severities of the counted-here components that have one.
 * A component with null severity is `not_computed` (reason `severity_unknown`), never 0.00; `atLeast` is true when a counted-here component is not computed while another is; when no counted-here component is computed the total, buckets and derived figures are null. When the multiplier is exactly 0 (V = 0, or incidence 0: k = 0 or entered 0) the amount is 0 whatever the severity, `computed` [v2 §3.3 "k=0 -> expected exposure 0.00"; G-27]. `soFar` = `buckets.notDecided > 0`.
-* `range` (history incidence only): incidence Wilson bounds (4 dp), `lowAffected1dp` / `highAffected1dp` = V x bound, `lowE4` / `highE4` = V x bound x (sum of the counted-here severities), rounded HALF_UP once; with no known severity `highE4` is null and `lowE4` is 0 when the lower bound is 0 [v2 §3.3; G-28]. "Range reflects incidence uncertainty only."
-* `credits` (optional, history N): `creditsMemoE4 = round(V x k / N x severityE4)` (negative) and `netMemoE4 = countedHereE4 + creditsMemoE4`: a memo that assumes credits are returned; credits never enter the buckets [v2 §3.2; math R5; G-29].
+* `range` (history incidence only): incidence Wilson bounds (4 dp), `lowAffected1dp` / `highAffected1dp` = V x bound, `lowE4` / `highE4` = V x bound x (sum of the counted-here severities), rounded HALF_UP once; with no known severity `highE4` is null and `lowE4` is 0 when the lower bound is 0 [v2 §3.3; G-28]. The edges of the interval are EXACT [F3; G-39]: with k = 0 the lower bound is exactly 0 (so `lowE4` is 0, not null, for any N) and with k = N the upper bound is exactly 1 (so `highAffected1dp` equals V rounded to one decimal; cases `r6_k0_n3_severity_unknown_exact_zero_lower`, `r7_k_eq_n_6_upper_bound_exactly_one`). "Range reflects incidence uncertainty only."
+* `credits` (optional, history N): `creditsMemoE4 = round(V x k / N x severityE4)` (negative) and `netMemoE4 = countedHereE4 + creditsMemoE4` UNDER `declared_weights` ONLY: a memo that assumes credits are returned; credits never enter the buckets [v2 §3.2; math R5; G-29]. Under `actual_weights` the postage is already inside the user's forecast and is not counted here, so a postage credit has no counterpart in the fee-only total and `netMemoE4` is null (netting it would read as a gain; case `r5b_credits_actual_weights_net_memo_null`) [F6; G-38].
 * `confidence = {incidence, postage_difference, separate_fee, overall}`: incidence from the Wilson relative half-width as in C5 (k = 0: `none`, or `low` when any severity is `entered`); severity `history` by its `n` (none/low/adequate), `entered` and `example` are not rated; `overall` = the weakest rated one (order none < low < moderate < adequate), `entered` when nothing is rated [v2 §3.2; G-31].
 
 ### Asserted fields for risk
@@ -267,7 +285,7 @@ Property tests the goldens support (v2 §9): the E4 identity (`buckets` sum to `
 
 ## Part H. What the goldens do NOT cover
 
-Fee-schedule percent-of-shipping effects and fuel on the adjustment fee are not modeled (v2 D12 C11, C12) and so have no case. Customer-facing copy, SQL authorization, staleness and the publish payload are not engine arithmetic and are tested elsewhere. Weight unit conversion for kg and g rows (`history-sample.csv` rows 16 and 17) is exercised by the importer but not asserted here, because the stored lb values depend on the shared `weightToLb` factors.
+Fee-schedule percent-of-shipping effects and fuel on the adjustment fee are not modeled (v2 D12 C11, C12) and so have no case. Percent-of-DIFFERENCE fees are not modelled either (v2 3.1(5)). A fee rule whose condition depends on another FEE rule through `rule_applied` is evaluated among the fee rules as configured (no case). Customer-facing copy, SQL authorization, staleness and the publish payload are not engine arithmetic and are tested elsewhere. Weight unit conversion for kg and g rows (`history-sample.csv` rows 16 and 17) is exercised by the importer but not asserted here, because the stored lb values depend on the shared `weightToLb` factors.
 
 ## Part I. Decision register (every G-n, and the cases that pin it)
 
@@ -307,3 +325,11 @@ Reverse a decision by editing the named cases in `expected.json` (and the deriva
 | G-32 | `atLeast`, `soFar` and null totals | `edge_postage_severity_null_declared`, `edge_both_severities_null`, `edge_fee_severity_null_actual`, `r3_*` |
 | G-33 | invalid policy pair resolves to `unconfigured`; inclusive dates | `policy-matrix.json` queries |
 | G-34 | import validation codes, error versus information split, the strict header-guard word list and money auto-mapping | `import-expected.json`, `header-guard.json` |
+| G-35 | [F2] the postage difference is priced from two pricings with NO fee rule (and no rule that depends on one); the fee comes from an isolated fee pass over the in-scope fee rules, with the 3PL's other rules kept as read-only context so a percent fee on "base plus all surcharges" still sees the surcharges; four warnings name the ignored combinations. This goes one step beyond "fee rules only": a fee-rules-only pass would silently understate such a percent fee. | the nine `f2_*` cases |
+| G-36 | [F4] a package is corrected for the fee only when its billable weight, rounded dimensions or counted price changed (a shipment-level counted change brings in every package changed on paper); the status rule A6 is unchanged | the three `f4_*` cases |
+| G-37 | [F5] a shipment-level percent fee keeps "corrected packages only" semantics, is the sum of per-package roundings, and lists `coveredPackageIndexes`; flat, per-unit and per-package lines list null | the three `f5_*` cases |
+| G-38 | [F6] `netMemoE4` is null under `actual_weights` | `r5b_credits_actual_weights_net_memo_null` |
+| G-39 | [F3] the Wilson edges k = 0 and k = N are exact (lower 0, upper 1); no clamp exists because every other k lies strictly inside (0, 1) | `r6_k0_n3_severity_unknown_exact_zero_lower`, `r7_k_eq_n_6_upper_bound_exactly_one` |
+| G-40 | [F9] input checks refuse with `invalid_filters`, `invalid_records`, `invalid_baselines`, `inputs_invalid` instead of throwing or returning NaN; maturity needs a valid today | unit tests (C1b) |
+| G-41 | [F9] an explicit empty `baselineIds` list means no baselines | unit test (C1b) |
+| G-42 | [F11] RULES A7 step 0 (no_adjustment is not_triggered even without a rule) and C2 (affected key by customer, carrier, reference) now say what v2 and amendment A2 say | `f11_*`, `h38_*`, `h39_*` |

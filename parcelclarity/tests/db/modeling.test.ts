@@ -355,22 +355,35 @@ describe("scenarios and runs", () => {
     // This run models shipping only: fee results are 'skipped', with no fee date and no fee context.
     const [r] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{\"fulfillment\": {\"skip\": true}}') as id", [p!.id]);
     const cancelledOrders = await orderIds(w.brandA.admin.id, ds);
-    await asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 4, $2::jsonb, $3::jsonb, '[]', $4::jsonb, '[]')", [r!.id, JSON.stringify(rows.map((s) => result(s, "ok", "9.60", s.row_no === 4 ? 2 : 1))), partial(4), JSON.stringify(feeResults(cancelledOrders, ["O-1", "O-2", "O-3"], null))]);
-    const [fin] = await asUser<{ r: { modeledOrders: number; modeledShipments: number } }>(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0', '[]') as r", [r!.id, JSON.stringify({ version: 2, modeled: { orders: 2, shipments: 3 }, totals: { expected: "28.80", definite: "28.80", estimated: "0.00" }, ...noFees })]);
+    await asUser(w.brandA.admin.id, "select public.advance_simulation_run($1, 1, 4, $2::jsonb, $3::jsonb, '[]', $4::jsonb, '[]')", [r!.id, JSON.stringify(rows.map((s) => result(s, "ok", "9.60", s.row_no === 4 ? 2 : 1))), partial(4, { loadIssues: ["SENTINEL_TEXT_BULK_INFLIGHT: the surcharge rule \"adjtest.x\" has an invalid condition"] }), JSON.stringify(feeResults(cancelledOrders, ["O-1", "O-2", "O-3"], null))]);
+    // The window the run stored, read BEFORE finish rewrites it (finish cleans partial_summary too, which would hide a raw window): a count only.
+    const [inflight] = await asUser<{ partial_summary: Record<string, unknown> }>(w.brandA.admin.id, "select partial_summary from public.simulation_runs where id = $1", [r!.id]);
+    expect(inflight!.partial_summary).toMatchObject({ loadIssueCount: 1 });
+    expect(JSON.stringify(inflight)).not.toMatch(/SENTINEL_TEXT|loadIssues"/);
+    const [fin] = await asUser<{ r: { modeledOrders: number; modeledShipments: number } }>(w.brandA.admin.id, "select public.finish_simulation_run($1, $2::jsonb, '{}', '2.2.0', '[]') as r", [r!.id, JSON.stringify({ version: 2, modeled: { orders: 2, shipments: 3 }, totals: { expected: "28.80", definite: "28.80", estimated: "0.00" }, ...noFees, loadIssues: ["SENTINEL_TEXT_BULK_ISSUE: the surcharge rule \"adjtest.x\" has an invalid condition", "second"] })]);
     expect(fin!.r).toMatchObject({ modeledOrders: 2, modeledShipments: 3 });
+    // A bulk run keeps no load-issue text anywhere a customer can read it (the window it stored, the summary it finished with): a count only.
+    const [stored] = await asUser<{ summary: Record<string, unknown>; partial_summary: Record<string, unknown> }>(w.brandA.admin.id, "select summary, partial_summary from public.simulation_runs where id = $1", [r!.id]);
+    expect(stored!.summary).toMatchObject({ loadIssueCount: 2 });
+    expect(stored!.partial_summary).toMatchObject({ loadIssueCount: 1 });
+    expect(JSON.stringify(stored)).not.toMatch(/SENTINEL_TEXT|loadIssues"/);
     expect(await sql("select 1 from public.simulation_run_fee_contexts where run_id = $1", [r!.id])).toHaveLength(0);
 
     const [r2] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
     expect(r2!.id).not.toBe(r!.id);
+    await sql("update public.simulation_runs set partial_summary = $2::jsonb where id = $1", [r2!.id, JSON.stringify({ version: 2, loadIssues: ["SENTINEL_TEXT_LEGACY_FAIL: rule x"] })]);
     await asUser(w.brandA.admin.id, "select public.fail_simulation_run($1, 'pricing context unavailable')", [r2!.id]);
+    expect((await asUser<{ p: Record<string, unknown> }>(w.brandA.admin.id, "select partial_summary as p from public.simulation_runs where id = $1", [r2!.id]))[0]!.p).toEqual({ version: 2, loadIssueCount: 1 });
     const [failed] = await asUser<{ status: string; error: string }>(w.brandA.admin.id, "select status, error from public.simulation_runs where id = $1", [r2!.id]);
     // The run row carries a code only; the exception text moved to a table only the 3PL's staff can read.
     expect(failed).toEqual({ status: "failed", error: "run_failed" });
     expect(await asUser(w.brandA.admin.id, "select detail from public.simulation_run_failures where run_id = $1", [r2!.id])).toHaveLength(0);
     expect(await asUser(w.t1.employee.id, "select detail from public.simulation_run_failures where run_id = $1", [r2!.id])).toEqual([{ detail: "pricing context unavailable" }]);
     const [r3] = await asUser<{ id: string }>(w.brandA.admin.id, "select public.start_simulation_run($1, 'ship_date', null, null, 'exclude', '{}') as id", [p!.id]);
+    await sql("update public.simulation_runs set partial_summary = $2::jsonb where id = $1", [r3!.id, JSON.stringify({ version: 2, loadIssues: ["SENTINEL_TEXT_LEGACY_CANCEL: rule y", "z"] })]);
     await asUser(w.brandA.admin.id, "select public.cancel_simulation_run($1)", [r3!.id]);
     expect((await asUser<{ status: string }>(w.brandA.admin.id, "select status from public.simulation_runs where id = $1", [r3!.id]))[0]?.status).toBe("cancelled");
+    expect((await asUser<{ p: Record<string, unknown> }>(w.brandA.admin.id, "select partial_summary as p from public.simulation_runs where id = $1", [r3!.id]))[0]!.p).toEqual({ version: 2, loadIssueCount: 2 });
     // The dataset cannot be discarded while a scenario uses it, nor while a staff-private scenario the brand cannot see does.
     await expectDenied(asUser(w.brandA.admin.id, "select public.discard_order_dataset($1)", [ds]), /used by a scenario/);
     await asUser(w.brandA.admin.id, "update public.simulation_projects set archived_at = now() where id = $1", [p!.id]);

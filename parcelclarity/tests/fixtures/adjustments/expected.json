@@ -4819,6 +4819,1738 @@
         }
       ],
       "warnings": []
+    },
+    "f2_fee_rule_excludes_residential_postage_unchanged": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "18.56",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "19.13",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "5.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.57",
+          "declaredTotal": "18.56",
+          "correctedTotal": "19.13",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_excl_residential",
+              "label": "Reweigh fee that also lists the residential surcharge as suppressed (if needed)",
+              "category": "reweight",
+              "packageIndex": null,
+              "coveredPackageIndexes": null,
+              "amount": "3.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "3.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 35700,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_excludes_ignored"
+      ]
+    },
+    "f2_fee_rule_in_das_group_no_adjustment": {
+      "status": "no_adjustment",
+      "adjustmentType": "reweight",
+      "direction": "none",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "3",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "15.51",
+          "unresolved": "0.00",
+          "zone": "3",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "15.51",
+          "unresolved": "0.00",
+          "zone": "3",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.00",
+          "declaredTotal": "15.51",
+          "correctedTotal": "15.51",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [],
+          "state": "not_triggered",
+          "amount": null,
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 0,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_group_ignored"
+      ]
+    },
+    "f2_fee_rule_in_das_group_increase": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "3",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "15.51",
+          "unresolved": "0.00",
+          "zone": "3",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "15.93",
+          "unresolved": "0.00",
+          "zone": "3",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "5.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.42",
+          "declaredTotal": "15.51",
+          "correctedTotal": "15.93",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pp_das_group",
+              "label": "Reweigh fee per package in the delivery-area exclusivity group (if needed)",
+              "category": "reweight",
+              "packageIndex": 0,
+              "coveredPackageIndexes": null,
+              "amount": "3.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "3.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 34200,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_group_ignored"
+      ]
+    },
+    "f2_companion_rule_on_fee_rule_postage_unchanged": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "12.79",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "13.35",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "5.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.56",
+          "declaredTotal": "12.79",
+          "correctedTotal": "13.35",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_flat",
+              "label": "Reweigh fee (if needed)",
+              "category": "reweight",
+              "packageIndex": null,
+              "coveredPackageIndexes": null,
+              "amount": "3.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "3.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 35600,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_companion_ignored"
+      ]
+    },
+    "f2_fee_rule_floor_no_adjustment": {
+      "status": "no_adjustment",
+      "adjustmentType": "reweight",
+      "direction": "none",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "12.79",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "12.79",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.00",
+          "declaredTotal": "12.79",
+          "correctedTotal": "12.79",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [],
+          "state": "not_triggered",
+          "amount": null,
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 0,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_floor_ignored"
+      ]
+    },
+    "f2_fee_rule_floor_increase": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "12.79",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "13.35",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "5.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.56",
+          "declaredTotal": "12.79",
+          "correctedTotal": "13.35",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pp_floor20",
+              "label": "Reweigh fee per package that carries a 20 lb billable-weight floor (if needed)",
+              "category": "reweight",
+              "packageIndex": 0,
+              "coveredPackageIndexes": null,
+              "amount": "3.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "3.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 35600,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_floor_ignored"
+      ]
+    },
+    "f2_percent_fee_base_includes_other_surcharges": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "18.56",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "19.13",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "5.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.57",
+          "declaredTotal": "18.56",
+          "correctedTotal": "19.13",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pct_all_surcharges",
+              "label": "Reweigh fee, percent of base rate plus all surcharges (if needed)",
+              "category": "reweight",
+              "packageIndex": null,
+              "coveredPackageIndexes": [
+                0
+              ],
+              "amount": "1.66",
+              "handling": "pass_through",
+              "method": "percent"
+            }
+          ],
+          "state": "conditional",
+          "amount": "1.66",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 22300,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f4_unmoved_package_draws_no_fee_beside_a_moved_one": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "25.58",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "27.84",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "8.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "2.26",
+          "declaredTotal": "25.58",
+          "correctedTotal": "27.84",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pp",
+              "label": "Reweigh fee per package (if needed)",
+              "category": "reweight",
+              "packageIndex": 1,
+              "coveredPackageIndexes": null,
+              "amount": "3.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "3.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 52600,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f4_no_package_moved_is_no_adjustment": {
+      "status": "no_adjustment",
+      "adjustmentType": "reweight",
+      "direction": "none",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "25.58",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "25.58",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.00",
+          "declaredTotal": "25.58",
+          "correctedTotal": "25.58",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [],
+          "state": "not_triggered",
+          "amount": null,
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 0,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f4_package_with_changed_rounded_dimensions_only_counts_as_corrected": {
+      "status": "ok",
+      "adjustmentType": "remeasure",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "34.63",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "20.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "37.46",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "20.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "7"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "9.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "14",
+                "10",
+                "8"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "2.83",
+          "declaredTotal": "34.63",
+          "correctedTotal": "37.46",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.remeasure_pp",
+              "label": "Remeasure fee per package (if needed)",
+              "category": "remeasure",
+              "packageIndex": 0,
+              "coveredPackageIndexes": null,
+              "amount": "4.00",
+              "handling": "pass_through",
+              "method": "flat"
+            },
+            {
+              "ruleKey": "fixture.adj.remeasure_pp",
+              "label": "Remeasure fee per package (if needed)",
+              "category": "remeasure",
+              "packageIndex": 1,
+              "coveredPackageIndexes": null,
+              "amount": "4.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "8.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 108300,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "remeasure",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "remeasure",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f5_percent_fee_one_of_two_packages_corrected": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "25.58",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "27.84",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "8.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "2.26",
+          "declaredTotal": "25.58",
+          "correctedTotal": "27.84",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pct",
+              "label": "Reweigh fee, percent of base rate (if needed)",
+              "category": "reweight",
+              "packageIndex": null,
+              "coveredPackageIndexes": [
+                1
+              ],
+              "amount": "1.30",
+              "handling": "pass_through",
+              "method": "percent"
+            }
+          ],
+          "state": "conditional",
+          "amount": "1.30",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 35600,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f5_percent_fee_two_of_two_packages_corrected": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "25.58",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "30.10",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "8.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "8.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "4.52",
+          "declaredTotal": "25.58",
+          "correctedTotal": "30.10",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pct",
+              "label": "Reweigh fee, percent of base rate (if needed)",
+              "category": "reweight",
+              "packageIndex": null,
+              "coveredPackageIndexes": [
+                0,
+                1
+              ],
+              "amount": "2.60",
+              "handling": "pass_through",
+              "method": "percent"
+            }
+          ],
+          "state": "conditional",
+          "amount": "2.60",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 71200,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f5_flat_fee_two_packages_corrected_covers_nothing_listed": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "25.58",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "30.10",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "8.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            },
+            {
+              "index": 1,
+              "billableLb": "8.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "4.52",
+          "declaredTotal": "25.58",
+          "correctedTotal": "30.10",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_flat",
+              "label": "Reweigh fee (if needed)",
+              "category": "reweight",
+              "packageIndex": null,
+              "coveredPackageIndexes": null,
+              "amount": "3.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "3.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 75200,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f11_no_adjustment_with_no_fee_rule_is_not_triggered": {
+      "status": "no_adjustment",
+      "adjustmentType": "reweight",
+      "direction": "none",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "12.79",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "12.79",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.00",
+          "declaredTotal": "12.79",
+          "correctedTotal": "12.79",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [],
+          "state": "not_triggered",
+          "amount": null,
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 0,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f11_plateau_with_no_fee_rule_is_not_configured": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "none",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "2",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "9.82",
+          "unresolved": "0.00",
+          "zone": "2",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "1.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "6",
+                "4",
+                "2"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "9.82",
+          "unresolved": "0.00",
+          "zone": "2",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "2.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "6",
+                "4",
+                "2"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.00",
+          "declaredTotal": "9.82",
+          "correctedTotal": "9.82",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [],
+          "state": "not_configured",
+          "amount": null,
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 0,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": []
+    },
+    "f2_fee_rule_outranked_in_das_group_still_shows_its_fee": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "3",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "15.51",
+          "unresolved": "0.00",
+          "zone": "3",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "15.93",
+          "unresolved": "0.00",
+          "zone": "3",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "5.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.42",
+          "declaredTotal": "15.51",
+          "correctedTotal": "15.93",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pp_das_group_low",
+              "label": "Reweigh fee per package in the delivery-area exclusivity group, lowest priority (if needed)",
+              "category": "reweight",
+              "packageIndex": 0,
+              "coveredPackageIndexes": null,
+              "amount": "3.00",
+              "handling": "pass_through",
+              "method": "flat"
+            }
+          ],
+          "state": "conditional",
+          "amount": "3.00",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 34200,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_group_ignored"
+      ]
+    },
+    "f2_percent_fee_that_lists_residential_as_suppressed": {
+      "status": "ok",
+      "adjustmentType": "reweight",
+      "direction": "increase",
+      "basis": "exact",
+      "declaredSource": "entered",
+      "zone": "5",
+      "sides": {
+        "declared": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "18.56",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "4.0",
+              "basis": "dim",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        },
+        "corrected": {
+          "status": "ok",
+          "unavailableReason": null,
+          "countedTotal": "19.13",
+          "unresolved": "0.00",
+          "zone": "5",
+          "packages": [
+            {
+              "index": 0,
+              "billableLb": "5.0",
+              "basis": "actual",
+              "roundedDimensionsIn": [
+                "10",
+                "8",
+                "6"
+              ]
+            }
+          ],
+          "warnings": []
+        }
+      },
+      "components": {
+        "postage_difference": {
+          "state": "computed",
+          "amount": "0.57",
+          "declaredTotal": "18.56",
+          "correctedTotal": "19.13",
+          "handling": "pass_through"
+        },
+        "separate_fee": {
+          "lines": [
+            {
+              "ruleKey": "fixture.adj.reweight_pct_all_excl_residential",
+              "label": "Reweigh fee, percent of base plus all surcharges, that lists the residential surcharge as suppressed (if needed)",
+              "category": "reweight",
+              "packageIndex": null,
+              "coveredPackageIndexes": [
+                0
+              ],
+              "amount": "1.66",
+              "handling": "pass_through",
+              "method": "percent"
+            }
+          ],
+          "state": "conditional",
+          "amount": "1.66",
+          "handling": "pass_through"
+        }
+      },
+      "undecided": [],
+      "totalsE4": {
+        "customerPays": 22300,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "policySnapshot": [
+        {
+          "type": "reweight",
+          "component": "postage_difference",
+          "handling": "pass_through"
+        },
+        {
+          "type": "reweight",
+          "component": "separate_fee",
+          "handling": "pass_through"
+        }
+      ],
+      "warnings": [
+        "adjustment_fee_rule_excludes_ignored"
+      ]
     }
   },
   "history": {
@@ -9765,6 +11497,326 @@
       "correctionRatePct": null,
       "labelsMissingWeight": 40,
       "wmsNoWeightAffected": null
+    },
+    "h38_one_reference_in_two_brands_tenant_wide": {
+      "status": "ok",
+      "scope": "tenant",
+      "baseline": {
+        "present": true,
+        "ids": [
+          "bl-t-jan"
+        ],
+        "packagesTotal": 1000,
+        "periods": [
+          {
+            "start": "2026-01-01",
+            "end": "2026-01-31"
+          }
+        ],
+        "outsideWindowCount": 0
+      },
+      "excludedOutsideBaseline": 0,
+      "recordsInScope": 4,
+      "affected": 3,
+      "perRecordCounting": false,
+      "incidence": {
+        "k": 3,
+        "N": 1000,
+        "pct4dp": "0.3000",
+        "wilson": {
+          "lowerPct4dp": "0.1021",
+          "upperPct4dp": "0.8783",
+          "lowerPct10dp": "0.1020765405",
+          "upperPct10dp": "0.8783171789"
+        }
+      },
+      "incidenceByDirection": {
+        "increase": {
+          "k": 3,
+          "pct4dp": "0.3000",
+          "wilson": {
+            "lowerPct4dp": "0.1021",
+            "upperPct4dp": "0.8783",
+            "lowerPct10dp": "0.1020765405",
+            "upperPct10dp": "0.8783171789"
+          }
+        },
+        "decrease": {
+          "k": 0,
+          "pct4dp": "0.0000",
+          "wilson": {
+            "lowerPct4dp": "0.0000",
+            "upperPct4dp": "0.3827",
+            "lowerPct10dp": "0.0000000000",
+            "upperPct10dp": "0.3826898586"
+          }
+        },
+        "zero": {
+          "k": 0,
+          "pct4dp": "0.0000",
+          "wilson": {
+            "lowerPct4dp": "0.0000",
+            "upperPct4dp": "0.3827",
+            "lowerPct10dp": "0.0000000000",
+            "upperPct10dp": "0.3826898586"
+          }
+        },
+        "unknown": {
+          "k": 0,
+          "pct4dp": "0.0000",
+          "wilson": {
+            "lowerPct4dp": "0.0000",
+            "upperPct4dp": "0.3827",
+            "lowerPct10dp": "0.0000000000",
+            "upperPct10dp": "0.3826898586"
+          }
+        }
+      },
+      "severity": {
+        "increase": {
+          "postage": {
+            "n": 4,
+            "sumE4": 65000,
+            "meanE4": 16250,
+            "medianE4": 15000,
+            "p90E4": 30000,
+            "maxE4": 30000
+          },
+          "fee": {
+            "n": 4,
+            "sumE4": 130000,
+            "meanE4": 32500,
+            "medianE4": 30000,
+            "p90E4": 40000,
+            "maxE4": 40000
+          }
+        },
+        "decrease": {
+          "postage": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          },
+          "fee": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          }
+        },
+        "zero": {
+          "postage": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          },
+          "fee": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          }
+        },
+        "unknown": {
+          "postage": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          },
+          "fee": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          }
+        }
+      },
+      "chargesOnly": {
+        "n": 4,
+        "meanE4": 16250
+      },
+      "netOfCredits": {
+        "n": 4,
+        "sumE4": 65000,
+        "meanE4": 16250
+      },
+      "topRecordOver25Pct": {
+        "postage": true,
+        "fee": true
+      },
+      "confidence": {
+        "incidence": "low",
+        "postage": "low",
+        "fee": "low"
+      },
+      "maturity": null,
+      "missingRatePct": null,
+      "correctionRatePct": null,
+      "labelsMissingWeight": null,
+      "wmsNoWeightAffected": null
+    },
+    "h39_one_reference_two_records_one_customer": {
+      "status": "ok",
+      "scope": "brand",
+      "baseline": {
+        "present": true,
+        "ids": [
+          "bl-a-jan"
+        ],
+        "packagesTotal": 400,
+        "periods": [
+          {
+            "start": "2026-01-01",
+            "end": "2026-01-31"
+          }
+        ],
+        "outsideWindowCount": 0
+      },
+      "excludedOutsideBaseline": 0,
+      "recordsInScope": 3,
+      "affected": 2,
+      "perRecordCounting": false,
+      "incidence": {
+        "k": 2,
+        "N": 400,
+        "pct4dp": "0.5000",
+        "wilson": {
+          "lowerPct4dp": "0.1372",
+          "upperPct4dp": "1.8045",
+          "lowerPct10dp": "0.1372224222",
+          "upperPct10dp": "1.8045289972"
+        }
+      },
+      "incidenceByDirection": {
+        "increase": {
+          "k": 2,
+          "pct4dp": "0.5000",
+          "wilson": {
+            "lowerPct4dp": "0.1372",
+            "upperPct4dp": "1.8045",
+            "lowerPct10dp": "0.1372224222",
+            "upperPct10dp": "1.8045289972"
+          }
+        },
+        "decrease": {
+          "k": 0,
+          "pct4dp": "0.0000",
+          "wilson": {
+            "lowerPct4dp": "0.0000",
+            "upperPct4dp": "0.9513",
+            "lowerPct10dp": "0.0000000000",
+            "upperPct10dp": "0.9512640600"
+          }
+        },
+        "zero": {
+          "k": 0,
+          "pct4dp": "0.0000",
+          "wilson": {
+            "lowerPct4dp": "0.0000",
+            "upperPct4dp": "0.9513",
+            "lowerPct10dp": "0.0000000000",
+            "upperPct10dp": "0.9512640600"
+          }
+        },
+        "unknown": {
+          "k": 0,
+          "pct4dp": "0.0000",
+          "wilson": {
+            "lowerPct4dp": "0.0000",
+            "upperPct4dp": "0.9513",
+            "lowerPct10dp": "0.0000000000",
+            "upperPct10dp": "0.9512640600"
+          }
+        }
+      },
+      "severity": {
+        "increase": {
+          "postage": {
+            "n": 3,
+            "sumE4": 35000,
+            "meanE4": 11667,
+            "medianE4": 10000,
+            "p90E4": 20000,
+            "maxE4": 20000
+          },
+          "fee": {
+            "n": 3,
+            "sumE4": 100000,
+            "meanE4": 33333,
+            "medianE4": 30000,
+            "p90E4": 40000,
+            "maxE4": 40000
+          }
+        },
+        "decrease": {
+          "postage": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          },
+          "fee": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          }
+        },
+        "zero": {
+          "postage": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          },
+          "fee": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          }
+        },
+        "unknown": {
+          "postage": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          },
+          "fee": {
+            "n": 0,
+            "sumE4": null,
+            "meanE4": null,
+            "medianE4": null
+          }
+        }
+      },
+      "chargesOnly": {
+        "n": 3,
+        "meanE4": 11667
+      },
+      "netOfCredits": {
+        "n": 3,
+        "sumE4": 35000,
+        "meanE4": 11667
+      },
+      "topRecordOver25Pct": {
+        "postage": true,
+        "fee": true
+      },
+      "confidence": {
+        "incidence": "low",
+        "postage": "low",
+        "fee": "low"
+      },
+      "maturity": null,
+      "missingRatePct": null,
+      "correctionRatePct": null,
+      "labelsMissingWeight": null,
+      "wmsNoWeightAffected": null
     }
   },
   "risk": {
@@ -12013,6 +14065,204 @@
       "code": "severity_negative"
     },
     "refuse_overflow_e4": {
+      "status": "refused",
+      "code": "overflow"
+    },
+    "r5b_credits_actual_weights_net_memo_null": {
+      "status": "ok",
+      "basis": "actual_weights",
+      "incidence": {
+        "source": "history",
+        "k": 6,
+        "N": 1000,
+        "pct4dp": "0.6000"
+      },
+      "affected": {
+        "exact": "6",
+        "display1dp": "6.0"
+      },
+      "components": {
+        "postage_difference": {
+          "handling": "pass_through",
+          "severityE4": 100000,
+          "amountE4": 600000,
+          "state": "in_forecast"
+        },
+        "separate_fee": {
+          "handling": "pass_through",
+          "severityE4": 0,
+          "amountE4": 0,
+          "state": "computed"
+        }
+      },
+      "countedHereE4": 0,
+      "buckets": {
+        "customerPays": 0,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "decidedCaseByCaseRangeE4": {
+        "lowE4": 0,
+        "highE4": 0
+      },
+      "inForecastMemoE4": {
+        "inForecastNotBilledE4": 0,
+        "inForecastDecidedCaseByCaseE4": 0
+      },
+      "soFar": false,
+      "atLeast": false,
+      "perAffectedE4": 0,
+      "perShipmentE4": 0,
+      "per1000E4": 0,
+      "annualE4": 0,
+      "warnings": [],
+      "range": {
+        "incidenceLowPct4dp": "0.2753",
+        "incidenceHighPct4dp": "1.3028",
+        "lowAffected1dp": "2.8",
+        "highAffected1dp": "13.0",
+        "lowE4": 0,
+        "highE4": 0
+      },
+      "creditsMemoE4": -200000,
+      "netMemoE4": null,
+      "confidence": {
+        "incidence": "low",
+        "postage_difference": "entered",
+        "separate_fee": "entered",
+        "overall": "low"
+      }
+    },
+    "r6_k0_n3_severity_unknown_exact_zero_lower": {
+      "status": "ok",
+      "basis": "declared_weights",
+      "incidence": {
+        "source": "history",
+        "k": 0,
+        "N": 3,
+        "pct4dp": "0.0000"
+      },
+      "affected": {
+        "exact": "0",
+        "display1dp": "0.0"
+      },
+      "components": {
+        "postage_difference": {
+          "handling": "pass_through",
+          "severityE4": null,
+          "amountE4": 0,
+          "state": "computed"
+        },
+        "separate_fee": {
+          "handling": "pass_through",
+          "severityE4": null,
+          "amountE4": 0,
+          "state": "computed"
+        }
+      },
+      "countedHereE4": 0,
+      "buckets": {
+        "customerPays": 0,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "decidedCaseByCaseRangeE4": {
+        "lowE4": 0,
+        "highE4": 0
+      },
+      "inForecastMemoE4": {
+        "inForecastNotBilledE4": 0,
+        "inForecastDecidedCaseByCaseE4": 0
+      },
+      "soFar": false,
+      "atLeast": false,
+      "perAffectedE4": null,
+      "perShipmentE4": 0,
+      "per1000E4": 0,
+      "annualE4": 0,
+      "warnings": [],
+      "range": {
+        "incidenceLowPct4dp": "0.0000",
+        "incidenceHighPct4dp": "56.1506",
+        "lowAffected1dp": "0.0",
+        "highAffected1dp": "561.5",
+        "lowE4": 0,
+        "highE4": null
+      },
+      "confidence": {
+        "incidence": "none",
+        "postage_difference": "none",
+        "separate_fee": "none",
+        "overall": "none"
+      }
+    },
+    "r7_k_eq_n_6_upper_bound_exactly_one": {
+      "status": "ok",
+      "basis": "declared_weights",
+      "incidence": {
+        "source": "history",
+        "k": 6,
+        "N": 6,
+        "pct4dp": "100.0000"
+      },
+      "affected": {
+        "exact": "42946.95",
+        "display1dp": "42947.0"
+      },
+      "components": {
+        "postage_difference": {
+          "handling": "pass_through",
+          "severityE4": 1000,
+          "amountE4": 42946950,
+          "state": "computed"
+        },
+        "separate_fee": {
+          "handling": "pass_through",
+          "severityE4": 1000,
+          "amountE4": 42946950,
+          "state": "computed"
+        }
+      },
+      "countedHereE4": 85893900,
+      "buckets": {
+        "customerPays": 85893900,
+        "decidedCaseByCase": 0,
+        "notBilledToCustomer": 0,
+        "notDecided": 0
+      },
+      "decidedCaseByCaseRangeE4": {
+        "lowE4": 0,
+        "highE4": 0
+      },
+      "inForecastMemoE4": {
+        "inForecastNotBilledE4": 0,
+        "inForecastDecidedCaseByCaseE4": 0
+      },
+      "soFar": false,
+      "atLeast": false,
+      "perAffectedE4": 2000,
+      "perShipmentE4": 2000,
+      "per1000E4": 2000000,
+      "annualE4": 1030726800,
+      "warnings": [],
+      "range": {
+        "incidenceLowPct4dp": "60.9657",
+        "incidenceHighPct4dp": "100.0000",
+        "lowAffected1dp": "26182.9",
+        "highAffected1dp": "42947.0",
+        "lowE4": 52365815,
+        "highE4": 85893900
+      },
+      "confidence": {
+        "incidence": "adequate",
+        "postage_difference": "entered",
+        "separate_fee": "entered",
+        "overall": "adequate"
+      }
+    },
+    "refuse_overflow_severity_sum": {
       "status": "refused",
       "code": "overflow"
     }

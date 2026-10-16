@@ -10,7 +10,7 @@
 --     them. The only thing a brand ever receives is public.brand_adjustment_examples(brand), which
 --     returns an explicit projection of a payload built IN SQL from the stored staff scenario and
 --     checked by a closed allow-list guard (app.customer_json_ok).
---   * Every write goes through a SECURITY DEFINER function guarded by BEFORE UPDATE/DELETE triggers
+--   * Every write goes through a SECURITY DEFINER function guarded by BEFORE INSERT/UPDATE/DELETE triggers
 --     keyed on the transaction-local setting app.adjustment_rpc. No table has an INSERT, UPDATE or
 --     DELETE grant for the Data API roles and no write policy.
 --   * Audit rows (adjustment.*) are written by AFTER triggers only; log_audit_event() no longer
@@ -28,6 +28,42 @@
 --     refusal, P0002 not found, P0004 wrong state, P0007 overlap), bad input and reconciliation
 --     use PC001 / PC002 / PC003 as in M4; 42501 means "no permission" for tenant-scoped calls.
 --
+-- Shared objects this migration changes (the "sweep"; each has a DB test, and nothing else in M1-M4 was touched):
+--   * log_audit_event (same signature; the adjustment namespace removed from the client allow-list).
+--   * uploaded_files: purpose check (+adjustment_import), the files_read / files_insert policies (named purposes only), a BEFORE
+--     INSERT guard trigger for adjustment files, and four actor columns made nullable (so deleting a user works).
+--   * rate_card_service_terms.source_reference and customer_surcharge_overrides.reference are DROPPED (copied to staff-only tables).
+--   * simulation_runs: summary / reference_data / partial_summary / error stop carrying staff diagnostics (backfilled for EVERY
+--     status, a running run included); finish_simulation_run, fail_simulation_run, cancel_simulation_run, advance_simulation_run
+--     (same 8 arguments) and save_forecast_run are redefined to strip load-issue text; simulation_run_failures is new.
+--   * surcharge_rule_versions: a reweigh, remeasure or correction fee is a conditional charge (insert, class change AND publish are
+--     refused otherwise; draft versions were backfilled to conditional).
+--   * pricing_rules_for_card gains a fifth argument and the D8 filter (the old four-argument function is dropped).
+--   * rate_card_service_term_sources has a guard that lets a cascade from a deleted DRAFT term through.
+--   * the supabase_realtime publication, when one exists, is emptied of public tables (app.sweep_realtime_publication).
+--   * EXECUTE: the final "revoke all on all functions in schema app from public, anon" removes the implicit PUBLIC (and so
+--     authenticated) EXECUTE from these 21 functions that existed before M5: audit_fees, audit_modeling, dataset_period,
+--     default_sharing, fee_decimal_ok, fee_line_amount, fee_monthly_lines, fee_resolve_rate, fee_rule_guard, fee_rule_problem,
+--     fee_tier_amount, fee_version_problem, guard_dataset_update, guard_fee_children, guard_fee_schedule_update,
+--     guard_fee_version_update, limit_file_inserts, normalise_packaging, order_line_counts, run_minimums, validate_fulfillment.
+--     Nothing needs them: trigger functions are not EXECUTE-checked when a trigger fires, the others are called only from
+--     SECURITY DEFINER functions (which run as their owner), and a catalog scan finds no policy, CHECK constraint, column default,
+--     generated column, index expression or SECURITY INVOKER function that calls one (tests/db/adjustments-confidentiality.test.ts
+--     repeats the scan, so a later CHECK or DEFAULT that needs one fails the build and EXECUTE is restored only for that function).
+--
+-- Write guard (BEFORE INSERT/UPDATE/DELETE triggers): a change passes only inside an M5 function. The signal is the transaction-local
+-- setting app.adjustment_rpc, which ANY session can set, so it is not trusted alone: the guard ALSO refuses every statement whose
+-- current_user is a Data API role (anon, authenticated, authenticator). Inside a SECURITY DEFINER function current_user is the
+-- function's owner, and a foreign-key action runs as the table owner, so neither is affected. The Data API roles also hold SELECT
+-- only on these tables and no write policy exists (tests assert all three layers; a later grant alone cannot open a write path).
+--
+-- Raw history files: an uploaded history file is bounded without an expiry job. The BEFORE INSERT trigger refuses a file whose
+-- first 50 lines hold a cost-like header (reason forbidden_header), a UTF-16 / NUL file (unsupported_encoding), and a sixth
+-- UNATTACHED file for the account (too_many_unattached_files); create_adjustment_import allows at most 5 in-progress imports. So an
+-- account holds at most 5 unattached plus 5 attached raw files (10 x 5 MB = 50 MB) at any moment; an attached file is deleted when
+-- its import commits, is discarded or is withdrawn; an unattached one only through discard_unattached_adjustment_file (or the
+-- offboarding purge). An expiry job for abandoned uploads is an M9 item.
+--
 -- JSON contracts the TypeScript layer must honour (the documentation pass copies them into DATABASE.md):
 --   adjustment_scenarios.input   {"v":1,"serviceId":uuid,"residential":bool,"zone":int|null,
 --                                 "declaredSource":"entered"|"wms_fallback",
@@ -39,7 +75,22 @@
 --                                 "components":[{"kind":postage_difference|separate_fee,
 --                                                "state":conditional|waived_for_customer|included_in_rate|undecided|not_configured|not_triggered,
 --                                                "amount":"5.30"|null,"declaredTotal"?:"17.83","correctedTotal"?:"23.13",
---                                                "handling"?:absorbed|pass_through|manual_approval|unconfigured}], ...staff-only extras}
+--                                                "handling"?:absorbed|pass_through|manual_approval|unconfigured,
+--                                                "engineHandling"?:absorbed|pass_through|manual_approval|unconfigured|mixed,
+--                                                "lines"?:[{"ruleKey":text,"amount"?:money,"handling":absorbed|pass_through|manual_approval|unconfigured,...}]}],
+--                                 ...staff-only extras}
+--                                (build_customer_example refuses an example, problem mixed_handling, when a component's engineHandling is
+--                                 "mixed" or when its engineHandling or any line's handling differs from the handling resolved TODAY for that
+--                                 line's policy row: shipping_charge_correction lines via the 'correction' separate_fee row, reweigh and
+--                                 remeasure fee lines via the scenario type's separate_fee row, postage via the type's postage_difference row)
+--   save_adjustment_scenario p_pins {"rateCardVersionId":uuid,"ruleVersionIds":[uuid],"overrideIds":[uuid],"pricedOn":date,
+--                                 "ruleKeysInForce"?:[text] (the `key` of every rule pricing_rules_for_card(card, pricedOn, brand, null, true) returned),
+--                                 "zipListVersionIds"?:[uuid] (the `id` of every zipLists entry of that same call)}.
+--                                When the two optional arrays are absent the database computes them itself, at save time, from the same
+--                                query; either way they are stored in adjustment_scenarios.pricing_context and compared again at preview,
+--                                publish and read time: a different set of rule keys in force, or a ZIP list version that is no longer the
+--                                one in force, makes an example "under review" (cause rule_changed / zip_list_changed) and makes
+--                                preview and publish refuse it (problem context_changed).
 --   risk_estimates.inputs        {"adjustmentType"?:..., "importIds"?:[uuid...] (imports it was derived from), ...} (k, N, window and filters BY VALUE)
 --   risk_estimates.result        {"v":1,"buckets":{"customerPays":E4,"decidedCaseByCase":E4,"notBilledToCustomer":E4,"notDecided":E4},
 --                                 "countedE4":E4, "handling"?:{postage_difference|separate_fee: handling}, ...}
@@ -80,6 +131,31 @@ $$;
 
 revoke all on function app.can_view_adjustments(uuid), app.can_manage_adjustments(uuid), app.adjustment_tenant_ids() from public, anon;
 grant execute on function app.can_view_adjustments(uuid), app.can_manage_adjustments(uuid), app.adjustment_tenant_ids() to authenticated, service_role;
+
+-- Today as a calendar date in UTC. current_date follows the session time zone, which a Data API client controls (PostgREST honours
+-- "Prefer: timezone=..."), so no M5 function uses it: expiry edges and "starts today" must not move with the caller.
+create function app.utc_today() returns date
+language sql stable parallel safe set search_path = '' as $$
+  select (now() at time zone 'UTC')::date;
+$$;
+
+-- The canonical form of a package reference (carrier tracking number or equivalent), used for the unique index and every duplicate
+-- check: Unicode compatibility normalisation (NFKC: fullwidth letters and digits, ligatures, roman numerals), then ALL whitespace and
+-- invisible format characters removed (zero-width space and joiners, soft hyphen, bidi marks, byte order mark, tag characters), then
+-- ASCII letters upper-cased (other letters are kept as they are: SQL and TypeScript then agree on every input whatever the server
+-- locale). NULL when the input is NULL, holds the replacement character U+FFFD (bytes that were not valid text), or has nothing left.
+-- The TypeScript library implements the identical function; tests/fixtures/adjustments/package-refs.json is the shared list.
+create function app.canon_package_ref(p text) returns text
+language sql immutable parallel safe set search_path = '' as $$
+  select case
+    when p is null or position(chr(65533) in p) > 0 then null
+    else nullif(translate(
+           regexp_replace(normalize(p, nfkc),
+             '[ \t\n\r\f\v\u0085\u1680\u2028\u2029\u00ad\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f]',
+             '', 'g'),
+           'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), '')
+  end;
+$$;
 
 -- ---------------------------------------------------------------------------
 -- SECTION 0.2: log_audit_event no longer accepts the adjustment namespace
@@ -177,6 +253,9 @@ begin
   select v.status into v_status
     from public.rate_card_service_terms t join public.rate_card_versions v on v.id = t.version_id
    where t.id = v_term for key share of v;
+  -- A cascade from a deleted DRAFT term reaches this trigger after the term (and so its version lookup) is gone: that is the
+  -- only way a delete finds no term, because the foreign key forbids a source without one. Let it through.
+  if tg_op = 'DELETE' and not found then return old; end if;
   if v_status is distinct from 'draft' then
     raise exception 'rate card version is not a draft; its term sources cannot change' using errcode = '42501';
   end if;
@@ -255,13 +334,14 @@ create policy simulation_run_failures_read on public.simulation_run_failures for
 grant select on public.simulation_run_failures to authenticated;
 grant all on public.simulation_run_failures to service_role;
 
--- Backfill: summaries of finished runs, and the in-flight state kept on finished runs.
+-- Backfill: summaries of finished runs, and the in-flight state of EVERY run (a run that is still running when this migration is
+-- applied keeps no load-issue text either; the functions below strip what a later window, a cancel or a failure would store).
 update public.simulation_runs
    set summary = app.summary_without_load_issues(summary)
  where summary ? 'loadIssues';
 update public.simulation_runs
    set partial_summary = app.summary_without_load_issues(partial_summary)
- where status <> 'running' and partial_summary ? 'loadIssues';
+ where partial_summary ? 'loadIssues';
 -- Forecast runs keep their pins in reference_data.
 update public.simulation_runs
    set reference_data = app.summary_without_load_issues(reference_data)
@@ -269,7 +349,8 @@ update public.simulation_runs
 
 insert into public.simulation_run_failures (run_id, tenant_id, detail)
 select r.id, r.tenant_id, left(r.error, 1000) from public.simulation_runs r where r.error is not null and btrim(r.error) <> '';
-update public.simulation_runs set error = 'run_failed' where error is not null;
+-- (A blank error was never a diagnostic: it becomes "no error", not a failure code.)
+update public.simulation_runs set error = case when btrim(error) = '' then null else 'run_failed' end where error is not null;
 alter table public.simulation_runs add constraint simulation_runs_error_is_code
   check (error is null or error ~ '^[a-z][a-z0-9_]{1,39}$');
 
@@ -284,6 +365,8 @@ begin
   update public.simulation_runs set status = 'failed',
          -- A caller-supplied slug is kept as the code; anything else (free text) becomes 'run_failed'.
          error = case when p_error ~ '^[a-z][a-z0-9_]{1,39}$' then p_error else 'run_failed' end,
+         -- Whatever an earlier window stored (a run that was in flight when this migration ran) loses its load-issue text now.
+         partial_summary = app.summary_without_load_issues(partial_summary),
          finished_at = now()
    where id = p_run;
   insert into public.simulation_run_failures (run_id, tenant_id, detail)
@@ -310,6 +393,28 @@ begin
 end $$;
 create trigger srv_adjustment_fee_class before insert or update of charge_class on public.surcharge_rule_versions
   for each row execute function app.guard_adjustment_fee_class();
+
+-- Versions that existed before this migration are not touched by the trigger above (it fires on a change of charge class), so:
+--   1. every DRAFT version of such a rule is made conditional now (a draft carries no price anyone has seen), and
+--   2. a version can no longer BECOME published (publish_surcharge_rule_version, or any other path that sets the status) unless it
+--      is conditional. A legacy PUBLISHED version of another class is left alone, because changing it would rewrite what customers
+--      were shown: public.adjustment_legacy_fee_rules(tenant) lists them so the 3PL can retire and republish them as conditional.
+update public.surcharge_rule_versions v set charge_class = 'conditional'
+  from public.surcharge_rules r
+ where r.id = v.rule_id and r.category in ('reweight', 'remeasure', 'shipping_charge_correction') and v.status = 'draft' and v.charge_class <> 'conditional';
+
+create function app.guard_adjustment_fee_class_publish() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare v_category text;
+begin
+  select r.category into v_category from public.surcharge_rules r where r.id = new.rule_id;
+  if v_category in ('reweight', 'remeasure', 'shipping_charge_correction') and new.charge_class <> 'conditional' then
+    raise exception 'a reweigh, remeasure or correction fee is a conditional charge; make this version conditional before it is published' using errcode = '23514';
+  end if;
+  return new;
+end $$;
+create trigger srv_adjustment_fee_class_publish before update of status on public.surcharge_rule_versions
+  for each row when (new.status = 'published' and old.status is distinct from 'published') execute function app.guard_adjustment_fee_class_publish();
 
 -- ---------------------------------------------------------------------------
 -- SECTION 1: the seven staff-only tables
@@ -389,7 +494,9 @@ create table public.adjustment_records (
   adjustment_type       text not null check (adjustment_type in ('reweight', 'remeasure', 'combined', 'correction')),
   cause                 text not null check (cause in ('wms_no_weight', 'scale_error', 'carrier_reweigh', 'carrier_remeasure', 'packaging_change', 'other')),
   reason_text           text check (reason_text is null or char_length(reason_text) <= 120),
-  -- A carrier tracking number (or equivalent), unique per carrier; an order number alone is not a package reference.
+  -- A carrier tracking number (or equivalent), unique per carrier; an order number alone is not a package reference. Always stored in
+  -- its canonical form (app.canon_package_ref: NFKC, no whitespace or invisible characters, ASCII upper case) so 'x', 'X' and ' X' are
+  -- one package for the unique index, the duplicate checks and the "already imported" count.
   package_ref           text check (package_ref is null or char_length(package_ref) between 1 and 120),
   declared_weight_lb    numeric(12,6) check (declared_weight_lb is null or declared_weight_lb > 0),
   declared_weight_basis text not null default 'measured' check (declared_weight_basis in ('measured', 'fallback', 'missing')),
@@ -411,7 +518,8 @@ create table public.adjustment_records (
   constraint adjustment_records_brand_in_tenant foreign key (brand_id, tenant_id) references public.brands (id, tenant_id) on delete restrict,
   constraint adjustment_records_orig_dims_all_or_none check ((orig_length_in is null) = (orig_width_in is null) and (orig_width_in is null) = (orig_height_in is null)),
   constraint adjustment_records_corr_dims_all_or_none check ((corr_length_in is null) = (corr_width_in is null) and (corr_width_in is null) = (corr_height_in is null)),
-  constraint adjustment_records_weight_basis check ((declared_weight_basis = 'missing') = (declared_weight_lb is null))
+  constraint adjustment_records_weight_basis check ((declared_weight_basis = 'missing') = (declared_weight_lb is null)),
+  constraint adjustment_records_package_ref_canonical check (package_ref is null or package_ref = app.canon_package_ref(package_ref))
 );
 create unique index adjustment_records_package_key on public.adjustment_records
   (tenant_id, coalesce(brand_id, '00000000-0000-0000-0000-000000000000'::uuid), carrier_code, package_ref, adjustment_type)
@@ -461,6 +569,9 @@ create table public.adjustment_scenarios (
   rule_version_ids     uuid[] not null default '{}',
   override_ids         uuid[] not null default '{}',
   policy_snapshot      jsonb not null default '{}'::jsonb check (jsonb_typeof(policy_snapshot) = 'object'),
+  -- The pricing context the example was priced in, beyond the pinned versions: {"ruleKeysInForce":[text],"zipListVersionIds":[uuid],
+  -- "source":"client"|"server"} (see the p_pins contract in the header). Compared again at preview, publish and read time.
+  pricing_context      jsonb not null default '{}'::jsonb check (jsonb_typeof(pricing_context) = 'object' and pg_column_size(pricing_context) <= 32768),
   priced_on            date not null,
   archived_at          timestamptz,
   created_by           uuid references auth.users (id) on delete set null,
@@ -676,20 +787,165 @@ $$;
 alter table public.published_adjustment_examples add constraint published_examples_payload_guard
   check (coalesce(app.customer_json_ok(payload, app.shape_published_payload()), false));
 
--- The forbidden-header test (a best-effort backstop to the TypeScript guard: no test can prove a number is customer-facing).
--- A header is normalised to lower-case words; cost-like words refuse it, and "carrier" beside a money word refuses it
--- unless the header says it is the customer's ("Carrier Charge to Customer" passes; "Carrier Adjustment" does not).
-create function app.adjustment_header_forbidden(p text) returns boolean
+-- ---------------------------------------------------------------------------
+-- The forbidden-header test: a best-effort backstop to the TypeScript guard (no test can prove a number is customer-facing)
+-- ---------------------------------------------------------------------------
+-- Step 1 (fold): Unicode compatibility decomposition (NFKD: fullwidth and styled letters become plain ones, accented letters split
+-- from their accent), then every invisible format character (zero-width space and joiners, soft hyphen, bidi marks, byte order mark,
+-- word joiner, tag characters, variation selectors, fillers) and every combining mark is removed, then common Cyrillic, Greek and
+-- Latin small-capital look-alikes are mapped to the Latin letter they imitate. Case and punctuation are kept.
+create function app.adjustment_header_fold(p text) returns text
+language sql immutable parallel safe set search_path = '' as $$
+  select translate(
+    regexp_replace(
+      regexp_replace(normalize(p, nfkd),
+        '[\u00ad\u034f\u0600-\u0605\u061c\u06dd\u070f\u0890\u0891\u08e2\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff9-\ufffb\U000110bd\U000110cd\U00013430-\U0001343f\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0001\U000e0020-\U000e007f\U000e0100-\U000e01ef]',
+        '', 'g'),
+      '[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f]', '', 'g'),
+    U&'\0410\0412\0415\041A\041C\041D\041E\0420\0421\0422\0425\0423\0406\0408\0405\0430\0432\0435\043A\043C\043D\043E\0440\0441\0442\0445\0443\0456\0458\0455\04BB\0501\051B\051D\04CF\0391\0392\0395\0396\0397\0399\039A\039C\039D\039F\03A1\03A4\03A5\03A7\03B1\03B5\03B9\03BA\03BD\03BF\03C1\03C4\03C5\03C7\03B3\03C9\03BC\03B7\0131\0251\0261\1D00\1D04\1D07\1D0F\1D1B\A731\0262\0299\1D18\0280\026A\0274\1D0D\029F\1D1C\1D20\1D21\1D22\1D05\029C\1D0A\1D0B',
+    'ABEKMHOPCTXYIJSabekmhopctxyijshdqwlABEZHIKMNOPTYXaeikvoptuxywuniagaceotsgbprinmluvwzdhjk');
+$$;
+
+-- Step 2 (norm): split camelCase ("CarrierCost", "UPSCost"), lower-case ASCII, every run of other characters becomes one space.
+-- The result holds only a-z, 0-9 and single spaces ('' when the header has no letter or digit we can read).
+create function app.adjustment_header_norm(p text) returns text
+language sql immutable parallel safe set search_path = '' as $$
+  select btrim(regexp_replace(
+    translate(
+      regexp_replace(regexp_replace(app.adjustment_header_fold(left(coalesce(p, ''), 400)), '([a-z0-9])([A-Z])', '\1 \2', 'g'), '([A-Z]+)([A-Z][a-z])', '\1 \2', 'g'),
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'),
+    '[^a-z0-9]+', ' ', 'g'));
+$$;
+
+-- The rule, in the order it is applied (it mirrors guardHeader in src/lib/adjustments/header-guard.ts; the shared table of outcomes
+-- is tests/fixtures/adjustments/header-guard.json). NULL or blank passes; a header longer than 200 characters is refused; an exact
+-- template header (after normalisation) always passes; a header that still holds a letter outside ASCII after the fold (mixed
+-- scripts, or letters that look like nothing we know) or that normalises to nothing is refused; then a word of the strict list
+-- (cost, rate, postage, label, net, wholesale, negotiated, paid, invoice, buy, optional plural, "invoiced"; a number on either end of
+-- a word does not make it another word) or a long stem inside a longer word (wholesale, negotiated, postage, invoice) refuses it;
+-- finally "carrier", or a carrier brand (ups, usps, fedex, dhl, ontrac, lasership), beside a money word refuses it unless the
+-- header says it is the customer's ("customer", "charged to", "billed to"). A bare "Carrier Name" passes here (the TypeScript guard
+-- refuses it and asks the 3PL to rename the column; the backstop only has to catch what the TypeScript guard would have caught).
+create function app.adjustment_template_headers() returns text[]
+language sql immutable parallel safe set search_path = '' as $$
+  select array['ship date', 'adjusted on', 'carrier', 'service', 'brand', 'adjustment type', 'cause', 'reason', 'package ref',
+    'declared weight', 'actual weight', 'weight unit', 'original length', 'original width', 'original height', 'corrected length', 'corrected width',
+    'corrected height', 'dimension unit', 'customer charge original', 'customer charge corrected', 'customer adjustment fee', 'handling'];
+$$;
+
+-- The word rules alone, on an already normalised header: an exact template header passes; a word of the strict list, a long stem, or
+-- "carrier" / a carrier brand beside a money word (without the customer's own wording) refuses it.
+create function app.adjustment_header_words_forbidden(p_norm text) returns boolean
 language plpgsql immutable parallel safe set search_path = '' as $$
-declare h text := btrim(lower(regexp_replace(coalesce(p, ''), '[^a-zA-Z0-9]+', ' ', 'g')));
+declare
+  v_tok text; v_word text; v_carrier boolean := false; v_carrier_money boolean := false; v_brand boolean := false; v_brand_money boolean := false;
 begin
-  if h ~ '\m(cost|costs|wholesale|negotiated|buy|invoice|invoiced|net|paid|postage|rate|rates|label|labels)\M' then return true; end if;
-  if h ~ '\mcarrier\M' and h ~ '\m(charge|charges|cost|bill|billed|billing|fee|fees|adjustment|adjustments|amount|invoice|rate|rates)\M'
-     and not (h ~ '\mcustomer\M' or h ~ '\mcharged to\M' or h ~ '\mbilled to\M') then
-    return true;
+  if p_norm is null or p_norm = '' or p_norm = any (app.adjustment_template_headers()) then return false; end if;
+  -- A carrier brand, in any spelling (camelCase splitting turns FedEx into 'fed ex', OnTrac into 'on trac', LaserShip into 'laser ship').
+  v_brand := p_norm ~ '\m(ups|usps|dhl|fedex|fed ex|ontrac|on trac|lasership|laser ship)[0-9]*\M';
+  for v_tok in select t from unnest(string_to_array(p_norm, ' ')) t loop
+    v_word := regexp_replace(v_tok, '^[0-9]+|[0-9]+$', '', 'g');
+    if v_word ~ '^(cost|rate|postage|label|net|wholesale|negotiated|paid|invoice|buy)s?$' or v_word = 'invoiced' then return true; end if;
+    if v_tok ~ '(wholesale|negotiated|postage|invoice)' then return true; end if;
+    if v_word ~ '^carriers?$' then v_carrier := true; end if;
+    if v_word ~ '^(charge|bill|billed|billing|fee|adjustment|amount|price|total|paid)s?$' then v_carrier_money := true; end if;
+    if v_word ~ '^(charge|fee|amount|price|total|billed)s?$' then v_brand_money := true; end if;
+  end loop;
+  if (v_carrier and v_carrier_money) or (v_brand and v_brand_money) then
+    if not (p_norm ~ '\mcustomer\M' or p_norm ~ '\mcharged to\M' or p_norm ~ '\mbilled to\M') then return true; end if;
   end if;
   return false;
 end $$;
+
+create function app.adjustment_header_forbidden(p text) returns boolean
+language plpgsql immutable parallel safe set search_path = '' as $$
+declare
+  v_raw text := coalesce(p, '');
+  v_norm text;
+begin
+  if btrim(v_raw, E' \t\r\n') = '' then return false; end if;
+  if char_length(v_raw) > 200 then return true; end if;
+  v_norm := app.adjustment_header_norm(v_raw);
+  if v_norm = any (app.adjustment_template_headers()) then return false; end if;
+  if app.adjustment_header_fold(v_raw) ~ '[^\x00-\x7f\u0080-\u00bf\u2000-\u2bff\u3000-\u303f]' then return true; end if;
+  if v_norm = '' then return true; end if;
+  return app.adjustment_header_words_forbidden(v_norm);
+end $$;
+
+-- The first fifty non-blank lines of a stored CSV or text file, read as the database sees the bytes. A line that can be a header is
+-- tested cell by cell: the first line always, and any later line with at least three filled cells of which at most a quarter are
+-- numbers or dates (a title row, or a header below a title block). Data rows are not tested, so a service named "USPS Priority Mail
+-- Flat Rate" in a data cell never refuses a file. UTF-16 and NUL-bearing text cannot be read here at all, so it is refused with its own
+-- reason (a LATIN1 fallback on such bytes would raise instead). Returns {ok:true}, {ok:false, reason:'unsupported_encoding'} or
+-- {ok:false, reason:'forbidden_header', header}. XLSX and other binary files are not read here (the declared headers are tested).
+create function app.adjustment_scan_file(p_content bytea, p_mime text, p_filename text) returns jsonb
+language plpgsql set search_path = '' as $$
+declare
+  v_head bytea; v_text text; v_lines text[]; v_line text; v_cells text[]; v_cell text; v_n integer := 0; v_filled integer; v_numeric integer; v_k integer;
+begin
+  if p_content is null then return jsonb_build_object('ok', true); end if;
+  if not (coalesce(p_mime, '') ~* '(csv|text/plain)' or coalesce(p_filename, '') ~* '\.(csv|txt)$') then return jsonb_build_object('ok', true); end if;
+  v_head := substring(p_content from 1 for 65536);
+  if position('\x00'::bytea in v_head) > 0 or substring(v_head from 1 for 2) in ('\xfffe'::bytea, '\xfeff'::bytea) then
+    return jsonb_build_object('ok', false, 'reason', 'unsupported_encoding');
+  end if;
+  -- UTF-8 first (a multi-byte character cut by the 64 KB limit costs at most three bytes), else LATIN1, which cannot fail without NUL.
+  for v_k in 0..3 loop
+    begin
+      v_text := convert_from(substring(v_head from 1 for octet_length(v_head) - v_k), 'UTF8');
+      exit;
+    exception when others then
+      v_text := null;
+    end;
+  end loop;
+  if v_text is null then v_text := convert_from(v_head, 'LATIN1'); end if;
+  v_lines := regexp_split_to_array(replace(replace(replace(v_text, E'\r\n', E'\n'), E'\r', E'\n'), E'\ufeff', ''), E'\n');
+  foreach v_line in array v_lines loop
+    if btrim(v_line, E' \t') = '' then continue; end if;
+    v_n := v_n + 1;
+    exit when v_n > 50;
+    v_cells := regexp_split_to_array(v_line, E'[,;\t|]');
+    v_filled := 0; v_numeric := 0;
+    foreach v_cell in array v_cells loop
+      v_cell := btrim(v_cell, E' \t"''');
+      if v_cell = '' then continue; end if;
+      v_filled := v_filled + 1;
+      if v_cell ~* '^[^0-9a-z]*[0-9][0-9,. ]*[^0-9a-z]*(usd)?$' or v_cell ~ '^[0-9]{1,4}[-/.][0-9]{1,2}[-/.][0-9]{1,4}' then v_numeric := v_numeric + 1; end if;
+    end loop;
+    if v_n > 1 and (v_filled < 3 or v_numeric * 4 > v_filled) then continue; end if;
+    foreach v_cell in array v_cells loop
+      v_cell := btrim(v_cell, E' \t"''');
+      if v_cell = '' then continue; end if;
+      if (v_n = 1 and app.adjustment_header_forbidden(v_cell)) or (v_n > 1 and app.adjustment_header_words_forbidden(app.adjustment_header_norm(v_cell))) then
+        return jsonb_build_object('ok', false, 'reason', 'forbidden_header', 'header', left(v_cell, 120));
+      end if;
+    end loop;
+  end loop;
+  return jsonb_build_object('ok', true);
+end $$;
+
+-- Raw history files: refused before they are stored (a flagged header, an unreadable encoding) and bounded per account (at most five
+-- unattached files; see the header of this file for the bound). The policy files_insert already demands the uploader, a null brand and
+-- adjustment.manage; this trigger adds what a policy cannot read: the bytes.
+create function app.guard_adjustment_file_insert() returns trigger
+language plpgsql security definer set search_path = '' as $$
+declare v_scan jsonb;
+begin
+  if new.purpose is distinct from 'adjustment_import' then return new; end if;
+  v_scan := app.adjustment_scan_file(new.content, new.mime_type, new.filename);
+  if not (v_scan ->> 'ok')::boolean then
+    raise exception 'this file was not saved' using errcode = 'P0001', hint = v_scan ->> 'reason', detail = coalesce(left(v_scan ->> 'header', 120), '');
+  end if;
+  perform app.adjustment_lock(new.tenant_id);
+  if (select count(*) from public.uploaded_files f
+       where f.tenant_id = new.tenant_id and f.purpose = 'adjustment_import'
+         and not exists (select 1 from public.adjustment_imports i where i.file_id = f.id)) >= 5 then
+    raise exception 'too many uploaded files are waiting for an import; finish or discard one first' using errcode = 'P0001', hint = 'too_many_unattached_files';
+  end if;
+  return new;
+end $$;
+create trigger uploaded_files_adjustment_guard before insert on public.uploaded_files
+  for each row execute function app.guard_adjustment_file_insert();
 
 -- ---------------------------------------------------------------------------
 -- SECTION 3: write protection, row level security, grants
@@ -699,10 +955,17 @@ end $$;
 create function app.guard_adjustment_write() returns trigger
 language plpgsql set search_path = '' as $$
 declare
-  v_n jsonb; v_o jsonb;
+  v_n jsonb; v_o jsonb; v_unstarted boolean := false;
   -- Columns that a foreign key action (deleting a user, a service or an uploaded file) may clear without an RPC.
   v_actors text[] := array['created_by', 'attested_by', 'published_by', 'retired_by', 'file_id', 'service_id'];
 begin
+  -- A Data API role never passes, whatever it set: the signal below is an ordinary setting that any session can switch on, so it is
+  -- only trusted from a function's owner (inside a SECURITY DEFINER function, or a foreign-key action, current_user is the owner).
+  if current_user in ('anon', 'authenticated', 'authenticator') then
+    raise exception 'adjustment data changes only through its functions' using errcode = '42501';
+  end if;
+  -- An insert needs no signal (the functions and the owner insert freely; the Data API roles were refused above and hold no INSERT grant).
+  if tg_op = 'INSERT' then return new; end if;
   if current_setting('app.adjustment_rpc', true) is distinct from 'on' then
     if tg_op = 'UPDATE' then
       v_n := to_jsonb(new); v_o := to_jsonb(old);
@@ -714,8 +977,11 @@ begin
     raise exception 'adjustment data changes only through its functions' using errcode = '42501';
   end if;
   if tg_op = 'DELETE' then
-    -- Records and baselines are removed by the import and baseline functions; everything else only by the offboarding functions.
-    if tg_table_name not in ('adjustment_records', 'adjustment_baselines') and current_setting('app.adjustment_purge', true) is distinct from 'on' then
+    -- Records and baselines are removed by the import and baseline functions; a decision that has not started yet (it never governed
+    -- anything) by end_adjustment_policy; everything else only by the offboarding functions.
+    if tg_table_name = 'adjustment_policies' then v_unstarted := old.valid_from > app.utc_today(); end if;
+    if tg_table_name not in ('adjustment_records', 'adjustment_baselines') and not v_unstarted
+       and current_setting('app.adjustment_purge', true) is distinct from 'on' then
       raise exception 'this data is removed only by the offboarding functions' using errcode = '42501';
     end if;
     return old;
@@ -752,13 +1018,13 @@ begin
   return new;
 end $$;
 
-create trigger adjustment_policies_guard before update or delete on public.adjustment_policies for each row execute function app.guard_adjustment_write();
-create trigger adjustment_imports_guard before update or delete on public.adjustment_imports for each row execute function app.guard_adjustment_write();
-create trigger adjustment_records_guard before update or delete on public.adjustment_records for each row execute function app.guard_adjustment_write();
-create trigger adjustment_baselines_guard before update or delete on public.adjustment_baselines for each row execute function app.guard_adjustment_write();
-create trigger adjustment_scenarios_guard before update or delete on public.adjustment_scenarios for each row execute function app.guard_adjustment_write();
-create trigger risk_estimates_guard before update or delete on public.risk_estimates for each row execute function app.guard_adjustment_write();
-create trigger published_examples_guard before update or delete on public.published_adjustment_examples for each row execute function app.guard_adjustment_write();
+create trigger adjustment_policies_guard before insert or update or delete on public.adjustment_policies for each row execute function app.guard_adjustment_write();
+create trigger adjustment_imports_guard before insert or update or delete on public.adjustment_imports for each row execute function app.guard_adjustment_write();
+create trigger adjustment_records_guard before insert or update or delete on public.adjustment_records for each row execute function app.guard_adjustment_write();
+create trigger adjustment_baselines_guard before insert or update or delete on public.adjustment_baselines for each row execute function app.guard_adjustment_write();
+create trigger adjustment_scenarios_guard before insert or update or delete on public.adjustment_scenarios for each row execute function app.guard_adjustment_write();
+create trigger risk_estimates_guard before insert or update or delete on public.risk_estimates for each row execute function app.guard_adjustment_write();
+create trigger published_examples_guard before insert or update or delete on public.published_adjustment_examples for each row execute function app.guard_adjustment_write();
 
 -- Two policies per table and nothing else: a permissive staff read, and a restrictive "staff only, never writable"
 -- policy so that a permissive policy added later cannot widen access. No INSERT/UPDATE/DELETE grant exists.
@@ -797,6 +1063,15 @@ create function app.audit_adjustments() returns trigger
 language plpgsql security definer set search_path = '' as $$
 begin
   if tg_table_name = 'adjustment_policies' then
+    if tg_op = 'DELETE' then
+      -- Only a decision that never started can be deleted outside a purge (end_adjustment_policy voids it); a purge writes one
+      -- adjustment.data_purged row instead of one row per policy.
+      if current_setting('app.adjustment_purge', true) is distinct from 'on' then
+        perform app.write_audit(old.tenant_id, old.brand_id, 'adjustment.policy_ended', 'adjustment_policy', old.id::text,
+          jsonb_build_object('adjustment_type', old.adjustment_type, 'component', old.component, 'valid_from', old.valid_from, 'voided', true));
+      end if;
+      return old;
+    end if;
     if tg_op = 'INSERT' or (tg_op = 'UPDATE' and (new.handling is distinct from old.handling or new.internal_note is distinct from old.internal_note
                                                   or (new.valid_to is null and old.valid_to is not null))) then
       perform app.write_audit(new.tenant_id, new.brand_id, 'adjustment.policy_set', 'adjustment_policy', new.id::text,
@@ -844,7 +1119,7 @@ begin
   end if;
   return coalesce(new, old);
 end $$;
-create trigger adjustment_policies_audit after insert or update on public.adjustment_policies for each row execute function app.audit_adjustments();
+create trigger adjustment_policies_audit after insert or update or delete on public.adjustment_policies for each row execute function app.audit_adjustments();
 create trigger adjustment_imports_audit after update on public.adjustment_imports for each row execute function app.audit_adjustments();
 create trigger adjustment_baselines_audit after insert or update or delete on public.adjustment_baselines for each row execute function app.audit_adjustments();
 create trigger adjustment_scenarios_audit after insert on public.adjustment_scenarios for each row execute function app.audit_adjustments();
@@ -886,6 +1161,24 @@ begin
   return p::numeric;
 end $$;
 
+-- The validation report is built from the file, so a column header or a customer name in it can be as long as the file allows.
+-- What is stored keeps the numbers and the codes whole and cuts that text down: at most 50 ignored columns and 50 customers, each
+-- name at most 80 and 120 characters. (A NUL character cannot reach this function: jsonb has no representation for it, so it is
+-- refused as SQLSTATE 22P05 when the argument is converted, before any function body runs; the TypeScript layer strips it first.)
+create function app.clean_import_validation(p jsonb) returns jsonb
+language sql immutable set search_path = '' as $$
+  select case when jsonb_typeof(p) is distinct from 'object' then p else p
+    || case when jsonb_typeof(p -> 'ignoredColumns') = 'array' then jsonb_build_object('ignoredColumns', coalesce((
+         select jsonb_agg(case when jsonb_typeof(e.value) = 'object' and jsonb_typeof(e.value -> 'header') = 'string'
+                               then e.value || jsonb_build_object('header', left(e.value ->> 'header', 80)) else e.value end order by e.ord)
+         from jsonb_array_elements(p -> 'ignoredColumns') with ordinality as e(value, ord) where e.ord <= 50), '[]'::jsonb)) else '{}'::jsonb end
+    || case when jsonb_typeof(p -> 'customers') = 'array' then jsonb_build_object('customers', coalesce((
+         select jsonb_agg(case when jsonb_typeof(e.value) = 'object' and jsonb_typeof(e.value -> 'text') = 'string'
+                               then e.value || jsonb_build_object('text', left(e.value ->> 'text', 120)) else e.value end order by e.ord)
+         from jsonb_array_elements(p -> 'customers') with ordinality as e(value, ord) where e.ord <= 50), '[]'::jsonb)) else '{}'::jsonb end
+  end;
+$$;
+
 create function app.add_problem(p_list jsonb, p_code text, p_message text) returns jsonb
 language sql immutable set search_path = '' as $$
   select p_list || jsonb_build_array(jsonb_build_object('code', p_code, 'message', p_message));
@@ -900,7 +1193,7 @@ create function public.set_adjustment_policy(p_tenant uuid, p_brand uuid, p_type
                                              p_valid_from date default null, p_note text default null) returns uuid
 language plpgsql security definer set search_path = '' as $$
 declare
-  v_from date := coalesce(p_valid_from, current_date);
+  v_from date := coalesce(p_valid_from, app.utc_today());
   v_note text := nullif(btrim(coalesce(p_note, '')), '');
   v_open public.adjustment_policies%rowtype;
   v_id uuid;
@@ -915,7 +1208,8 @@ begin
     raise exception 'invalid policy' using errcode = 'PC001';
   end if;
   if v_note is not null and char_length(v_note) > 1000 then raise exception 'the private note is limited to 1000 characters' using errcode = 'PC001'; end if;
-  if v_from < current_date then raise exception 'a decision takes effect today or later' using errcode = 'PC001'; end if;
+  -- Today (UTC) or a date up to a year ahead: a date far in the future (or 'infinity') would block every later decision for the cell.
+  if v_from < app.utc_today() or v_from > app.utc_today() + 366 then raise exception 'a decision takes effect from today up to a year ahead' using errcode = 'PC001'; end if;
   perform app.adjustment_lock(p_tenant);
   perform set_config('app.adjustment_rpc', 'on', true);
   select * into v_open from public.adjustment_policies p
@@ -952,15 +1246,32 @@ begin
 end $$;
 
 -- Ends a decision (it reads "Not decided" afterwards). The last day defaults to yesterday, or the first day when it started today.
+-- A decision that has not started yet and is ended before its first day is VOIDED: the row is deleted (it never governed anything) and
+-- the decision it was due to replace carries on as if the change had never been scheduled.
 create function public.end_adjustment_policy(p_policy uuid, p_last_day date default null) returns void
 language plpgsql security definer set search_path = '' as $$
-declare v_t uuid; v public.adjustment_policies%rowtype; v_last date;
+declare v_t uuid; v public.adjustment_policies%rowtype; v_last date; v_today date := app.utc_today();
 begin
   select tenant_id into v_t from public.adjustment_policies where id = p_policy;
   if v_t is null or not app.can_manage_adjustments(v_t) then raise exception 'not found' using errcode = 'P0002'; end if;
   perform app.adjustment_lock(v_t);
   select * into v from public.adjustment_policies where id = p_policy for update;
-  v_last := coalesce(p_last_day, greatest(v.valid_from, current_date - 1));
+  if not found then raise exception 'not found' using errcode = 'P0002'; end if;
+  if v.valid_from > v_today and (p_last_day is null or p_last_day < v.valid_from) then
+    perform set_config('app.adjustment_rpc', 'on', true);
+    delete from public.adjustment_policies where id = p_policy;
+    -- (The decision scheduled to replace it ended the day before the voided one began: it runs on again, up to the next decision that
+    -- is scheduled after it, or without an end.)
+    update public.adjustment_policies p
+       set valid_to = (select min(n.valid_from) - 1 from public.adjustment_policies n
+                        where n.tenant_id = v.tenant_id and n.brand_id is not distinct from v.brand_id and n.adjustment_type = v.adjustment_type
+                          and n.component = v.component and n.valid_from > v.valid_from)
+     where p.tenant_id = v.tenant_id and p.brand_id is not distinct from v.brand_id and p.adjustment_type = v.adjustment_type
+       and p.component = v.component and p.valid_to = v.valid_from - 1;
+    perform set_config('app.adjustment_rpc', 'off', true);
+    return;
+  end if;
+  v_last := coalesce(p_last_day, greatest(v.valid_from, v_today - 1));
   if v_last < v.valid_from then raise exception 'the last day precedes the first day' using errcode = 'PC001'; end if;
   if v.valid_to is not null and v.valid_to <= v_last then return; end if;
   perform set_config('app.adjustment_rpc', 'on', true);
@@ -978,7 +1289,7 @@ language plpgsql security definer set search_path = '' as $$
 declare
   f public.uploaded_files%rowtype;
   v_name text := btrim(coalesce(p_name, ''));
-  v_bad text; v_line text; v_id uuid;
+  v_bad text; v_scan jsonb; v_id uuid;
 begin
   select * into f from public.uploaded_files where id = p_file;
   if not found or f.purpose <> 'adjustment_import' or f.brand_id is not null or f.uploaded_by is distinct from (select auth.uid())
@@ -986,6 +1297,9 @@ begin
     raise exception 'not found' using errcode = 'P0002';
   end if;
   perform app.adjustment_lock(f.tenant_id);
+  -- Read again under the lock: discard_unattached_adjustment_file may have removed the file while this call waited.
+  select * into f from public.uploaded_files where id = p_file for update;
+  if not found then raise exception 'not found' using errcode = 'P0002'; end if;
   if char_length(v_name) not between 1 and 160 then raise exception 'the name must be 1 to 160 characters' using errcode = 'PC001'; end if;
   if p_detected is null or jsonb_typeof(p_detected) <> 'object' or pg_column_size(p_detected) > 65536
      or jsonb_typeof(coalesce(p_detected -> 'headers', '[]'::jsonb)) <> 'array' or jsonb_array_length(coalesce(p_detected -> 'headers', '[]'::jsonb)) > 200
@@ -993,25 +1307,22 @@ begin
     raise exception 'invalid file details' using errcode = 'PC001';
   end if;
 
-  -- Forbidden headers: the declared headers, the keys of the sample rows and, for CSV, the first line of the stored bytes.
+  -- Forbidden headers: the declared headers, the keys of the sample rows and the stored bytes themselves (the first fifty lines of a
+  -- CSV or text file, wherever the header sits; UTF-16 and NUL-bearing text is refused as unreadable, never raised on).
   select q.h into v_bad from (
     select x.h from jsonb_array_elements_text(coalesce(p_detected -> 'headers', '[]'::jsonb)) x(h)
     union all
     select k from jsonb_array_elements(coalesce(p_detected -> 'sampleRows', '[]'::jsonb)) r(obj)
       cross join lateral jsonb_object_keys(case when jsonb_typeof(r.obj) = 'object' then r.obj else '{}'::jsonb end) k
   ) q where app.adjustment_header_forbidden(q.h) limit 1;
-  if v_bad is null and (f.mime_type ~* '(csv|text/plain)' or f.filename ~* '\.(csv|txt)$') then
-    begin
-      v_line := convert_from(substring(f.content from 1 for 8192), 'UTF8');
-    exception when others then
-      v_line := convert_from(substring(f.content from 1 for 8192), 'LATIN1');
-    end;
-    v_line := split_part(replace(replace(v_line, E'\r', ''), E'﻿', ''), E'\n', 1);
-    select btrim(h, ' "''') into v_bad from regexp_split_to_table(v_line, '[,;' || E'\t' || ']') h where app.adjustment_header_forbidden(h) limit 1;
-  end if;
   if v_bad is not null then
     delete from public.uploaded_files where id = p_file;
     return jsonb_build_object('ok', false, 'reason', 'forbidden_header', 'header', left(v_bad, 120));
+  end if;
+  v_scan := app.adjustment_scan_file(f.content, f.mime_type, f.filename);
+  if not (v_scan ->> 'ok')::boolean then
+    delete from public.uploaded_files where id = p_file;
+    return jsonb_build_object('ok', false) || (v_scan - 'ok');
   end if;
 
   if not public.check_rate_limit('adjustment.import', 30, 3600) then raise exception 'too many imports; try again later' using errcode = '53400'; end if;
@@ -1028,13 +1339,32 @@ begin
   return jsonb_build_object('ok', true, 'importId', v_id);
 end $$;
 
+-- Deletes an uploaded history file that no import refers to: what the server action calls when anything after the upload fails (a
+-- refused name, a rate limit, a crash), so an upload never stays behind. It is the ONLY way a caller removes a raw file: the Data
+-- API roles hold no DELETE on uploaded_files. Anything else (no such file, another purpose, another account, no permission, a file an
+-- import already holds) is the same "not found".
+create function public.discard_unattached_adjustment_file(p_file uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare f public.uploaded_files%rowtype;
+begin
+  select * into f from public.uploaded_files where id = p_file;
+  if not found or f.purpose <> 'adjustment_import' or not app.can_manage_adjustments(f.tenant_id)
+     or exists (select 1 from public.adjustment_imports i where i.file_id = p_file) then
+    raise exception 'not found' using errcode = 'P0002';
+  end if;
+  perform app.adjustment_lock(f.tenant_id);
+  -- Under the lock an import may have taken the file in the meantime.
+  if exists (select 1 from public.adjustment_imports i where i.file_id = p_file) then raise exception 'not found' using errcode = 'P0002'; end if;
+  delete from public.uploaded_files where id = p_file;
+end $$;
+
 -- Saves the mapping and, with a validation report and the attestation, marks the import validated. Returns the new status.
 -- mapping.fields maps each target field to the header it reads; a flagged header can never be mapped.
 create function public.set_adjustment_import_mapping(p_import uuid, p_mapping jsonb, p_validation jsonb default null,
                                                      p_duplicate_handling text default 'refuse', p_attested boolean default false) returns text
 language plpgsql security definer set search_path = '' as $$
 declare
-  v_t uuid; i public.adjustment_imports%rowtype; v_bad text; v_rows integer; v_acc integer; v_status text;
+  v_t uuid; i public.adjustment_imports%rowtype; v_bad text; v_rows integer; v_acc integer; v_status text; v_val jsonb;
 begin
   select tenant_id into v_t from public.adjustment_imports where id = p_import;
   if v_t is null or not app.can_manage_adjustments(v_t) then raise exception 'not found' using errcode = 'P0002'; end if;
@@ -1043,31 +1373,37 @@ begin
   if i.status not in ('uploaded', 'mapped', 'validated') then raise exception 'this import is no longer being edited' using errcode = 'P0004'; end if;
   if p_mapping is null or jsonb_typeof(p_mapping) <> 'object' or pg_column_size(p_mapping) > 8192
      or jsonb_typeof(coalesce(p_mapping -> 'fields', '{}'::jsonb)) <> 'object'
-     or (p_validation is not null and (jsonb_typeof(p_validation) <> 'object' or pg_column_size(p_validation) > 32768))
      or p_duplicate_handling is null or p_duplicate_handling not in ('refuse', 'sum', 'first') then
     raise exception 'invalid mapping' using errcode = 'PC001';
+  end if;
+  -- The report is cut down BEFORE its size is judged (see app.clean_import_validation): long header text must not make a good file
+  -- impossible to validate. What remains must fit the 32 KB the table allows.
+  if p_validation is not null then
+    if jsonb_typeof(p_validation) <> 'object' or pg_column_size(p_validation) > 1048576 then raise exception 'the validation report is too large' using errcode = 'PC001'; end if;
+    v_val := app.clean_import_validation(p_validation);
+    if pg_column_size(v_val) > 32768 then raise exception 'the validation report is too large' using errcode = 'PC001'; end if;
   end if;
   select e.value into v_bad from jsonb_each_text(coalesce(p_mapping -> 'fields', '{}'::jsonb)) e where app.adjustment_header_forbidden(e.value) limit 1;
   if v_bad is not null then
     raise exception 'a column that looks like carrier cost data cannot be mapped' using errcode = 'P0001', detail = left(v_bad, 120);
   end if;
-  if p_validation is null then
+  if v_val is null then
     v_status := 'mapped';
     perform set_config('app.adjustment_rpc', 'on', true);
     update public.adjustment_imports set status = 'mapped', mapping = p_mapping, validation = null, duplicate_handling = p_duplicate_handling,
            accepted_count = 0, row_count = 0, attested_by = null, attested_at = null where id = p_import;
     perform set_config('app.adjustment_rpc', 'off', true);
   else
-    if (p_validation #>> '{counts,accepted}') is null or (p_validation #>> '{counts,accepted}') !~ '^[0-9]{1,7}$'
-       or (p_validation #>> '{counts,rows}') is null or (p_validation #>> '{counts,rows}') !~ '^[0-9]{1,7}$' then
+    if (v_val #>> '{counts,accepted}') is null or (v_val #>> '{counts,accepted}') !~ '^[0-9]{1,7}$'
+       or (v_val #>> '{counts,rows}') is null or (v_val #>> '{counts,rows}') !~ '^[0-9]{1,7}$' then
       raise exception 'the validation report must carry counts.rows and counts.accepted' using errcode = 'PC001';
     end if;
-    v_rows := (p_validation #>> '{counts,rows}')::integer; v_acc := (p_validation #>> '{counts,accepted}')::integer;
+    v_rows := (v_val #>> '{counts,rows}')::integer; v_acc := (v_val #>> '{counts,accepted}')::integer;
     if v_acc < 1 or v_acc > 100000 or v_rows < v_acc then raise exception 'nothing to import, or too many rows' using errcode = 'PC001'; end if;
     if p_attested is distinct from true then raise exception 'confirm that the amounts are what your customers were charged' using errcode = 'P0001'; end if;
     v_status := 'validated';
     perform set_config('app.adjustment_rpc', 'on', true);
-    update public.adjustment_imports set status = 'validated', mapping = p_mapping, validation = p_validation, duplicate_handling = p_duplicate_handling,
+    update public.adjustment_imports set status = 'validated', mapping = p_mapping, validation = v_val, duplicate_handling = p_duplicate_handling,
            accepted_count = v_acc, row_count = v_rows, attested_by = (select auth.uid()), attested_at = now() where id = p_import;
     perform set_config('app.adjustment_rpc', 'off', true);
     return v_status;
@@ -1089,8 +1425,8 @@ begin
         original_charge text, corrected_charge text, separate_fee text, handling_recorded text)
   ), checked as (
     select p.rn, case
-      when app.try_date(p.ship_date) is null or app.try_date(p.ship_date) not between date '2015-01-01' and current_date + 1 then 'invalid_ship_date'
-      when p.adjusted_on is not null and (app.try_date(p.adjusted_on) is null or app.try_date(p.adjusted_on) < app.try_date(p.ship_date) or app.try_date(p.adjusted_on) > current_date + 1) then 'invalid_adjusted_on'
+      when app.try_date(p.ship_date) is null or app.try_date(p.ship_date) not between date '2015-01-01' and app.utc_today() + 1 then 'invalid_ship_date'
+      when p.adjusted_on is not null and (app.try_date(p.adjusted_on) is null or app.try_date(p.adjusted_on) < app.try_date(p.ship_date) or app.try_date(p.adjusted_on) > app.utc_today() + 1) then 'invalid_adjusted_on'
       when p.carrier_code is null or not exists (select 1 from public.carriers c where c.code = p.carrier_code) then 'unknown_carrier'
       when p.service_id is not null and (app.try_uuid(p.service_id) is null or not exists (select 1 from public.shipping_services s where s.id = app.try_uuid(p.service_id) and s.carrier_code = p.carrier_code)) then 'unknown_service'
       when p.brand_id is not null and (app.try_uuid(p.brand_id) is null or not exists (select 1 from public.brands b where b.id = app.try_uuid(p.brand_id) and b.tenant_id = p_tenant)) then 'unknown_customer'
@@ -1098,7 +1434,10 @@ begin
       when p.cause is null or p.cause not in ('wms_no_weight', 'scale_error', 'carrier_reweigh', 'carrier_remeasure', 'packaging_change', 'other') then 'invalid_cause'
       when p.service_text is not null and char_length(p.service_text) > 160 then 'text_too_long'
       when p.reason_text is not null and char_length(p.reason_text) > 120 then 'text_too_long'
-      when p.package_ref is not null and char_length(p.package_ref) not between 1 and 120 then 'invalid_package_ref'
+      -- A reference is valid when its canonical form exists (no replacement character, something left after whitespace and invisible
+      -- characters are removed) and fits the column.
+      when p.package_ref is not null and (char_length(p.package_ref) not between 1 and 120 or app.canon_package_ref(p.package_ref) is null
+                                          or char_length(app.canon_package_ref(p.package_ref)) > 120) then 'invalid_package_ref'
       when p.basis not in ('measured', 'fallback', 'missing') then 'invalid_weight_basis'
       when (p.basis = 'missing') <> (p.declared_weight_lb is null) then 'weight_basis_mismatch'
       when p.declared_weight_lb is not null and coalesce(app.try_dec(p.declared_weight_lb, 6, 6), 0) <= 0 then 'invalid_weight'
@@ -1114,13 +1453,14 @@ begin
     end as reason
     from parsed p
   ), dup as (
+    -- Duplicates are judged on the CANONICAL reference: 'x', 'X' and ' X' are one package.
     select p.rn, 'duplicate_package' as reason
-    from (select q.rn, q.package_ref, q.carrier_code, q.adjustment_type, q.brand_id,
-                 row_number() over (partition by coalesce(app.try_uuid(q.brand_id), '00000000-0000-0000-0000-000000000000'::uuid), q.carrier_code, q.package_ref, q.adjustment_type order by q.rn) as k
-          from parsed q where q.package_ref is not null) p
+    from (select q.rn, app.canon_package_ref(q.package_ref) as cref, q.carrier_code, q.adjustment_type, q.brand_id,
+                 row_number() over (partition by coalesce(app.try_uuid(q.brand_id), '00000000-0000-0000-0000-000000000000'::uuid), q.carrier_code, app.canon_package_ref(q.package_ref), q.adjustment_type order by q.rn) as k
+          from parsed q where app.canon_package_ref(q.package_ref) is not null) p
     where p.k > 1
        or exists (select 1 from public.adjustment_records ar
-                  where ar.tenant_id = p_tenant and ar.package_ref = p.package_ref and ar.carrier_code = p.carrier_code and ar.adjustment_type = p.adjustment_type
+                  where ar.tenant_id = p_tenant and ar.package_ref = p.cref and ar.carrier_code = p.carrier_code and ar.adjustment_type = p.adjustment_type
                     and coalesce(ar.brand_id, '00000000-0000-0000-0000-000000000000'::uuid) = coalesce(app.try_uuid(p.brand_id), '00000000-0000-0000-0000-000000000000'::uuid)
                     and ar.import_id = p_import)
   )
@@ -1170,7 +1510,7 @@ begin
          package_ref, declared_weight_lb, declared_weight_basis, actual_weight_lb, orig_length_in, orig_width_in, orig_height_in, corr_length_in, corr_width_in, corr_height_in,
          original_charge, corrected_charge, separate_fee, handling_recorded)
   select v_t, p_import, p_from_row + e.rn - 1, r.brand_id::uuid, r.ship_date::date, r.adjusted_on::date, r.carrier_code, r.service_id::uuid, r.service_text, r.adjustment_type, r.cause, r.reason_text,
-         r.package_ref, r.declared_weight_lb::numeric, coalesce(r.declared_weight_basis, case when r.declared_weight_lb is null then 'missing' else 'measured' end), r.actual_weight_lb::numeric, r.orig_length_in::numeric, r.orig_width_in::numeric, r.orig_height_in::numeric,
+         app.canon_package_ref(r.package_ref), r.declared_weight_lb::numeric, coalesce(r.declared_weight_basis, case when r.declared_weight_lb is null then 'missing' else 'measured' end), r.actual_weight_lb::numeric, r.orig_length_in::numeric, r.orig_width_in::numeric, r.orig_height_in::numeric,
          r.corr_length_in::numeric, r.corr_width_in::numeric, r.corr_height_in::numeric, r.original_charge::numeric, r.corrected_charge::numeric, r.separate_fee::numeric, r.handling_recorded
   from jsonb_array_elements(p_rows) with ordinality as e(obj, rn)
     cross join lateral jsonb_to_record(e.obj) as r(ship_date text, adjusted_on text, carrier_code text, service_id text, service_text text, brand_id text,
@@ -1202,7 +1542,7 @@ begin
     raise exception 'the stored rows do not match the validated count' using errcode = 'PC003';
   end if;
   perform set_config('app.adjustment_rpc', 'on', true);
-  update public.adjustment_imports set status = 'committed', committed_at = now() where id = p_import;
+  update public.adjustment_imports set status = 'committed', committed_at = now(), detected = detected - 'sampleRows' where id = p_import;
   if i.file_id is not null then delete from public.uploaded_files where id = i.file_id; end if;
   perform set_config('app.adjustment_rpc', 'off', true);
   return jsonb_build_object('importId', p_import, 'committed', i.committed_count, 'skipped', i.skipped_count);
@@ -1221,7 +1561,9 @@ begin
   if i.status not in ('uploaded', 'mapped', 'validated', 'committing') then raise exception 'a committed import is withdrawn, not discarded' using errcode = 'P0004'; end if;
   perform set_config('app.adjustment_rpc', 'on', true);
   delete from public.adjustment_records where import_id = p_import;
-  update public.adjustment_imports set status = 'discarded', committed_count = 0, skipped_count = 0 where id = p_import;
+  -- What the file showed (sample rows, the examples and customer names of the validation report) goes with it; the counts stay.
+  update public.adjustment_imports set status = 'discarded', committed_count = 0, skipped_count = 0, detected = detected - 'sampleRows',
+         validation = case when validation is null then null else validation - 'issues' - 'customers' - 'rowNumbers' end where id = p_import;
   if i.file_id is not null then delete from public.uploaded_files where id = i.file_id; end if;
   perform set_config('app.adjustment_rpc', 'off', true);
 end $$;
@@ -1237,13 +1579,16 @@ begin
   select * into i from public.adjustment_imports where id = p_import for update;
   if i.status = 'withdrawn' then return jsonb_build_object('importId', p_import, 'deleted', 0); end if;
   if i.status <> 'committed' then raise exception 'only a committed import can be withdrawn' using errcode = 'P0004'; end if;
-  if exists (select 1 from public.risk_estimates e where e.tenant_id = v_t and e.archived_at is null and (e.inputs -> 'importIds') @> to_jsonb(p_import::text)) then
+  -- (importIds are stored as lower-case uuids, and compared lower-cased here too, so no spelling of an id hides a dependent estimate.)
+  if exists (select 1 from public.risk_estimates e where e.tenant_id = v_t and e.archived_at is null and jsonb_typeof(e.inputs -> 'importIds') = 'array'
+             and exists (select 1 from jsonb_array_elements_text(e.inputs -> 'importIds') x where lower(x) = lower(p_import::text))) then
     raise exception 'saved risk estimates are based on this import; archive them first' using errcode = 'P0001';
   end if;
   perform set_config('app.adjustment_rpc', 'on', true);
   delete from public.adjustment_records where import_id = p_import;
   get diagnostics v_deleted = row_count;
-  update public.adjustment_imports set status = 'withdrawn' where id = p_import;
+  update public.adjustment_imports set status = 'withdrawn', detected = detected - 'sampleRows',
+         validation = case when validation is null then null else validation - 'issues' - 'customers' - 'rowNumbers' end where id = p_import;
   perform set_config('app.adjustment_rpc', 'off', true);
   return jsonb_build_object('importId', p_import, 'deleted', v_deleted);
 end $$;
@@ -1334,7 +1679,7 @@ end $$;
 -- ---------------------------------------------------------------------------
 create function app.scenario_result_problem(p jsonb) returns text
 language plpgsql immutable set search_path = '' as $$
-declare v_c jsonb; v_kinds text[] := '{}'; v_kind text; v_state text; v_a jsonb; k text;
+declare v_c jsonb; v_l jsonb; v_kinds text[] := '{}'; v_kind text; v_state text; v_a jsonb; k text;
 begin
   if p ->> 'status' is null or (p ->> 'status') not in ('ok', 'no_adjustment', 'declared_unavailable', 'corrected_unavailable', 'both_unavailable', 'invalid_input') then return 'status'; end if;
   if p ->> 'direction' is null or (p ->> 'direction') not in ('increase', 'decrease', 'none') then return 'direction'; end if;
@@ -1352,6 +1697,18 @@ begin
         if v_a is not null and jsonb_typeof(v_a) <> 'null' and (jsonb_typeof(v_a) <> 'string' or (v_a #>> '{}') !~ '^[0-9]{1,7}\.[0-9]{2}$') then return 'component_amount'; end if;
       end loop;
       if v_c ? 'handling' and (v_c ->> 'handling') not in ('absorbed', 'pass_through', 'manual_approval', 'unconfigured') then return 'component_handling'; end if;
+      -- What the engine resolved for the component and for each fee line (the shape is the engine's; the values are only compared
+      -- with today's decisions when an example is built, never trusted).
+      if v_c ? 'engineHandling' and (jsonb_typeof(v_c -> 'engineHandling') <> 'string'
+         or (v_c ->> 'engineHandling') not in ('absorbed', 'pass_through', 'manual_approval', 'unconfigured', 'mixed')) then return 'component_handling'; end if;
+      if v_c ? 'lines' then
+        if jsonb_typeof(v_c -> 'lines') <> 'array' or jsonb_array_length(v_c -> 'lines') > 40 then return 'component_lines'; end if;
+        for v_l in select e.value from jsonb_array_elements(v_c -> 'lines') e loop
+          if jsonb_typeof(v_l) <> 'object' or jsonb_typeof(v_l -> 'ruleKey') is distinct from 'string' or char_length(v_l ->> 'ruleKey') not between 1 and 120
+             or jsonb_typeof(v_l -> 'handling') is distinct from 'string'
+             or (v_l ->> 'handling') not in ('absorbed', 'pass_through', 'manual_approval', 'unconfigured') then return 'component_lines'; end if;
+        end loop;
+      end if;
     end loop;
   end if;
   return null;
@@ -1363,7 +1720,8 @@ create function public.save_adjustment_scenario(p_tenant uuid, p_brand uuid, p_n
 language plpgsql security definer set search_path = '' as $$
 declare
   v_name text := btrim(coalesce(p_name, '')); v_problem text; v_priced date; v_version uuid; v_rules uuid[]; v_overrides uuid[];
-  v_snap jsonb; v_id uuid; c jsonb; v_h text;
+  v_snap jsonb; v_id uuid; c jsonb; v_h text; v_today date := app.utc_today();
+  v_card uuid; v_keys text[]; v_zips uuid[]; v_ctx jsonb; v_context jsonb;
 begin
   if p_tenant is null or not app.can_manage_adjustments(p_tenant) then raise exception 'not allowed' using errcode = '42501'; end if;
   if p_brand is not null and not exists (select 1 from public.brands b where b.id = p_brand and b.tenant_id = p_tenant) then raise exception 'not found' using errcode = 'P0002'; end if;
@@ -1383,7 +1741,9 @@ begin
   if v_priced is null then raise exception 'a priced-on date is required' using errcode = 'PC001'; end if;
   if jsonb_typeof(coalesce(p_pins -> 'ruleVersionIds', '[]'::jsonb)) <> 'array' or jsonb_typeof(coalesce(p_pins -> 'overrideIds', '[]'::jsonb)) <> 'array'
      or jsonb_array_length(coalesce(p_pins -> 'ruleVersionIds', '[]'::jsonb)) > 200 or jsonb_array_length(coalesce(p_pins -> 'overrideIds', '[]'::jsonb)) > 200
-     or (p_pins ? 'rateCardVersionId' and jsonb_typeof(p_pins -> 'rateCardVersionId') not in ('string', 'null')) then
+     or (p_pins ? 'rateCardVersionId' and jsonb_typeof(p_pins -> 'rateCardVersionId') not in ('string', 'null'))
+     or (p_pins ? 'ruleKeysInForce' and (jsonb_typeof(p_pins -> 'ruleKeysInForce') <> 'array' or jsonb_array_length(p_pins -> 'ruleKeysInForce') > 500))
+     or (p_pins ? 'zipListVersionIds' and (jsonb_typeof(p_pins -> 'zipListVersionIds') <> 'array' or jsonb_array_length(p_pins -> 'zipListVersionIds') > 200)) then
     raise exception 'invalid pins' using errcode = 'PC001';
   end if;
   v_version := app.try_uuid(p_pins ->> 'rateCardVersionId');
@@ -1391,6 +1751,22 @@ begin
   v_rules := coalesce((select array_agg(distinct app.try_uuid(x.id)) from jsonb_array_elements_text(coalesce(p_pins -> 'ruleVersionIds', '[]'::jsonb)) x(id)), '{}'::uuid[]);
   v_overrides := coalesce((select array_agg(distinct app.try_uuid(x.id)) from jsonb_array_elements_text(coalesce(p_pins -> 'overrideIds', '[]'::jsonb)) x(id)), '{}'::uuid[]);
   if exists (select 1 from unnest(v_rules) u where u is null) or exists (select 1 from unnest(v_overrides) u where u is null) then raise exception 'invalid pins' using errcode = 'PC001'; end if;
+  -- The optional context arrays: rule keys are short text, ZIP list versions are uuids (and must exist, in this account or at platform scope).
+  if p_pins ? 'ruleKeysInForce' then
+    if exists (select 1 from jsonb_array_elements(p_pins -> 'ruleKeysInForce') x where jsonb_typeof(x.value) <> 'string' or char_length(x.value #>> '{}') not between 1 and 120) then
+      raise exception 'invalid pins' using errcode = 'PC001';
+    end if;
+    v_keys := coalesce((select array_agg(distinct x.k order by x.k) from jsonb_array_elements_text(p_pins -> 'ruleKeysInForce') x(k)), '{}'::text[]);
+  end if;
+  if p_pins ? 'zipListVersionIds' then
+    if exists (select 1 from jsonb_array_elements(p_pins -> 'zipListVersionIds') x where jsonb_typeof(x.value) <> 'string' or app.try_uuid(x.value #>> '{}') is null) then
+      raise exception 'invalid pins' using errcode = 'PC001';
+    end if;
+    v_zips := coalesce((select array_agg(distinct app.try_uuid(x.k) order by app.try_uuid(x.k)) from jsonb_array_elements_text(p_pins -> 'zipListVersionIds') x(k)), '{}'::uuid[]);
+    if (select count(*) from public.zip_lists l where l.id = any (v_zips) and (l.tenant_id is null or l.tenant_id = p_tenant)) <> coalesce(array_length(v_zips, 1), 0) then
+      raise exception 'not found' using errcode = 'P0002';
+    end if;
+  end if;
 
   -- Every pin must exist in this account (or be platform scope) and, for a customer's scenario, belong to that customer.
   if v_version is not null then
@@ -1408,20 +1784,31 @@ begin
     raise exception 'not found' using errcode = 'P0002';
   end if;
 
-  v_snap := jsonb_build_object('postage_difference', app.adjustment_handling(p_tenant, p_brand, p_type, 'postage_difference', current_date),
-                               'separate_fee', app.adjustment_handling(p_tenant, p_brand, p_type, 'separate_fee', current_date));
+  v_snap := jsonb_build_object('postage_difference', app.adjustment_handling(p_tenant, p_brand, p_type, 'postage_difference', v_today),
+                               'separate_fee', app.adjustment_handling(p_tenant, p_brand, p_type, 'separate_fee', v_today));
   for c in select e.value from jsonb_array_elements(coalesce(p_result -> 'components', '[]'::jsonb)) e loop
     v_h := c ->> 'handling';
     if v_h is not null and v_h is distinct from (v_snap ->> (c ->> 'kind')) then raise exception 'the policy changed while the example was being built; price it again' using errcode = 'PC003'; end if;
   end loop;
+
+  -- The pricing context beyond the pinned versions: what the caller says it priced with, else what the database finds in force for
+  -- the card's carriers on the priced-on date (the same query pricing_rules_for_card runs, without the absorbed-fee filter).
+  if v_keys is null or v_zips is null then
+    select rv.rate_card_id into v_card from public.rate_card_versions rv where rv.id = v_version;
+    v_ctx := case when v_card is null then jsonb_build_object('ruleKeys', '[]'::jsonb, 'zipListIds', '[]'::jsonb)
+                  else app.pricing_context_keys(p_tenant, p_brand, v_card, v_priced) end;
+  end if;
+  v_context := jsonb_build_object('ruleKeysInForce', coalesce(to_jsonb(v_keys), v_ctx -> 'ruleKeys'),
+                                  'zipListVersionIds', coalesce(to_jsonb(v_zips), v_ctx -> 'zipListIds'),
+                                  'source', case when v_keys is not null and v_zips is not null then 'client' when v_keys is null and v_zips is null then 'server' else 'mixed' end);
 
   perform app.adjustment_lock(p_tenant);
   if (select count(*) from public.adjustment_scenarios s where s.tenant_id = p_tenant and s.archived_at is null) >= 200 then
     raise exception 'the limit of 200 saved examples is reached; archive some first' using errcode = 'P0001';
   end if;
   perform set_config('app.adjustment_rpc', 'on', true);
-  insert into public.adjustment_scenarios (tenant_id, brand_id, name, adjustment_type, input, result, engine_version, rate_card_version_id, rule_version_ids, override_ids, policy_snapshot, priced_on, created_by)
-  values (p_tenant, p_brand, v_name, p_type, p_input, p_result, p_engine_version, v_version, v_rules, v_overrides, v_snap, v_priced, (select auth.uid()))
+  insert into public.adjustment_scenarios (tenant_id, brand_id, name, adjustment_type, input, result, engine_version, rate_card_version_id, rule_version_ids, override_ids, policy_snapshot, pricing_context, priced_on, created_by)
+  values (p_tenant, p_brand, v_name, p_type, p_input, p_result, p_engine_version, v_version, v_rules, v_overrides, v_snap, v_context, v_priced, (select auth.uid()))
   returning id into v_id;
   perform set_config('app.adjustment_rpc', 'off', true);
   return v_id;
@@ -1445,9 +1832,11 @@ begin
       raise exception 'invalid import list' using errcode = 'PC001';
     end if;
     if (select count(*) from public.adjustment_imports i where i.tenant_id = p_tenant and i.id in (select app.try_uuid(x.value #>> '{}') from jsonb_array_elements(p_inputs -> 'importIds') x))
-       <> (select count(distinct x.value #>> '{}') from jsonb_array_elements(p_inputs -> 'importIds') x) then
+       <> (select count(distinct lower(x.value #>> '{}')) from jsonb_array_elements(p_inputs -> 'importIds') x) then
       raise exception 'not found' using errcode = 'P0002';
     end if;
+    -- Stored as sorted, distinct, lower-case uuid text, so the estimate and withdraw_adjustment_import always agree on the id.
+    p_inputs := jsonb_set(p_inputs, '{importIds}', coalesce((select jsonb_agg(x.id order by x.id) from (select distinct lower(y.value #>> '{}') as id from jsonb_array_elements(p_inputs -> 'importIds') y) x), '[]'::jsonb));
   end if;
   if p_result ? 'buckets' then
     v_sum := 0;
@@ -1466,7 +1855,7 @@ begin
   if v_type is not null and p_result ? 'handling' and jsonb_typeof(p_result -> 'handling') = 'object' then
     if v_type not in ('reweight', 'remeasure', 'combined', 'correction') then raise exception 'invalid adjustment type' using errcode = 'PC001'; end if;
     for v_comp, v_h in select t.k, t.v from jsonb_each_text(p_result -> 'handling') t(k, v) loop
-      if v_comp not in ('postage_difference', 'separate_fee') or v_h is distinct from app.adjustment_handling(p_tenant, p_brand, v_type, v_comp, current_date) then
+      if v_comp not in ('postage_difference', 'separate_fee') or v_h is distinct from app.adjustment_handling(p_tenant, p_brand, v_type, v_comp, app.utc_today()) then
         raise exception 'the policy changed while the estimate was being made; calculate it again' using errcode = 'PC003';
       end if;
     end loop;
@@ -1526,6 +1915,89 @@ begin
   return v_out;
 end $$;
 
+-- The rule keys and ZIP list versions in force for the carriers of a rate card on a date, for a customer (or none): the same query
+-- pricing_rules_for_card runs for its context, without the filter that hides absorbed fee rules, so the answer does not move when only
+-- a decision on who pays changes (that has its own cause). {"ruleKeys":[sorted text],"zipListIds":[sorted uuid]}.
+create function app.pricing_context_keys(p_tenant uuid, p_brand uuid, p_card uuid, p_on date) returns jsonb
+language sql stable security definer set search_path = '' as $$
+  with rules as (
+    select r.rule_key, v.conditions
+    from public.surcharge_rule_versions v
+    join public.surcharge_rules r on r.id = v.rule_id
+    where v.status in ('published', 'retired')
+      and v.effective_date <= p_on and (v.expiration_date is null or v.expiration_date >= p_on)
+      and r.archived_at is null
+      and (r.tenant_id is null or r.tenant_id = p_tenant)
+      and (r.brand_id is null or (p_brand is not null and r.brand_id = p_brand))
+      and r.carrier_code in (select s.carrier_code from public.rate_card_service_terms t
+                              join public.rate_card_versions rv on rv.id = t.version_id and rv.rate_card_id = p_card
+                              join public.shipping_services s on s.id = t.service_id)
+  )
+  select jsonb_build_object(
+    'ruleKeys', coalesce((select jsonb_agg(q.k order by q.k) from (select distinct x.rule_key as k from rules x) q), '[]'::jsonb),
+    'zipListIds', coalesce((select jsonb_agg(l.id order by l.id)
+                            from public.zip_lists l
+                            where l.status in ('published', 'retired') and l.effective_date <= p_on and (l.expiration_date is null or l.expiration_date >= p_on)
+                              and (l.tenant_id is null or l.tenant_id = p_tenant)
+                              and l.key in (select distinct k #>> '{}' from rules x, jsonb_path_query(x.conditions, 'strict $.**.listKey') k)), '[]'::jsonb));
+$$;
+
+-- Why what an example was priced with is no longer what is in force on p_now. ONE comparison for preview, publish and the read-time
+-- state, so they cannot drift: the rate card version in force is the pinned one (rate_card_changed); the customer is still assigned
+-- the card with the service allowed (assignment_changed); every pinned rule version is still the one in force and the set of rule keys
+-- in force is the one priced with (rule_changed); the customer's exceptions on the pinned rules are the ones priced with
+-- (exception_changed); every ZIP list version priced with is still the one in force (zip_list_changed).
+create function app.context_causes(p_tenant uuid, p_brand uuid, p_card uuid, p_version uuid, p_service uuid, p_rules uuid[], p_overrides uuid[], p_pinned jsonb, p_now date) returns text[]
+language plpgsql stable security definer set search_path = '' as $$
+declare
+  v_causes text[] := '{}'; v_rule_ids uuid[]; v_ctx jsonb;
+begin
+  -- The version the example was priced on must still be the one in force.
+  if p_version is distinct from (select v.id from public.rate_card_versions v where v.rate_card_id = p_card and v.status = 'active'
+                                   and v.effective_date <= p_now and (v.expiration_date is null or v.expiration_date >= p_now) limit 1) then
+    v_causes := array_append(v_causes, 'rate_card_changed');
+  end if;
+  -- The customer must still be assigned that card with the service allowed.
+  if not exists (select 1 from public.brand_rate_card_assignments a join public.rate_cards c on c.id = a.rate_card_id and c.status = 'active'
+                 where a.brand_id = p_brand and a.rate_card_id = p_card and a.unassigned_at is null
+                   and (a.allowed_service_ids is null or p_service = any (a.allowed_service_ids))) then
+    v_causes := array_append(v_causes, 'assignment_changed');
+  end if;
+  -- Every pinned rule version must still be the version of that rule in force.
+  if exists (select 1 from unnest(coalesce(p_rules, '{}'::uuid[])) pid
+             left join public.surcharge_rule_versions pv on pv.id = pid
+             left join public.surcharge_rules r on r.id = pv.rule_id
+             where pv.id is null or r.archived_at is not null
+                or pv.id is distinct from (select cv.id from public.surcharge_rule_versions cv where cv.rule_id = pv.rule_id and cv.status in ('published', 'retired')
+                                             and cv.effective_date <= p_now and (cv.expiration_date is null or cv.expiration_date >= p_now) limit 1)) then
+    v_causes := array_append(v_causes, 'rule_changed');
+  end if;
+  -- ... and no rule may have appeared or gone: the keys in force are the keys priced with.
+  if p_pinned ? 'ruleKeysInForce' or p_pinned ? 'zipListVersionIds' then
+    v_ctx := app.pricing_context_keys(p_tenant, p_brand, p_card, p_now);
+    if p_pinned ? 'ruleKeysInForce' and array_position(v_causes, 'rule_changed') is null
+       and coalesce((select array_agg(x.k order by x.k) from jsonb_array_elements_text(case when jsonb_typeof(p_pinned -> 'ruleKeysInForce') = 'array' then p_pinned -> 'ruleKeysInForce' else '[]'::jsonb end) x(k)), '{}'::text[])
+           is distinct from coalesce((select array_agg(x.k order by x.k) from jsonb_array_elements_text(v_ctx -> 'ruleKeys') x(k)), '{}'::text[]) then
+      v_causes := array_append(v_causes, 'rule_changed');
+    end if;
+  end if;
+  -- The customer's exceptions on those rules must be the ones the example was priced with.
+  v_rule_ids := coalesce((select array_agg(pv.rule_id) from public.surcharge_rule_versions pv where pv.id = any (coalesce(p_rules, '{}'::uuid[]))), '{}'::uuid[]);
+  if coalesce((select array_agg(o.id order by o.id) from public.customer_surcharge_overrides o where o.id = any (coalesce(p_overrides, '{}'::uuid[])) and o.rule_id = any (v_rule_ids)), '{}'::uuid[])
+     is distinct from coalesce((select array_agg(o.id order by o.id) from public.customer_surcharge_overrides o
+                                where o.brand_id = p_brand and o.tenant_id = p_tenant and o.ended_at is null and o.rule_id = any (v_rule_ids)
+                                  and o.effective_date <= p_now and (o.expiration_date is null or o.expiration_date >= p_now)), '{}'::uuid[]) then
+    v_causes := array_append(v_causes, 'exception_changed');
+  end if;
+  -- Every ZIP list version priced with must still be the one in force.
+  if p_pinned ? 'zipListVersionIds'
+     and coalesce((select array_agg(x.k order by x.k) from jsonb_array_elements_text(case when jsonb_typeof(p_pinned -> 'zipListVersionIds') = 'array' then p_pinned -> 'zipListVersionIds' else '[]'::jsonb end) x(k)), '{}'::text[])
+         is distinct from coalesce((select array_agg(x.k order by x.k) from jsonb_array_elements_text(v_ctx -> 'zipListIds') x(k)), '{}'::text[]) then
+    v_causes := array_append(v_causes, 'zip_list_changed');
+  end if;
+  return v_causes;
+end $$;
+
 -- Builds (and checks) what a customer would see. Returns {ok, problems[{code,message}], payload, hidden[], warnings[], pricedOn,
 -- ratesEffectiveFrom, validThrough, pins}. Reads only; callers authorize first. A problem is a refusal to publish, never a partial payload.
 create function app.build_customer_example(p_source uuid, p_brand uuid, p_valid_through date default null) returns jsonb
@@ -1533,11 +2005,13 @@ language plpgsql stable security definer set search_path = '' as $$
 declare
   s public.adjustment_scenarios%rowtype;
   rv public.rate_card_versions%rowtype;
+  v_today date := app.utc_today();
   v_problems jsonb := '[]'::jsonb; v_hidden jsonb := '[]'::jsonb; v_warnings jsonb := '[]'::jsonb; v_components jsonb := '[]'::jsonb;
-  v_comp jsonb; v_kind text; v_state text; v_amount text; v_resolved text; v_snapshot text; v_kinds text[] := '{}'; v_label text;
+  v_comp jsonb; v_line jsonb; v_kind text; v_state text; v_amount text; v_resolved text; v_kinds text[] := '{}'; v_label text;
+  v_eh text; v_line_category text; v_line_h text; v_mixed boolean; v_bad_line boolean;
   v_svc uuid; v_carrier text; v_service text; v_decl jsonb; v_corr jsonb; v_residential jsonb; v_zone integer;
   v_end date; v_policy_end date; v_valid date; v_payload jsonb; v_pins jsonb; v_handling jsonb := '{}'::jsonb; v_shown integer := 0;
-  v_effective date; v_fail boolean;
+  v_fail boolean := false; v_causes text[];
 begin
   select * into s from public.adjustment_scenarios where id = p_source;
   if not found then
@@ -1569,13 +2043,22 @@ begin
                       and (a.allowed_service_ids is null or v_svc = any (a.allowed_service_ids)))
      or not exists (select 1 from public.rate_card_service_terms t where t.version_id = rv.id and t.service_id = v_svc) then
     v_problems := app.add_problem(v_problems, 'rate_card_not_assigned', 'The rate card or service this example was priced on is not available to this customer.');
-  elsif rv.effective_date > current_date or (rv.expiration_date is not null and rv.expiration_date < current_date) then
+  elsif rv.effective_date > v_today or (rv.expiration_date is not null and rv.expiration_date < v_today) then
     v_problems := app.add_problem(v_problems, 'rate_card_not_in_effect', 'The rate card this example was priced on is not in effect today. Price it again.');
+  end if;
+
+  -- Nothing it was priced with may have changed since: the very comparison that decides whether a shared example is "under review"
+  -- (a rule that appeared, a ZIP list that was republished, a new customer exception, ...). Otherwise the example would be born under review.
+  if rv.id is not null and v_svc is not null then
+    v_causes := app.context_causes(s.tenant_id, p_brand, rv.rate_card_id, s.rate_card_version_id, v_svc, s.rule_version_ids, s.override_ids, s.pricing_context, v_today);
+    if cardinality(v_causes) > 0 then
+      v_problems := app.add_problem(v_problems, 'context_changed', 'Something this example was priced with has changed since it was priced. Price it again.');
+    end if;
   end if;
 
   -- Policy: what was pinned at save time must still be what the policy resolves to, and nothing the customer would read may be undecided.
   foreach v_kind in array array['postage_difference', 'separate_fee'] loop
-    v_resolved := app.adjustment_handling(s.tenant_id, p_brand, s.adjustment_type, v_kind, current_date);
+    v_resolved := app.adjustment_handling(s.tenant_id, p_brand, s.adjustment_type, v_kind, v_today);
     v_handling := v_handling || jsonb_build_object(v_kind, v_resolved);
     if s.policy_snapshot ->> v_kind is distinct from v_resolved then v_fail := true; end if;
   end loop;
@@ -1587,7 +2070,33 @@ begin
     if v_kind = any (v_kinds) then v_problems := app.add_problem(v_problems, 'invalid_result', 'The saved result is not valid. Price it again.'); end if;
     v_kinds := array_append(v_kinds, v_kind);
     v_resolved := v_handling ->> v_kind;
+    -- One amount carries ONE label. When what the engine resolved for the component (engineHandling, "mixed" when its fee lines differ)
+    -- or for any of its fee lines is not what today's decisions give the component, no single label would be true: refuse, never
+    -- publish the amount under the type's label (an absorbed line must never reach a customer) and never hide a charged one silently.
+    v_mixed := false; v_bad_line := false;
     if v_state = 'conditional' then
+      v_eh := v_comp ->> 'engineHandling';
+      if v_eh is not null and v_eh is distinct from v_resolved then v_mixed := true; end if;
+      if jsonb_typeof(v_comp -> 'lines') = 'array' then
+        for v_line in select e.value from jsonb_array_elements(v_comp -> 'lines') e loop
+          -- The line's own decision: a correction fee follows the 'correction' row, a reweigh or remeasure fee the scenario type's row.
+          select r.category into v_line_category
+            from public.surcharge_rule_versions pv join public.surcharge_rules r on r.id = pv.rule_id
+           where pv.id = any (s.rule_version_ids) and r.rule_key = v_line ->> 'ruleKey' limit 1;
+          if v_kind <> 'separate_fee' or v_line_category is null or v_line_category not in ('reweight', 'remeasure', 'shipping_charge_correction') then
+            v_bad_line := true;
+          else
+            v_line_h := app.adjustment_handling(s.tenant_id, p_brand, case v_line_category when 'shipping_charge_correction' then 'correction' else s.adjustment_type end, 'separate_fee', v_today);
+            if v_line ->> 'handling' is distinct from v_line_h or v_line_h is distinct from v_resolved then v_mixed := true; end if;
+          end if;
+        end loop;
+      end if;
+    end if;
+    if v_bad_line then
+      v_problems := app.add_problem(v_problems, 'invalid_result', 'The saved result is not valid. Price it again.');
+    elsif v_mixed then
+      v_problems := app.add_problem(v_problems, 'mixed_handling', 'The parts of the ' || lower(v_label) || ' are handled differently, or a decision changed, so it cannot be shared as one amount. Price it again.');
+    elsif v_state = 'conditional' then
       if v_resolved = 'unconfigured' then
         v_problems := app.add_problem(v_problems, 'undecided_policy', 'Decide how the ' || lower(v_label) || ' is handled for this customer first.');
       elsif v_resolved = 'absorbed' then
@@ -1599,7 +2108,7 @@ begin
         v_components := v_components || jsonb_build_array(jsonb_strip_nulls(jsonb_build_object('kind', v_kind, 'handling', v_resolved, 'amount', v_amount,
           'declaredTotal', case when v_kind = 'postage_difference' then v_comp ->> 'declaredTotal' end,
           'correctedTotal', case when v_kind = 'postage_difference' then v_comp ->> 'correctedTotal' end)));
-        select a.valid_to into v_policy_end from app.adjustment_policy_at(s.tenant_id, p_brand, s.adjustment_type, v_kind, current_date) a;
+        select a.valid_to into v_policy_end from app.adjustment_policy_at(s.tenant_id, p_brand, s.adjustment_type, v_kind, v_today) a;
         if v_policy_end is not null then v_end := least(coalesce(v_end, v_policy_end), v_policy_end); end if;
       end if;
     elsif v_state = 'not_configured' then
@@ -1631,8 +2140,8 @@ begin
               union all select cv.expiration_date from public.surcharge_rule_versions cv where cv.id = any (s.rule_version_ids)
               union all select o.expiration_date from public.customer_surcharge_overrides o where o.id = any (s.override_ids)
               union all select v_end) x where d is not null);
-  v_valid := least(coalesce(p_valid_through, current_date + 90), current_date + 90, coalesce(v_end, 'infinity'::date));
-  if v_valid < current_date then v_problems := app.add_problem(v_problems, 'ended', 'A rate, rule or decision this example depends on has already ended.'); end if;
+  v_valid := least(coalesce(p_valid_through, v_today + 90), v_today + 90, coalesce(v_end, 'infinity'::date));
+  if v_valid < v_today then v_problems := app.add_problem(v_problems, 'ended', 'A rate, rule or decision this example depends on has already ended.'); end if;
 
   if jsonb_array_length(v_problems) = 0 then
     v_payload := jsonb_build_object('v', 1, 'adjustmentType', s.adjustment_type, 'pricedOn', s.priced_on,
@@ -1648,7 +2157,9 @@ begin
     return jsonb_build_object('ok', false, 'problems', v_problems, 'hidden', v_hidden, 'warnings', v_warnings);
   end if;
   v_pins := jsonb_build_object('rateCardId', rv.rate_card_id, 'rateCardVersionId', rv.id, 'serviceId', v_svc, 'adjustmentType', s.adjustment_type,
-                               'ruleVersionIds', to_jsonb(s.rule_version_ids), 'overrideIds', to_jsonb(s.override_ids), 'handling', v_handling);
+                               'ruleVersionIds', to_jsonb(s.rule_version_ids), 'overrideIds', to_jsonb(s.override_ids), 'handling', v_handling,
+                               'ruleKeysInForce', coalesce(s.pricing_context -> 'ruleKeysInForce', '[]'::jsonb),
+                               'zipListVersionIds', coalesce(s.pricing_context -> 'zipListVersionIds', '[]'::jsonb));
   return jsonb_build_object('ok', true, 'problems', '[]'::jsonb, 'payload', v_payload, 'hidden', v_hidden, 'warnings', v_warnings, 'pricedOn', s.priced_on,
                             'ratesEffectiveFrom', rv.effective_date, 'validThrough', v_valid, 'pins', v_pins);
 end $$;
@@ -1719,48 +2230,22 @@ end $$;
 create function app.example_state(e public.published_adjustment_examples) returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
 declare
-  v_causes text[] := '{}'; v_now date := current_date;
+  v_causes text[] := '{}'; v_now date := app.utc_today();
   v_card uuid := app.try_uuid(e.pins ->> 'rateCardId');
   v_version uuid := app.try_uuid(e.pins ->> 'rateCardVersionId');
   v_service uuid := app.try_uuid(e.pins ->> 'serviceId');
   v_type text := e.pins ->> 'adjustmentType';
-  v_rules uuid[]; v_overrides uuid[]; v_rule_ids uuid[]; v_comp text; v_pinned text;
+  v_rules uuid[]; v_overrides uuid[]; v_comp text; v_pinned text;
 begin
   if e.retired_at is not null then return jsonb_build_object('state', 'retired', 'causes', '[]'::jsonb); end if;
   if e.valid_through < v_now then return jsonb_build_object('state', 'expired', 'causes', jsonb_build_array('valid_through_passed')); end if;
   if not exists (select 1 from public.brands b join public.tenants t on t.id = b.tenant_id where b.id = e.brand_id and b.status = 'active' and t.status = 'active') then
     v_causes := array_append(v_causes, 'brand_inactive');
   end if;
-  -- The version the example was priced on must still be the one in force today.
-  if v_version is distinct from (select v.id from public.rate_card_versions v where v.rate_card_id = v_card and v.status = 'active'
-                                   and v.effective_date <= v_now and (v.expiration_date is null or v.expiration_date >= v_now) limit 1) then
-    v_causes := array_append(v_causes, 'rate_card_changed');
-  end if;
-  -- The customer must still be assigned that card with the service allowed.
-  if not exists (select 1 from public.brand_rate_card_assignments a join public.rate_cards c on c.id = a.rate_card_id and c.status = 'active'
-                 where a.brand_id = e.brand_id and a.rate_card_id = v_card and a.unassigned_at is null
-                   and (a.allowed_service_ids is null or v_service = any (a.allowed_service_ids))) then
-    v_causes := array_append(v_causes, 'assignment_changed');
-  end if;
-  -- Every pinned rule version must still be the version of that rule in force today.
+  -- Everything it was priced with (card version, assignment, rule versions and the rules in force, exceptions, ZIP lists).
   v_rules := coalesce((select array_agg(app.try_uuid(x.id)) from jsonb_array_elements_text(coalesce(e.pins -> 'ruleVersionIds', '[]'::jsonb)) x(id)), '{}'::uuid[]);
-  if exists (select 1 from unnest(v_rules) pid
-             left join public.surcharge_rule_versions pv on pv.id = pid
-             left join public.surcharge_rules r on r.id = pv.rule_id
-             where pv.id is null or r.archived_at is not null
-                or pv.id is distinct from (select cv.id from public.surcharge_rule_versions cv where cv.rule_id = pv.rule_id and cv.status in ('published', 'retired')
-                                             and cv.effective_date <= v_now and (cv.expiration_date is null or cv.expiration_date >= v_now) limit 1)) then
-    v_causes := array_append(v_causes, 'rule_changed');
-  end if;
-  -- The customer exceptions on those rules must be the ones the example was priced with.
   v_overrides := coalesce((select array_agg(app.try_uuid(x.id)) from jsonb_array_elements_text(coalesce(e.pins -> 'overrideIds', '[]'::jsonb)) x(id)), '{}'::uuid[]);
-  v_rule_ids := coalesce((select array_agg(pv.rule_id) from public.surcharge_rule_versions pv where pv.id = any (v_rules)), '{}'::uuid[]);
-  if coalesce((select array_agg(o.id order by o.id) from public.customer_surcharge_overrides o where o.id = any (v_overrides) and o.rule_id = any (v_rule_ids)), '{}'::uuid[])
-     is distinct from coalesce((select array_agg(o.id order by o.id) from public.customer_surcharge_overrides o
-                                where o.brand_id = e.brand_id and o.tenant_id = e.tenant_id and o.ended_at is null and o.rule_id = any (v_rule_ids)
-                                  and o.effective_date <= v_now and (o.expiration_date is null or o.expiration_date >= v_now)), '{}'::uuid[]) then
-    v_causes := array_append(v_causes, 'exception_changed');
-  end if;
+  v_causes := v_causes || app.context_causes(e.tenant_id, e.brand_id, v_card, v_version, v_service, v_rules, v_overrides, e.pins, v_now);
   -- The resolved handling of each component (compare what it resolves to, not which row) must be what was pinned.
   for v_comp, v_pinned in select t.k, t.v from jsonb_each_text(coalesce(e.pins -> 'handling', '{}'::jsonb)) t(k, v) loop
     if app.adjustment_handling(e.tenant_id, e.brand_id, v_type, v_comp, v_now) is distinct from v_pinned then
@@ -1790,7 +2275,8 @@ begin
 end $$;
 
 -- What a customer's members may read: an explicit projection of live, non-retired examples of THEIR brand. The payload is hidden
--- (null) unless the example is current; the customer sees one neutral state whatever the cause. Anyone else gets an empty list.
+-- (null) unless the example is current, and so are the 3PL's note and title (a neutral title is returned instead): both are staff-typed text that
+-- may restate an amount. The customer sees one neutral state whatever the cause. Anyone else gets an empty list.
 create function public.brand_adjustment_examples(p_brand uuid) returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
 declare v_out jsonb;
@@ -1801,7 +2287,8 @@ begin
   end if;
   select coalesce(jsonb_agg(x.el order by x.published_at desc, x.id), '[]'::jsonb) into v_out from (
     select e.id, e.published_at, jsonb_build_object(
-      'id', e.id, 'title', e.title, 'note', e.note_to_customer,
+      'id', e.id, 'title', case when st.state = 'current' then e.title else 'Example' end,
+      'note', case when st.state = 'current' then e.note_to_customer end,
       'payload', case when st.state = 'current' then e.payload else 'null'::jsonb end,
       'pricedOn', e.priced_on, 'ratesEffectiveFrom', e.rates_effective_from, 'validThrough', e.valid_through, 'publishedAt', e.published_at,
       'state', st.state) as el
@@ -1985,6 +2472,131 @@ begin
                             'projectedMonthly', v_projected::text);
 end $$;
 
+-- advance_simulation_run (M4, same eight arguments): the in-flight state a window stores carries no load-issue text (the text stays in
+-- simulation_run_contexts.load_issues, which only staff can read). The only change from the M4 definition is the stored partial_summary.
+create or replace function public.advance_simulation_run(p_run uuid, p_from_row bigint, p_to_row bigint, p_results jsonb, p_partial jsonb, p_contexts jsonb, p_order_results jsonb, p_fee_contexts jsonb) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_r public.simulation_runs%rowtype;
+  v_ds uuid; v_has_lines boolean; v_n integer; v_orders integer;
+begin
+  select * into v_r from public.simulation_runs where id = p_run for update;
+  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
+  if v_r.status <> 'running' then
+    return jsonb_build_object('applied', false, 'status', v_r.status, 'nextRow', v_r.next_row_no, 'processed', v_r.processed_shipments, 'total', v_r.total_shipments);
+  end if;
+  if p_from_row < v_r.next_row_no then
+    return jsonb_build_object('applied', false, 'status', v_r.status, 'nextRow', v_r.next_row_no, 'processed', v_r.processed_shipments, 'total', v_r.total_shipments);
+  end if;
+  if p_from_row <> v_r.next_row_no or p_to_row < p_from_row or p_to_row > v_r.total_shipments then
+    raise exception 'window %–% does not start at the cursor %', p_from_row, p_to_row, v_r.next_row_no using errcode = 'PC003';
+  end if;
+  if (p_partial ->> 'version')::integer is distinct from 2 then
+    raise exception 'this run was started by an older release of the modeling engine; start it again' using errcode = 'PC002';
+  end if;
+  select p.dataset_id, d.line_count > 0 into v_ds, v_has_lines from public.simulation_projects p join public.order_datasets d on d.id = p.dataset_id where p.id = v_r.project_id;
+  if exists (select 1 from jsonb_to_recordset(p_results) as x(shipment_id uuid, order_id uuid, row_no bigint)
+             left join public.shipments s on s.id = x.shipment_id and s.order_id = x.order_id and s.row_no = x.row_no and s.dataset_id = v_ds
+             where x.row_no between p_from_row and p_to_row and s.id is null) then
+    raise exception 'a result does not belong to this run' using errcode = 'PC003';
+  end if;
+  if (p_partial #>> '{shipments,seen}')::bigint is distinct from p_to_row then
+    raise exception 'partial summary does not cover the window (seen %, window ends at %)', p_partial #>> '{shipments,seen}', p_to_row using errcode = 'PC003';
+  end if;
+
+  insert into public.simulation_results (run_id, tenant_id, brand_id, shipment_id, order_id, row_no, status, unavailable_reason, rate_card_version_id, ship_date, zone, service_id,
+                                         billable_lb, definite, estimated, expected, conditional_exposure, unresolved, lines, warning_codes)
+  select p_run, v_r.tenant_id, v_r.brand_id, x.shipment_id, x.order_id, x.row_no, x.status, x.unavailable_reason, x.rate_card_version_id, x.ship_date, x.zone, x.service_id,
+         x.billable_lb, coalesce(x.definite, 0), coalesce(x.estimated, 0), coalesce(x.expected, 0), coalesce(x.conditional_exposure, 0), coalesce(x.unresolved, 0), coalesce(x.lines, '[]'::jsonb), coalesce(x.warning_codes, '{}'::text[])
+  from jsonb_to_recordset(p_results) as x(shipment_id uuid, order_id uuid, row_no bigint, status text, unavailable_reason text, rate_card_version_id uuid, ship_date date, zone text, service_id uuid,
+                                         billable_lb text[], definite numeric, estimated numeric, expected numeric, conditional_exposure numeric, unresolved numeric, lines jsonb, warning_codes text[])
+  where x.row_no between p_from_row and p_to_row;
+  get diagnostics v_n = row_count;
+  if v_n <> p_to_row - p_from_row + 1 then raise exception 'window %–% needs % results, got %', p_from_row, p_to_row, p_to_row - p_from_row + 1, v_n using errcode = 'PC003'; end if;
+
+  insert into public.simulation_run_contexts (run_id, tenant_id, brand_id, ship_date, rate_card_version_id, rule_version_ids, zip_list_ids, override_ids, load_issues, unavailable_reason)
+  select p_run, v_r.tenant_id, v_r.brand_id, c.ship_date, c.rate_card_version_id, coalesce(c.rule_version_ids, '{}'::uuid[]), coalesce(c.zip_list_ids, '{}'::uuid[]), coalesce(c.override_ids, '{}'::uuid[]), coalesce(c.load_issues, '{}'::text[]), c.unavailable_reason
+  from jsonb_to_recordset(coalesce(p_contexts, '[]'::jsonb)) as c(ship_date date, rate_card_version_id uuid, rule_version_ids uuid[], zip_list_ids uuid[], override_ids uuid[], load_issues text[], unavailable_reason text)
+  on conflict (run_id, ship_date) do nothing;
+
+  -- Fee contexts: every pinned version belongs to the run's schedule and was in effect on that date.
+  if exists (select 1 from jsonb_to_recordset(coalesce(p_fee_contexts, '[]'::jsonb)) as c(fee_date date, fee_schedule_version_id uuid, unavailable_reason text)
+             left join public.fee_schedule_versions v on v.id = c.fee_schedule_version_id
+             where c.fee_schedule_version_id is not null
+               and (v.id is null or v.schedule_id is distinct from v_r.fee_schedule_id or v.status not in ('active', 'archived')
+                    or v.effective_date > c.fee_date or (v.expiration_date is not null and v.expiration_date < c.fee_date))) then
+    raise exception 'a fee context names a version that was not in effect on its date' using errcode = 'PC003';
+  end if;
+  insert into public.simulation_run_fee_contexts (run_id, tenant_id, brand_id, fee_date, fee_schedule_version_id, unavailable_reason)
+  select p_run, v_r.tenant_id, v_r.brand_id, c.fee_date, c.fee_schedule_version_id, c.unavailable_reason
+  from jsonb_to_recordset(coalesce(p_fee_contexts, '[]'::jsonb)) as c(fee_date date, fee_schedule_version_id uuid, unavailable_reason text)
+  on conflict (run_id, fee_date) do nothing;
+
+  -- Order results: exactly one per order of the window, owning that order's first row, with quantities the file agrees with.
+  select count(distinct s.order_id) into v_orders from public.shipments s where s.dataset_id = v_ds and s.row_no between p_from_row and p_to_row;
+  if jsonb_typeof(coalesce(p_order_results, 'null'::jsonb)) <> 'array' or jsonb_array_length(p_order_results) <> v_orders then
+    raise exception 'window %–% covers % orders, got % order results', p_from_row, p_to_row, v_orders, jsonb_array_length(coalesce(p_order_results, '[]'::jsonb)) using errcode = 'PC003';
+  end if;
+  if (select count(distinct x.order_id) from jsonb_to_recordset(p_order_results) as x(order_id uuid)) <> v_orders then
+    raise exception 'order results name the same order twice' using errcode = 'PC003';
+  end if;
+  if exists (
+    select 1
+    from jsonb_to_recordset(p_order_results) as x(order_id uuid, first_row_no bigint, order_month text, units integer, lines integer, distinct_skus integer, packages integer, shipments integer, assumed jsonb, fee_status text, fee_date date, fee_schedule_version_id uuid, processing_definite bigint, processing_estimated bigint, fee_lines jsonb)
+    left join public.orders o on o.id = x.order_id and o.dataset_id = v_ds
+    left join lateral (
+      select min(s.row_no) as first_row, count(*) as n, min(s.ship_date) as first_ship,
+             (select count(*) from public.packages p join public.shipments y on y.id = p.shipment_id where y.order_id = o.id) as npkg
+      from public.shipments s where s.order_id = o.id
+    ) s on true
+    left join lateral (select * from app.order_line_counts(o.id)) l on true
+    where o.id is null or s.first_row is distinct from x.first_row_no or s.first_row < p_from_row or s.first_row > p_to_row
+       or x.shipments is distinct from s.n or x.packages is distinct from s.npkg
+       or x.order_month is distinct from to_char(coalesce(o.order_date, s.first_ship), 'YYYY-MM')
+       -- A quantity may be assumed only when the file does not carry it; otherwise it must echo the file.
+       or (coalesce(x.assumed ->> 'units', 'false') <> 'true' and x.units is distinct from o.units)
+       or (coalesce(x.assumed ->> 'units', 'false') = 'true' and o.units is not null)
+       or (coalesce(x.assumed ->> 'lines', 'false') <> 'true' and x.lines is distinct from case when v_has_lines then l.lines end)
+       or (coalesce(x.assumed ->> 'lines', 'false') = 'true' and v_has_lines and l.lines is not null)
+       or (coalesce(x.assumed ->> 'skus', 'false') <> 'true' and x.distinct_skus is distinct from case when v_has_lines then l.skus end)
+       or (coalesce(x.assumed ->> 'skus', 'false') = 'true' and v_has_lines and l.skus is not null)
+       or x.fee_status not in ('ok', 'partial', 'no_content', 'no_schedule', 'not_effective', 'date_missing', 'skipped')
+       -- The fee date is the run's as-of date, or the order's own date under the ship-date basis.
+       or (x.fee_status not in ('skipped', 'date_missing') and x.fee_date is distinct from case when v_r.pricing_basis = 'fixed_date' then v_r.as_of_date else coalesce(o.order_date, s.first_ship) end)
+       or (x.fee_status = 'date_missing' and (v_r.pricing_basis = 'fixed_date' or coalesce(o.order_date, s.first_ship) is not null))
+       or (x.fee_status in ('ok', 'partial', 'no_content') and (x.fee_date is null or x.fee_schedule_version_id is null))
+       or (x.fee_status not in ('ok', 'partial', 'no_content') and (x.fee_schedule_version_id is not null or x.processing_definite <> 0 or x.processing_estimated <> 0 or x.fee_lines <> '[]'::jsonb))
+       or (x.fee_date is not null and not exists (select 1 from public.simulation_run_fee_contexts c where c.run_id = p_run and c.fee_date = x.fee_date and c.fee_schedule_version_id is not distinct from x.fee_schedule_version_id))
+       or coalesce(x.processing_definite, 0) <> (select coalesce(sum((e ->> 1)::bigint), 0) from jsonb_array_elements(coalesce(x.fee_lines, '[]'::jsonb)) e where e ->> 2 = 'd')
+       or coalesce(x.processing_estimated, 0) <> (select coalesce(sum((e ->> 1)::bigint), 0) from jsonb_array_elements(coalesce(x.fee_lines, '[]'::jsonb)) e where e ->> 2 = 'e')) then
+    raise exception 'an order result does not agree with the orders file or its fee context' using errcode = 'PC003';
+  end if;
+
+  insert into public.simulation_order_results (run_id, tenant_id, brand_id, order_id, first_row_no, order_month, fee_date, fee_schedule_version_id, units, lines, distinct_skus, packages, shipments, assumed,
+                                               fee_status, processing_definite, processing_estimated, fee_lines, unresolved, warning_codes)
+  select p_run, v_r.tenant_id, v_r.brand_id, x.order_id, x.first_row_no, x.order_month, x.fee_date, x.fee_schedule_version_id, x.units, x.lines, x.distinct_skus, x.packages, x.shipments, coalesce(x.assumed, '{}'::jsonb),
+         x.fee_status, coalesce(x.processing_definite, 0), coalesce(x.processing_estimated, 0), coalesce(x.fee_lines, '[]'::jsonb), coalesce(x.unresolved, '[]'::jsonb), coalesce(x.warning_codes, '{}'::text[])
+  from jsonb_to_recordset(p_order_results) as x(order_id uuid, first_row_no bigint, order_month text, fee_date date, fee_schedule_version_id uuid, units integer, lines integer, distinct_skus integer, packages integer, shipments integer, assumed jsonb,
+                                                fee_status text, processing_definite bigint, processing_estimated bigint, fee_lines jsonb, unresolved jsonb, warning_codes text[]);
+
+  update public.simulation_runs
+     set next_row_no = p_to_row + 1, processed_shipments = processed_shipments + v_n, partial_summary = app.summary_without_load_issues(p_partial), last_progress_at = now()
+   where id = p_run;
+  return jsonb_build_object('applied', true, 'status', 'running', 'nextRow', p_to_row + 1, 'processed', v_r.processed_shipments + v_n, 'total', v_r.total_shipments);
+end $$;
+
+-- cancel_simulation_run (M3): as above, for the in-flight state a cancelled run keeps.
+create or replace function public.cancel_simulation_run(p_run uuid) returns void
+language plpgsql security definer set search_path = '' as $$
+declare v_r public.simulation_runs%rowtype;
+begin
+  select * into v_r from public.simulation_runs where id = p_run for update;
+  if not found or not app.can_model_brand(v_r.tenant_id, v_r.brand_id) or not app.project_visible(v_r.project_id) then raise exception 'run not found' using errcode = 'P0002'; end if;
+  if v_r.status <> 'running' then return; end if;
+  -- Whatever an earlier window stored (a run that was in flight when the migration ran) loses its load-issue text now.
+  update public.simulation_runs set status = 'cancelled', partial_summary = app.summary_without_load_issues(partial_summary), finished_at = now() where id = p_run;
+end $$;
+
 -- save_forecast_run (M4): the summary and the pins stored for the customer carry loadIssueCount, not the strings (the strings
 -- still go to simulation_run_contexts.load_issues, which only staff can read).
 create or replace function public.save_forecast_run(p_brand uuid, p_rate_card uuid, p_name text, p_assumptions jsonb, p_summary jsonb, p_pins jsonb, p_engine_version text, p_fee_engine_version text) returns uuid
@@ -2119,7 +2731,7 @@ begin
     -- D8: a reweigh, remeasure or correction fee rule leaves a customer's pricing context only when the decision for that
     -- customer says the fee is absorbed. Passed through, decided case by case and not yet decided keep the rule in the customer's schedule.
     and (v_adjustment_view or v_brand is null or r.category not in ('reweight', 'remeasure', 'shipping_charge_correction')
-         or app.adjustment_handling(v_tenant, v_brand, case r.category when 'reweight' then 'reweight' when 'remeasure' then 'remeasure' else 'correction' end, 'separate_fee', current_date) <> 'absorbed')
+         or app.adjustment_handling(v_tenant, v_brand, case r.category when 'reweight' then 'reweight' when 'remeasure' then 'remeasure' else 'correction' end, 'separate_fee', app.utc_today()) <> 'absorbed')
     and r.carrier_code in (select s.carrier_code from public.rate_card_service_terms t
                             join public.rate_card_versions rv on rv.id = t.version_id and rv.rate_card_id = p_rate_card
                             join public.shipping_services s on s.id = t.service_id);
@@ -2157,6 +2769,46 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------------------
+-- SECTION 12b: legacy fee rules, realtime
+-- ---------------------------------------------------------------------------
+-- The published versions of reweigh, remeasure and correction fee rules that are not conditional charges: they predate the rule that
+-- makes these fees conditional, so they still count in calculator, run and forecast totals. The Overview checklist lists them so the 3PL
+-- can retire each and publish it again as a conditional charge. [{"ruleName": text, "versionNumber": integer}], oldest rule name first;
+-- empty when there are none. Staff of the account only (adjustment.view or adjustment.manage).
+create function public.adjustment_legacy_fee_rules(p_tenant uuid) returns jsonb
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if p_tenant is null or not app.can_view_adjustments(p_tenant) then raise exception 'not allowed' using errcode = '42501'; end if;
+  return coalesce((select jsonb_agg(jsonb_build_object('ruleName', x.name, 'versionNumber', x.version_number) order by x.name, x.version_number)
+                   from (select r.name, v.version_number
+                           from public.surcharge_rule_versions v join public.surcharge_rules r on r.id = v.rule_id
+                          where r.tenant_id = p_tenant and r.archived_at is null and r.category in ('reweight', 'remeasure', 'shipping_charge_correction')
+                            and v.status = 'published' and v.charge_class <> 'conditional'
+                            and (v.expiration_date is null or v.expiration_date >= app.utc_today())) x), '[]'::jsonb);
+end $$;
+
+-- The supabase_realtime publication, where the platform has one, must hold no table of the public schema: realtime would otherwise
+-- stream row changes (policies still apply, but staff-only data has no business in a stream). Run once by this migration; a test
+-- creates a publication inside a rolled-back transaction and calls it. A publication defined FOR ALL TABLES cannot be emptied table by
+-- table: that case only warns (change it to an explicit list in the dashboard).
+create function app.sweep_realtime_publication() returns integer
+language plpgsql security definer set search_path = '' as $$
+declare t record; n integer := 0;
+begin
+  if not exists (select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime') then return 0; end if;
+  if (select p.puballtables from pg_catalog.pg_publication p where p.pubname = 'supabase_realtime') then
+    raise warning 'the supabase_realtime publication is FOR ALL TABLES; change it to an explicit list that holds no table of the public schema';
+    return -1;
+  end if;
+  for t in select pt.schemaname, pt.tablename from pg_catalog.pg_publication_tables pt where pt.pubname = 'supabase_realtime' and pt.schemaname = 'public' loop
+    execute format('alter publication supabase_realtime drop table %I.%I', t.schemaname, t.tablename);
+    n := n + 1;
+  end loop;
+  return n;
+end $$;
+do $$ begin perform app.sweep_realtime_publication(); end $$;
+
+-- ---------------------------------------------------------------------------
 -- SECTION 13: privileges
 -- ---------------------------------------------------------------------------
 revoke all on function public.set_adjustment_policy(uuid, uuid, text, text, text, date, text), public.end_adjustment_policy(uuid, date),
@@ -2168,7 +2820,7 @@ revoke all on function public.set_adjustment_policy(uuid, uuid, text, text, text
   public.archive_adjustment_scenario(uuid), public.archive_risk_estimate(uuid),
   public.preview_customer_example(uuid, uuid), public.publish_customer_example(uuid, uuid, text, text, date, text), public.retire_customer_example(uuid),
   public.adjustment_example_state(uuid), public.adjustment_example_states(uuid), public.brand_adjustment_examples(uuid),
-  public.pricing_rules_for_card(uuid, date, uuid, uuid[], boolean)
+  public.pricing_rules_for_card(uuid, date, uuid, uuid[], boolean), public.discard_unattached_adjustment_file(uuid), public.adjustment_legacy_fee_rules(uuid)
   from public, anon;
 grant execute on function public.set_adjustment_policy(uuid, uuid, text, text, text, date, text), public.end_adjustment_policy(uuid, date),
   public.create_adjustment_import(uuid, text, jsonb), public.set_adjustment_import_mapping(uuid, jsonb, jsonb, text, boolean),
@@ -2179,7 +2831,7 @@ grant execute on function public.set_adjustment_policy(uuid, uuid, text, text, t
   public.archive_adjustment_scenario(uuid), public.archive_risk_estimate(uuid),
   public.preview_customer_example(uuid, uuid), public.publish_customer_example(uuid, uuid, text, text, date, text), public.retire_customer_example(uuid),
   public.adjustment_example_state(uuid), public.adjustment_example_states(uuid), public.brand_adjustment_examples(uuid),
-  public.pricing_rules_for_card(uuid, date, uuid, uuid[], boolean)
+  public.pricing_rules_for_card(uuid, date, uuid, uuid[], boolean), public.discard_unattached_adjustment_file(uuid), public.adjustment_legacy_fee_rules(uuid)
   to authenticated;
 -- finish_simulation_run, save_forecast_run and fail_simulation_run keep the grants they already had (same signatures).
 
@@ -2190,12 +2842,16 @@ revoke execute on function app.adjustment_policy_at(uuid, uuid, text, text, date
   app.adjustment_lock(uuid), app.adjustment_rows_problem(uuid, uuid, jsonb, integer), app.build_customer_example(uuid, uuid, date),
   app.example_state(public.published_adjustment_examples), app.scenario_result_problem(jsonb), app.example_packages(jsonb),
   app.purge_tenant_adjustment_data(uuid), app.purge_brand_adjustment_data(uuid), app.guard_adjustment_write(), app.audit_adjustments(),
-  app.guard_term_sources(), app.guard_override_notes(), app.guard_adjustment_fee_class()
+  app.guard_term_sources(), app.guard_override_notes(), app.guard_adjustment_fee_class(), app.guard_adjustment_fee_class_publish(),
+  app.guard_adjustment_file_insert(), app.adjustment_scan_file(bytea, text, text), app.pricing_context_keys(uuid, uuid, uuid, date),
+  app.context_causes(uuid, uuid, uuid, uuid, uuid, uuid[], uuid[], jsonb, date), app.sweep_realtime_publication()
   from authenticated;
 grant execute on function app.customer_json_ok(jsonb, jsonb, integer), app.shape_published_payload(), app.shape_brand_example(), app.plain_text_ok(text, integer),
-  app.adjustment_header_forbidden(text), app.try_date(text), app.try_uuid(text), app.try_dec(text, integer, integer), app.add_problem(jsonb, text, text),
+  app.adjustment_header_forbidden(text), app.adjustment_header_words_forbidden(text), app.adjustment_template_headers(), app.adjustment_header_fold(text), app.adjustment_header_norm(text), app.canon_package_ref(text), app.utc_today(),
+  app.try_date(text), app.try_uuid(text), app.try_dec(text, integer, integer), app.add_problem(jsonb, text, text), app.clean_import_validation(jsonb),
   app.summary_without_load_issues(jsonb) to service_role;
 grant execute on function app.adjustment_policy_at(uuid, uuid, text, text, date), app.adjustment_handling(uuid, uuid, text, text, date), app.adjustment_lock(uuid),
   app.adjustment_rows_problem(uuid, uuid, jsonb, integer), app.build_customer_example(uuid, uuid, date), app.example_state(public.published_adjustment_examples),
-  app.scenario_result_problem(jsonb), app.example_packages(jsonb) to service_role;
-grant execute on function app.purge_tenant_adjustment_data(uuid), app.purge_brand_adjustment_data(uuid) to service_role;
+  app.scenario_result_problem(jsonb), app.example_packages(jsonb), app.adjustment_scan_file(bytea, text, text), app.pricing_context_keys(uuid, uuid, uuid, date),
+  app.context_causes(uuid, uuid, uuid, uuid, uuid, uuid[], uuid[], jsonb, date) to service_role;
+grant execute on function app.purge_tenant_adjustment_data(uuid), app.purge_brand_adjustment_data(uuid), app.sweep_realtime_publication() to service_role;
