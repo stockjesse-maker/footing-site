@@ -291,7 +291,11 @@ export function RunHeadline({ summary, provenance, view, viewHref }: { summary: 
   );
 }
 
-function Table<T>({ caption, columns, rows, keyOf }: { caption: string; columns: { label: string; cell: (r: T) => string; numeric?: boolean }[]; rows: T[]; keyOf: (r: T) => string }) {
+/**
+ * `keyOf` must never return a rule key, a rule id or any other identifier: React keys travel in the page payload
+ * (the server-rendered tree is serialised for the browser), so they reach the customer even though nothing prints them.
+ */
+function Table<T>({ caption, columns, rows, keyOf }: { caption: string; columns: { label: string; cell: (r: T) => string; numeric?: boolean }[]; rows: T[]; keyOf: (r: T, index: number) => string }) {
   if (!rows.length) return null;
   return (
     <Card className="space-y-3">
@@ -308,8 +312,8 @@ function Table<T>({ caption, columns, rows, keyOf }: { caption: string; columns:
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
-            {rows.map((r) => (
-              <tr key={keyOf(r)}>
+            {rows.map((r, index) => (
+              <tr key={keyOf(r, index)}>
                 {columns.map((c) => (
                   <td key={c.label} className={`py-2 pr-3 ${c.numeric ? "tabular text-right whitespace-nowrap" : ""}`}>
                     {c.cell(r)}
@@ -333,7 +337,7 @@ export function RunBreakdowns({ summary }: { summary: BulkSummary }) {
   ];
   return (
     <div className="space-y-6">
-      <Table caption="By service" rows={summary.byService} keyOf={(r) => r.serviceId} columns={[{ label: "Service", cell: (r) => r.name }, ...countCols]} />
+      <Table caption="By service" rows={summary.byService} keyOf={(r, i) => `${i}:${r.name}`} columns={[{ label: "Service", cell: (r) => r.name }, ...countCols]} />
       <Table caption="By zone" rows={summary.byZone} keyOf={(r) => r.zone} columns={[{ label: "Zone", cell: (r) => r.zone }, ...countCols]} />
       <Table
         caption="By billable weight"
@@ -349,7 +353,7 @@ export function RunBreakdowns({ summary }: { summary: BulkSummary }) {
       <Table
         caption="Surcharges"
         rows={summary.bySurcharge}
-        keyOf={(r) => r.key}
+        keyOf={(r, i) => `${i}:${r.name}`}
         columns={[
           { label: "Surcharge", cell: (r) => `${r.name} (${r.scope === "carrier" ? "carrier published" : "your 3PL"})` },
           { label: "Shipments", cell: (r) => n(r.charged.shipments), numeric: true },
@@ -399,8 +403,9 @@ export function RunExclusions({ summary, fixHref, staff }: { summary: BulkSummar
         <div className="space-y-1 text-sm">
           <p className="font-medium">Notes on priced shipments</p>
           <ul className="space-y-1 text-muted">
-            {summary.warnings.map((w) => (
-              <li key={`${w.code}:${w.ruleKey ?? ""}`}>
+            {summary.warnings.map((w, i) => (
+              // Not the rule key the warning carries: a key is for staff only and React keys travel in the page payload.
+              <li key={`${i}:${w.code}`}>
                 {WARNING_TEXT[w.code] ?? w.code}: {plural(w.shipments, "shipment")}
               </li>
             ))}
@@ -757,6 +762,7 @@ function MinimumBlock({ v }: { v: MinimumView }) {
         <Badge tone={status.tone}>{status.label}</Badge>
       </div>
       {v.oneLine ? <p className="text-sm">{v.oneLine}</p> : null}
+      {v.note ? <p className="text-sm text-muted">{v.note}</p> : null}
       {v.buckets.length > 1 ? (
         <div className="overflow-x-auto" tabIndex={0} role="region" aria-label={`${v.name} by month`}>
           <table className="w-full text-sm">

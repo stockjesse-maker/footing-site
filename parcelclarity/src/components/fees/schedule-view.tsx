@@ -56,7 +56,8 @@ export function FeeScheduleView({ snapshot, audience = "brand", idPrefix = "fees
             </h3>
             <ul className="divide-y divide-line overflow-hidden rounded-card border border-line bg-raised shadow-card">
               {group.rules.map((rule) => (
-                <li key={rule.key} className="px-4 py-4 sm:px-6">
+                // Not `rule.key`: React keys travel in the page payload, and a rule key is for staff only. Position and name are what the customer reads.
+                <li key={`${rule.position}:${rule.name}`} className="px-4 py-4 sm:px-6">
                   <RuleBlock rule={rule} rules={rules} byKey={byKey} audience={audience} />
                 </li>
               ))}
@@ -104,7 +105,7 @@ function RuleBlock({ rule, rules, byKey, audience }: { rule: FeeRule; rules: Fee
           {members.length ? (
             <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted">
               {members.map((m) => (
-                <li key={m.key}>{m.name}</li>
+                <li key={`${m.position}:${m.name}`}>{m.name}</li>
               ))}
             </ul>
           ) : (

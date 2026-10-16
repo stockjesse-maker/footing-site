@@ -5,6 +5,7 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Stat } from "@/components/ui/stat";
+import { MINIMUM_MEMBER_GONE_LABEL } from "@/engine/fees/monthly";
 import { e4ToCents } from "@/engine/fees/tiers";
 import type { ForecastMinimum, ForecastProcessing, ForecastSummary, ForecastUnpriceable, ForecastVolumePoint } from "@/engine/forecast/types";
 import { assumptionLines, CATEGORY_LABEL, groupDigits, notComputedReason, unpriceableReason, usd, type AddTarget, type Audience, type ForecastHeadline, type ForecastResultData, type NotIncludedItem } from "@/components/forecast/result-model";
@@ -26,8 +27,9 @@ export interface ForecastResultProps {
   editHref?: string;
 }
 
+// A forecast prices every shipping line on assumptions, so the only line that is not an estimate is a flat monthly fee: that comes from the fee schedule, not the rate card.
 const CLASS_LABEL: Record<Audience, { definite: string; estimated: string }> = {
-  brand: { definite: "From your rate card", estimated: "Based on assumptions" },
+  brand: { definite: "From your fee schedule", estimated: "Based on assumptions" },
   staff: { definite: "Definite", estimated: "Estimated" },
 };
 
@@ -344,7 +346,7 @@ function MinimumCard({ m }: { m: ForecastMinimum }) {
         <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
           {m.members.map((member, i) => (
             <li key={`${i}-${member.name}`}>
-              {member.name}: {MEMBER_STATE[member.state] ?? member.state}
+              {member.state === "not_in_schedule" ? MINIMUM_MEMBER_GONE_LABEL : member.name}: {MEMBER_STATE[member.state] ?? member.state}
             </li>
           ))}
         </ul>

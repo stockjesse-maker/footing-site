@@ -2,13 +2,12 @@ import Link from "next/link";
 import { archiveScenario, shareDataset, shareScenario } from "@/app/actions/modeling";
 import { ConfirmAction } from "@/components/forms/confirm-action";
 import { formatMoney } from "@/components/pricing/calculation-result";
-import type { BulkSummary } from "@/engine/modeling/types";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Stat } from "@/components/ui/stat";
 import { formatDate } from "@/lib/format/date";
-import { defaultView, endSentence, headlineFigures, headlineReason, headlineText, monthlyCharges, usd, type HeadlineAudience, type HeadlineSummary } from "@/lib/modeling/headline";
+import { defaultView, endSentence, headlineFigures, headlineReason, headlineText, monthlyCharges, pricedVolumeNote, usd, type HeadlineAudience, type HeadlineBulkInput, type HeadlineInput } from "@/lib/modeling/headline";
 import { fileSummaryOf, forecastSummaryOf, latestCompletedBulkRun, latestCompletedForecast, latestCompletedWhatIf, type DatasetListRow, type ProjectListRow, type RunListRow } from "@/lib/modeling/queries";
 
 /** Lists shared by the customer portal and the 3PL's on-behalf view. */
@@ -22,7 +21,7 @@ const DATASET_STATUS: Record<string, { label: string; tone: "neutral" | "accent"
   discarded: { label: "Discarded", tone: "neutral" },
 };
 
-export function runStateLabel(run: RunListRow, now = Date.now()): { label: string; tone: "neutral" | "accent" | "success" | "warning" | "danger" } {
+export function runStateLabel(run: Pick<RunListRow, "status" | "last_progress_at">, now = Date.now()): { label: string; tone: "neutral" | "accent" | "success" | "warning" | "danger" } {
   if (run.status === "running") {
     const stale = now - new Date(run.last_progress_at).getTime() > 2 * 60_000;
     return stale ? { label: "Paused · open to continue", tone: "warning" } : { label: "Pricing…", tone: "accent" };
@@ -70,10 +69,14 @@ const KIND_BADGE: Record<ProjectListRow["kind"], { label: string; tone: "neutral
   forecast: { label: "Forecast", tone: "success" },
 };
 
-/** What the headline says for a run, in one line: "All-in cost per order, without storage: At least $26.94". */
-export function headlineLine(summary: HeadlineSummary, audience: HeadlineAudience = "brand"): string {
+/**
+ * What the headline says for a run, in one line: "All-in cost per order, without storage: At least $26.94". A forecast
+ * that priced only part of its volume says how much, so its per-order figure never reads as a plain one.
+ */
+export function headlineLine(summary: HeadlineInput, audience: HeadlineAudience = "brand"): string {
   const h = headlineFigures(summary, defaultView(summary), {}, audience);
-  return `${h.label}: ${headlineText(h)}`;
+  const partial = pricedVolumeNote(summary);
+  return `${h.label}: ${headlineText(h)}${partial ? ` (${partial.charAt(0).toLowerCase()}${partial.slice(1)})` : ""}`;
 }
 
 function runSummaryLine(project: ProjectListRow, run: RunListRow, audience: HeadlineAudience): string {
@@ -84,7 +87,8 @@ function runSummaryLine(project: ProjectListRow, run: RunListRow, audience: Head
   if (run.modeled_orders === 0) return " · no orders could be priced";
   const file = fileSummaryOf(run);
   // A model priced before fulfillment fees existed keeps its shipping line and says so.
-  if (!file) return ` · estimated ${formatMoney({ amount: String(run.total_expected ?? "0.00"), currency: "USD" })} shipping for ${run.modeled_orders.toLocaleString("en-US")} orders (priced before fulfillment fees; run it again to add them)`;
+  // The stored total is a column of the run; when it is missing the line says nothing about an amount (never $0.00).
+  if (!file) return ` · ${run.total_expected === null ? "shipping priced" : `estimated ${formatMoney({ amount: String(run.total_expected), currency: "USD" })} shipping`} for ${run.modeled_orders.toLocaleString("en-US")} orders (priced before fulfillment fees; run it again to add them)`;
   // An all-in figure carries monthly charges spread over orders, so the line prints the volume and period it was spread over.
   const h = headlineFigures(file, defaultView(file), {}, audience);
   const basis = h.view === "allin" && h.amount !== null ? ` · ${h.basisSentence}` : "";
@@ -143,7 +147,7 @@ export function ScenarioList({ projects, basePath, brandId, staff, compareHref }
  * all-in figure, then shipping, order fees and monthly charges. Every figure is from the stored summary, so
  * all tiles describe the same run and the same orders.
  */
-export function ModelTiles({ summary, audience = "brand" }: { summary: BulkSummary; audience?: HeadlineAudience }) {
+export function ModelTiles({ summary, audience = "brand" }: { summary: HeadlineBulkInput; audience?: HeadlineAudience }) {
   const allIn = headlineFigures(summary, "allin", {}, audience);
   const shipping = headlineFigures(summary, "shipping", {}, audience);
   const fees = headlineFigures(summary, "fees", {}, audience);

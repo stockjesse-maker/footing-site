@@ -134,6 +134,14 @@ function singular(unit: string): string {
 // Minimums
 // ---------------------------------------------------------------------------
 
+/** What an account-minimum member is called when its rule is no longer in the schedule. A rule key is for staff only. */
+export const NOT_IN_SCHEDULE_NAME = "a rule no longer in the schedule";
+/**
+ * What every customer screen prints for such a member, whatever name a stored summary carries (a summary stored before
+ * the engine named it neutrally holds the rule's key as its name).
+ */
+export const MINIMUM_MEMBER_GONE_LABEL = "A charge that is no longer on the fee schedule";
+
 export function evaluateMinimums(buckets: MonthBucket[], schedule: FeeScheduleSnapshot, monthly: MonthlyFeeResult): MinimumResult[] {
   const minimums = schedule.rules.filter((r) => r.basis === "minimum" && r.minimum).sort((a, b) => a.position - b.position);
   const ruleByKey = new Map(schedule.rules.map((r) => [r.key, r]));
@@ -146,7 +154,8 @@ export function evaluateMinimums(buckets: MonthBucket[], schedule: FeeScheduleSn
     const unresolvedInBuckets = new Set(buckets.flatMap((b) => b.unresolvedRuleKeys ?? []));
     const memberStates = members.map((key) => {
       const member = ruleByKey.get(key);
-      if (!member) return { ruleKey: key, name: key, state: "not_in_schedule" as const };
+      // The member's name is a neutral label, never its key: this name is stored in summaries and printed by customer screens.
+      if (!member) return { ruleKey: key, name: NOT_IN_SCHEDULE_NAME, state: "not_in_schedule" as const };
       const state = notModeledKeys.has(key) || unresolvedInBuckets.has(key) ? ("not_modeled" as const) : ("priced" as const);
       if (state === "not_modeled") reasons.push(`${member.name} not modeled`);
       return { ruleKey: key, name: member.name, state };

@@ -392,6 +392,11 @@ export type RunSetupSchedule =
     };
 
 export interface RunSetupData {
+  /**
+   * The day whose fee schedule version `schedule` is: the page's day (today) or the date the run being looked at was
+   * priced for. The form compares it with the date chosen in step 1 and asks again when they differ.
+   */
+  date?: string;
   period: RunSetupPeriod | null;
   schedule: RunSetupSchedule;
   /** The file carries item counts / line data (from the dataset's validation counts). */
@@ -599,6 +604,38 @@ export function initialFulfillmentState(ctx: FulfillmentFormContext, prev: Fulfi
     contentRows: rows && rows.length > 0 ? rows.map((r) => ({ units: String(r.units), lines: String(r.lines), sharePct: r.sharePct })) : [{ units: "", lines: "", sharePct: "100.00" }],
     averageUnits: "",
     averageLines: "",
+  };
+}
+
+/**
+ * The day whose fee schedule version a run takes its monthly questions from (design section 3): the as-of date when
+ * the rates are those of one date, the end of the file's period when each order is priced on its own date. null when
+ * it cannot be told (no usable date chosen, a file with no dated order): the questions then stay as they are.
+ */
+export function monthlyFeeDate(basis: "fixed_date" | "ship_date", asOfDate: string | null, period: Pick<RunSetupPeriod, "to"> | null): string | null {
+  if (basis === "ship_date") return period?.to ?? null;
+  return asOfDate !== null && /^\d{4}-\d{2}-\d{2}$/.test(asOfDate) ? asOfDate : null;
+}
+
+/**
+ * The form state for another question set (the fee schedule version in effect on another date): answers to questions
+ * that are still asked are kept as they are, a new question starts unanswered, a question no longer asked is dropped.
+ * The volume, the order content and the skip switch carry over; a packaging default the new version does not price is cleared.
+ */
+export function reconcileFulfillmentState(prev: FulfillmentFormState, ctx: FulfillmentFormContext, packagingTypes: readonly string[]): FulfillmentFormState {
+  const fresh = initialFulfillmentState(ctx, null);
+  const drivers: Record<string, QuantityAnswerState> = {};
+  const shares: Record<string, ShareAnswerState> = {};
+  for (const q of ctx.questions) {
+    if (q.answers === "orderShares") shares[q.key] = prev.shares[q.key] ?? fresh.shares[q.key]!;
+    else drivers[q.key] = prev.drivers[q.key] ?? fresh.drivers[q.key]!;
+  }
+  return {
+    ...prev,
+    volumeMode: ctx.canDeriveVolume ? prev.volumeMode : "stated",
+    drivers,
+    shares,
+    packagingDefault: packagingTypes.includes(prev.packagingDefault) ? prev.packagingDefault : "",
   };
 }
 

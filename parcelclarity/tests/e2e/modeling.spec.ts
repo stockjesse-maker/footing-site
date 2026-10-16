@@ -232,8 +232,12 @@ test("the customer saves a single shipment as a scenario and sees it on the over
   await expect(page.getByText("Saved. Find it under Saved scenarios.")).toBeVisible();
 
   await page.goto("/portal");
-  await expect(page.getByText("Shipping, from your latest model")).toBeVisible();
+  // Milestone 4 reworded the overview: every headline figure comes from the latest orders-file model, with its own label. This customer has no
+  // fee schedule, so the model is shipping only: the shipping figure is a number, the all-in is "Not computed" with the reason, never a $0.
+  await expect(page.getByRole("heading", { name: "From your latest model" })).toBeVisible();
   await expect(stat(page, "Estimated shipping cost per order")).toHaveText(/^\$\d+\.\d{2}$/);
+  await expect(stat(page, "All-in cost per order")).toHaveText("Not computed");
+  await expect(page.getByText("No fee schedule was in effect for this model, so only shipping is shown.").first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Typical 3 lb order to Phoenix" })).toBeVisible();
   await page.goto("/portal/reports");
   await expect(page.getByRole("link", { name: "Compare" }).first()).toBeVisible();

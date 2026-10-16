@@ -557,12 +557,15 @@ describe("the result renders", () => {
   it("uses the brand's vocabulary for a brand and the plain classes for staff", () => {
     const brand = text(renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(full, "brand"), audience: "brand" })));
     const staff = text(renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(full, "staff"), audience: "staff" })));
-    expect(brand).toContain("From your rate card");
+    // The one line of a forecast that is not an estimate is a flat monthly fee, which the fee schedule sets (never the rate card).
+    expect(brand).toContain("From your fee schedule");
+    expect(brand).not.toContain("From your rate card");
     expect(brand).toContain("Based on assumptions");
     expect(brand).not.toContain("Definite");
     expect(staff).toContain("Definite");
     expect(staff).toContain("Estimated");
     expect(staff).not.toContain("From your rate card");
+    expect(staff).not.toContain("From your fee schedule");
   });
 
   it("shows only the shipping figure, with the reason, when fulfillment costs were skipped", () => {

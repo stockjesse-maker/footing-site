@@ -222,10 +222,14 @@ export function forecastAssumptions(over: Partial<ForecastAssumptions> = {}): Fo
   };
 }
 
-export function forecast(assumptions: ForecastAssumptions = forecastAssumptions()): ForecastSummary {
+export function forecast(assumptions: ForecastAssumptions = forecastAssumptions(), options: { priceOnlyCovered?: boolean } = {}): ForecastSummary {
   const deps: ForecastDeps = { pricing: fixtureContext(), schedule: standard, pinnedRates: {}, feeEngineVersion: FEE_ENGINE_VERSION, engineVersion: ENGINE_VERSION, hash: sha256Hex };
-  const result = evaluateForecast(assumptions, deps);
+  const result = evaluateForecast(assumptions, deps, options);
   if (result.status !== "ok") throw new Error(`expected ok, got ${JSON.stringify(result)}`);
   return result.summary;
 }
 
+
+/** A forecast saved with "price only what the rate card covers" whose zone 9 the rate card does not price: 80.00% of the volume is priced. */
+export const partialForecast = (): ForecastSummary =>
+  forecast(forecastAssumptions({ zones: [{ zone: "2", sharePct: "40" }, { zone: "5", sharePct: "24" }, { zone: "8", sharePct: "16" }, { zone: "9", sharePct: "20" }] }), { priceOnlyCovered: true });

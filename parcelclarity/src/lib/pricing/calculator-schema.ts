@@ -257,23 +257,30 @@ export function offeredPackaging(value: string, options: Pick<CalculatorBoxOptio
 export interface BoxFromDrafts {
   /** The box to send; null when the items are not entered (no order fees) or something is invalid. */
   box: CalculatorBox | null;
-  /** Inline errors by field: `box.units`, `box.products`, `box.lines`, `box.counts.<key>`. */
+  /** Inline errors by field: `box.units` (a number that cannot be read, or fewer than one), `box.products`, `box.lines`, `box.counts.<key>`. Each one stops the calculation. */
   errors: Record<string, string>;
+  /**
+   * Set when other fields of the block are filled but the items are not: why there are no order fees yet. It is a note
+   * under "Items", not an error: it never stops the shipping price, which is always calculated.
+   */
+  unitsNote: string | null;
   /** True when the customer typed anything in the block. */
   started: boolean;
 }
 
-const UNITS_REQUIRED = "Enter the number of items to see order fees.";
+/** The note under "Items" when other fields of the box are filled but the items are not. */
+export const UNITS_REQUIRED = "Enter the number of items to see order fees.";
 
 /**
  * Turns the block's text fields into the box the server takes, with inline validation. Only the fields
  * the schedule asks for count (a stale answer to a field the new ship date's schedule does not have is
- * ignored). Items blank with nothing else entered is fine: no box, no error, no order fees. Items blank
- * with anything else entered is an error on the items. A blank count is unknown, not zero.
+ * ignored). Items blank with nothing else entered is fine: no box, no note, no order fees. Items blank
+ * with anything else entered is a note on the items (`unitsNote`), never an error: the order fees wait for
+ * the items and the shipping price does not. A blank count is unknown, not zero.
  */
 export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOptionsOk, "showLines" | "counts" | "packaging" | "allowOtherPackaging"> | null): BoxFromDrafts {
   const errors: Record<string, string> = {};
-  if (!options) return { box: null, errors, started: false };
+  if (!options) return { box: null, errors, unitsNote: null, started: false };
   const empty: ParsedCount = { kind: "empty" };
   const units = parseCount(drafts.units);
   const products = parseCount(drafts.products);
@@ -289,8 +296,9 @@ export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOpti
     else if (parsed.kind === "ok" && parsed.value < min) errors[field] = tooSmall;
     else if (parsed.kind === "ok" && parsed.value > BOX_COUNT_MAX) errors[field] = `Enter ${BOX_COUNT_MAX.toLocaleString("en-US")} or fewer.`;
   };
+  let unitsNote: string | null = null;
   if (units.kind === "empty") {
-    if (others) errors["box.units"] = UNITS_REQUIRED;
+    if (others) unitsNote = UNITS_REQUIRED;
   } else check("box.units", units, 1, "Enter at least 1 item.");
   check("box.products", products, 1, "Enter at least 1 product.");
   check("box.lines", lines, 1, "Enter at least 1 order line.");
@@ -300,7 +308,7 @@ export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOpti
   for (const [field, message] of Object.entries(boxProblems({ units: value(units), products: value(products), lines: value(lines) }))) {
     if (!errors[`box.${field}`]) errors[`box.${field}`] = message;
   }
-  if (Object.keys(errors).length > 0 || units.kind !== "ok") return { box: null, errors, started };
+  if (Object.keys(errors).length > 0 || units.kind !== "ok") return { box: null, errors, unitsNote, started };
 
   const givenCounts: Record<string, number> = {};
   for (const c of counts) if (c.parsed.kind === "ok") givenCounts[c.key] = c.parsed.value;
@@ -311,7 +319,7 @@ export function boxFromDrafts(drafts: BoxDrafts, options: Pick<CalculatorBoxOpti
     packaging: packagingChosen ? packaging : null,
     ...(Object.keys(givenCounts).length ? { counts: givenCounts } : {}),
   };
-  return { box, errors, started };
+  return { box, errors, unitsNote: null, started };
 }
 
 /** The box in plain words ("3 items, 2 different products, packaging: Poly mailer"): the echo under the result and in saved scenarios. */

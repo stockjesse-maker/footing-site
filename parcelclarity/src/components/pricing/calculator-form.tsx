@@ -268,6 +268,7 @@ export function BoxBlock({
   options,
   drafts,
   errors,
+  unitsNote = null,
   packageCount,
   onChange,
 }: {
@@ -275,6 +276,8 @@ export function BoxBlock({
   options: CalculatorBoxOptionsOk;
   drafts: BoxDrafts;
   errors: Record<string, string>;
+  /** Shown under Items when other fields are filled but the items are not: the order fees wait for them (never an error). */
+  unitsNote?: string | null;
   packageCount: number;
   onChange: (patch: Partial<BoxDrafts>) => void;
 }) {
@@ -287,7 +290,20 @@ export function BoxBlock({
         Fee schedule <span className="font-medium text-fg">{options.scheduleName}</span>, in effect from {formatDate(options.effectiveDate)}. Enter the items to see order fees for this order; monthly charges are not included.
       </p>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field id={`${idPrefix}-box-units`} label="Items (units)" error={errors["box.units"]} hint="Total units in the box, across all products.">
+        <Field
+          id={`${idPrefix}-box-units`}
+          label="Items (units)"
+          error={errors["box.units"]}
+          hint={
+            unitsNote ? (
+              <>
+                Total units in the box, across all products. <span className="font-medium text-fg">{unitsNote}</span> The shipping price does not wait for it.
+              </>
+            ) : (
+              "Total units in the box, across all products."
+            )
+          }
+        >
           {(aria) => <Input {...aria} type="text" inputMode="numeric" autoComplete="off" placeholder="e.g. 3" value={drafts.units} onChange={(e) => onChange({ units: e.target.value })} />}
         </Field>
         <Field id={`${idPrefix}-box-products`} label="Different products" error={errors["box.products"]} hint="How many different products (SKUs), however many of each.">
@@ -501,7 +517,6 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
   const [packages, setPackages] = useState<PackageDraft[]>(() => [newPackage(0)]);
   const [errors, setErrors] = useState<FieldErrors>({});
   const [boxDrafts, setBoxDrafts] = useState<BoxDrafts>(emptyBoxDrafts);
-  const [boxSubmitted, setBoxSubmitted] = useState(false);
   const [boxFetched, setBoxFetched] = useState<{ key: string; options: CalculatorBoxOptions } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [run, setRun] = useState<PricedRun | null>(null);
@@ -542,12 +557,8 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
   const boxOptions: CalculatorBoxOptions | null = boxKey && boxFetched?.key === boxKey ? boxFetched.options : null;
   const boxOk = boxOptions?.status === "ok" && boxOptions.hasOrderFees ? boxOptions : null;
   const boxLive = useMemo(() => boxFromDrafts(boxDrafts, boxOk), [boxDrafts, boxOk]);
-  // Errors show as the customer types, except "enter the items", which waits for a calculate attempt.
-  const boxErrors = useMemo(() => {
-    const out = { ...boxLive.errors };
-    if (!boxSubmitted && boxDrafts.units.trim() === "") delete out["box.units"];
-    return out;
-  }, [boxLive.errors, boxSubmitted, boxDrafts.units]);
+  // Errors show as the customer types. The note under Items (the fees are waiting for the items) is not an error and shows as soon as it applies.
+  const boxErrors = boxLive.errors;
   const patchBox = (patch: Partial<BoxDrafts>) => setBoxDrafts((d) => ({ ...d, ...patch }));
   const focusBoxField = (field: BoxFieldRef) => {
     const el = document.getElementById(boxFieldId(idPrefix, field));
@@ -620,6 +631,8 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
       };
     });
     const box = boxFromDrafts(boxDrafts, boxOk);
+    // Items still blank while other fields of the box are filled is only a note (`box.unitsNote`): the order fees wait for the items, the
+    // shipping price never does. Every real problem in the box (a count that is not a number, more products than items) still stops the calculation.
     Object.assign(errs, box.errors);
     if (Object.keys(errs).length) return { ok: false, errors: errs };
     return {
@@ -645,7 +658,6 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setMessage(null);
-    setBoxSubmitted(true);
     const built = buildRequest();
     if (!built.ok) {
       setErrors(built.errors);
@@ -816,7 +828,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
           </fieldset>
 
           {boxOk ? (
-            <BoxBlock idPrefix={idPrefix} options={boxOk} drafts={boxDrafts} errors={boxErrors} packageCount={packages.length} onChange={patchBox} />
+            <BoxBlock idPrefix={idPrefix} options={boxOk} drafts={boxDrafts} errors={boxErrors} unitsNote={boxLive.unitsNote} packageCount={packages.length} onChange={patchBox} />
           ) : boxOptions ? (
             <BoxNote options={boxOptions} />
           ) : boxKey ? (

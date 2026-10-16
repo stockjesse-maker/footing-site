@@ -4,6 +4,7 @@ import type { CompareRunInput } from "@/lib/modeling/headline";
 import {
   MONTHLY_CSV_COLUMNS,
   ORDERS_CSV_COLUMNS,
+  allocationBasisSentence,
   assumptionsLine,
   buildComparison,
   categoryName,
@@ -32,6 +33,8 @@ import {
   ordersCsvRecord,
   orderRowFigures,
   parseView,
+  pricedVolumeNote,
+  pricedVolumeShare,
   ruleNameIndex,
   toCents,
   uncoveredFeeDatesNote,
@@ -64,6 +67,7 @@ import {
   noVolume,
   notEffective,
   oneMonth,
+  partialForecast,
   period,
   returnsRun,
   schedule,
@@ -1018,8 +1022,9 @@ describe("compare: what is left out, and rows that are not like for like", () =>
     expect(compareFacts(noStorageAnswer).leftOutText).toBe("storage");
     const c = buildComparison(run(lowCoverage), run(complete));
     expect(c.allInComparable).toBe(false);
-    expect(c.allInNote).toContain("(the account minimum (not worked out exactly) in the first; Nothing left out in the second)");
-    expect(c.allInNote).not.toContain("Nothing left out in the first");
+    // Mid-sentence, so lower case: "nothing left out", never "Nothing left out" after a semicolon.
+    expect(c.allInNote).toContain("(the account minimum (not worked out exactly) in the first; nothing left out in the second)");
+    expect(c.allInNote).not.toContain("Nothing left out");
   });
 
   it("explains a shipping figure that averages over fewer orders than the run page's Shipping figure", () => {
@@ -1063,5 +1068,98 @@ describe("CSV comments never end a sentence twice", () => {
     expect(comments.join("\n")).not.toContain("..");
     expect(comments.join("\n")).toContain("No monthly volume is known, so monthly charges are not spread over your orders.");
     expect(monthlyCsv(noVolume, { scenarioName: "S", rateCardName: "R", feeScheduleLine: null }).comments.join("\n")).not.toContain("..");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A forecast that priced only part of its volume says how much, wherever its per-order figure appears
+// ---------------------------------------------------------------------------
+describe("a forecast saved with 'price only what the rate card covers'", () => {
+  const partial = partialForecast();
+  const NOTE = "Only 80.00% of the volume could be priced, so this is an average over that part";
+
+  it("is a partial forecast: 80.00% priced, no all-in figure", () => {
+    expect(partial.priceOnlyCovered).toBe(true);
+    expect(partial.pricedSharePct).toBe("80.00");
+    expect(partial.allIn).toBeNull();
+    expect(partial.allocation).toBeNull();
+  });
+
+  it("names the priced share in the basis sentence of its Shipping and Order fees figures, which the lists and tiles print", () => {
+    expect(pricedVolumeShare(partial)).toBe("80.00");
+    expect(pricedVolumeNote(partial)).toBe(NOTE);
+    const shipping = headlineFigures(partial, "shipping");
+    expect(shipping.amount).toBe(partial.shipping.perOrder);
+    expect(shipping.basisSentence).toBe(`Forecast at 1,250 orders a month. ${NOTE}`);
+    expect(headlineFigures(partial, "fees").basisSentence).toBe(`Forecast at 1,250 orders a month. ${NOTE}`);
+    // The default view of such a forecast is Shipping: no all-in exists, and the figure is never plain.
+    expect(defaultView(partial)).toBe("shipping");
+    expect(headlineFigures(partial, "allin").amount).toBeNull();
+  });
+
+  it("says nothing extra for a forecast that priced all of its volume, or for a file run", () => {
+    expect(pricedVolumeNote(forecast())).toBeNull();
+    expect(pricedVolumeShare(complete)).toBeNull();
+    // "Price only what the rate card covers" ticked, but the rate card covered everything: nothing was left out.
+    const all = forecast(forecastAssumptions(), { priceOnlyCovered: true });
+    expect(all.priceOnlyCovered).toBe(true);
+    expect(pricedVolumeNote(all)).toBeNull();
+    expect(headlineFigures(all, "shipping").basisSentence).toBe("Forecast at 1,250 orders a month");
+  });
+
+  it("compare: both rows with a per-order figure carry the share, and the basis row says what was priced", () => {
+    const forecastRun = (summary: ReturnType<typeof forecast>) => ({ ...baseRun, datasetId: null, datasetName: null, summary, assumptions: forecastAssumptions() as never });
+    const c = buildComparison(forecastRun(partial), fileRun(complete));
+    const note = 'A forecast saved with "price only what the rate card covers" averages over the part of its volume that could be priced (80.00% in the first); the rest is not estimated.';
+    expect(rowOf(c, "Shipping per order").note).toBe(note);
+    expect(rowOf(c, "Shipping + order fees (comparable)").note).toBe(note);
+    expect(rowOf(c, "Orders modeled").a).toBe("80.00% of the volume");
+    // Two models that priced all of their volume carry no such note.
+    expect(rowOf(buildComparison(forecastRun(forecast()), fileRun(complete)), "Shipping per order").note).toBeNull();
+    // Both partial: each side says its own share.
+    const both = buildComparison(forecastRun(partial), forecastRun(partial));
+    expect(rowOf(both, "Shipping per order").note).toContain("(80.00% in the first; 80.00% in the second)");
+  });
+});
+
+describe("compare: every allocated monthly figure carries its basis", () => {
+  it("the all-in rows open with a 'Spread over' row naming the volume and period each model's monthly charges were shared over", () => {
+    const c = buildComparison(fileRun(complete), fileRun(oneMonth));
+    const allIn = c.rows.filter((r) => r.group === "allin");
+    expect(allIn[0]!.label).toBe("Spread over");
+    expect(allIn[0]!.a).toBe(allocationBasisSentence(complete));
+    expect(allIn[0]!.a).toMatch(/^2 orders a month over Mar 1, 2026–Apr 30, 2026 \(2 months\)$/);
+    expect(allIn[0]!.b).toBe(allocationBasisSentence(oneMonth));
+    // A forecast says it is a typical month as described; a model with no volume says so rather than printing a basis it does not have.
+    const withForecast = buildComparison({ ...fileRun(complete), summary: forecast(), datasetId: null, datasetName: null, assumptions: forecastAssumptions() as never }, fileRun(noVolume));
+    const spread = withForecast.rows.find((r) => r.label === "Spread over")!;
+    expect(spread.a).toBe("1,250 orders a month, as described in the forecast");
+    expect(spread.b).toBe("No monthly volume is known, so monthly charges are not spread over your orders.");
+  });
+});
+
+describe("an exact account minimum on a file too short to say what a month looks like", () => {
+  const shortFile = (over: Partial<typeof period> = {}) =>
+    finalize([A, B], { period: { ...period, from: "2026-03-02", to: "2026-03-05", days: 4, months: "0.129032", population: 2, inPeriod: 2, volumeBasis: "stated", monthlyOrders: "20.0000", monthProfile: [{ month: "2026-03", fraction: "0.129032", orders: 2 }], ...over } }, { rows: 2, orders: 2, shipments: 2, packages: 2 });
+
+  it("says it was worked out from the days in the file, not from the volume the customer stated", () => {
+    const s = shortFile();
+    const [view] = minimumViews(s);
+    expect(view!.status).toBe("exact");
+    expect(view!.note).toBe("This was worked out from the 4 days in your file, not from the 20 orders a month you stated, so at that volume the amount could be different.");
+    // The amounts are the window's own (prorated), exactly as before; the note adds nothing to them.
+    expect(view!.oneLine).toMatch(/^Fees counted toward the minimum: \$[\d,.]+ · Minimum: \$64\.52 · Added: \$[\d,.]+$/);
+  });
+
+  it("is not said when the file is long enough to derive its own volume, or the volume is the file's", () => {
+    expect(minimumViews(complete)[0]!.note).toBeNull();
+    expect(minimumViews(shortFile({ days: 31, months: "1.000000", volumeBasis: "stated" }))[0]!.note).toBeNull();
+    expect(minimumViews(shortFile({ volumeBasis: "file" }))[0]!.note).toBeNull();
+  });
+
+  it("is not said for a minimum that is not exact (it says what it could add instead)", () => {
+    const [view] = minimumViews(noStorageAnswer);
+    expect(view!.status).toBe("upper_bound");
+    expect(view!.note).toBeNull();
   });
 });

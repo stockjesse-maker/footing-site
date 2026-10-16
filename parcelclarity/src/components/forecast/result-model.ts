@@ -1,4 +1,5 @@
 import { formatMoney } from "@/components/pricing/calculation-result";
+import { MINIMUM_MEMBER_GONE_LABEL } from "@/engine/fees/monthly";
 import { e4ToCents } from "@/engine/fees/tiers";
 import type { FeeCategory, FeeScope } from "@/engine/fees/types";
 import type { ForecastCaveat, ForecastSummary, ForecastVolumePoint } from "@/engine/forecast/types";
@@ -318,7 +319,10 @@ function blank(value: unknown): unknown {
  */
 export function scrubForecast(summary: ForecastSummary, audience: Audience): ForecastSummary {
   const base = { ...summary, cells: [] as ForecastSummary["cells"] };
-  return audience === "brand" ? (blank(base) as ForecastSummary) : base;
+  if (audience !== "brand") return base;
+  const scrubbed = blank(base) as ForecastSummary;
+  // A forecast saved before the engine named a vanished account-minimum member neutrally carries that rule's key as its name.
+  return { ...scrubbed, minimums: scrubbed.minimums.map((m) => ({ ...m, members: m.members.map((x) => (x.state === "not_in_schedule" ? { ...x, name: MINIMUM_MEMBER_GONE_LABEL } : x)) })) };
 }
 
 export interface ForecastResultData {

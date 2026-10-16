@@ -2,7 +2,7 @@
 
 import { Fragment, useId, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type MouseEvent, type ReactNode, type SetStateAction } from "react";
 import { flushSync, useFormStatus } from "react-dom";
-import { createBulkScenario, rerunScenario } from "@/app/actions/modeling";
+import { createBulkScenario, loadFulfillmentSetup, rerunScenario } from "@/app/actions/modeling";
 import { ActionForm, SubmitButton, useFormState } from "@/components/forms/action-form";
 import { useLocalToday } from "@/components/forms/local-today";
 import { FulfillmentStep } from "@/components/modeling/fulfillment-step";
@@ -11,6 +11,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/field";
+import { formatDate } from "@/lib/format/date";
 import type { FulfillmentAssumptions } from "@/lib/modeling/fee-input";
 import {
   derivePeriodVolume,
@@ -18,6 +19,8 @@ import {
   formatAssumptionDiff,
   fulfillmentFromState,
   initialFulfillmentState,
+  monthlyFeeDate,
+  reconcileFulfillmentState,
   type FulfillmentFormContext,
   type FulfillmentFormState,
   type RunSetupData,
@@ -38,6 +41,11 @@ export interface RunSetupProps {
   /** Staff pass the customer; brand members are bound to their own. */
   brandId?: string;
   datasetId?: string;
+  /**
+   * The orders file to read the questions of another date for (step 2 asks again when the date chosen in step 1 is not
+   * the one the page was loaded for). Defaults to `datasetId`; a re-run form, which posts no dataset, passes the scenario's file.
+   */
+  fulfillmentDatasetId?: string;
   /** Re-run an existing scenario instead of creating one. */
   projectId?: string;
   cards: { id: string; name: string; effectiveDates: string[] }[];
@@ -56,8 +64,9 @@ export interface RunSetupProps {
   /** The settings of the run on screen, so "run again" starts from what the customer is looking at. */
   initial?: RunSetupInitial;
   /**
-   * Step 2 "Fulfillment costs": the result of `loadRunSetupData(supabase, brandId, datasetId)`. Absent = the
-   * form has no step 2 and posts no `fulfillment` field.
+   * Step 2 "Fulfillment costs": the result of `loadRunSetupData(supabase, brandId, datasetId, date)`. Absent = the
+   * form has no step 2 and posts no `fulfillment` field. Its `date` is the day whose fee schedule it holds; when the
+   * date chosen in step 1 is another day the form reads the questions of that day (`loadFulfillmentSetup`).
    */
   fulfillment?: RunSetupData | null;
   /** Wording: staff model on behalf of a customer. Defaults to "staff" when `brandId` is passed, else "brand". */
@@ -105,7 +114,7 @@ function ResetSafe({ children }: { children: ReactNode }) {
 
 function RunSetupFields(p: RunSetupProps) {
   const schedule = p.fulfillment?.schedule;
-  if (p.fulfillment && schedule?.status === "ok") return <TwoStepFields {...p} setup={p.fulfillment} schedule={schedule} />;
+  if (p.fulfillment && schedule?.status === "ok") return <TwoStepFields {...p} setup={p.fulfillment} />;
   return (
     <>
       <Identity {...p} />
@@ -259,10 +268,10 @@ function ShippingFields(p: RunSetupProps) {
   );
 }
 
-function StartButton({ children, onClick }: { children: ReactNode; onClick: (e: MouseEvent<HTMLButtonElement>) => void }) {
+function StartButton({ children, onClick, disabled }: { children: ReactNode; onClick: (e: MouseEvent<HTMLButtonElement>) => void; disabled?: boolean }) {
   const { pending } = useFormStatus();
   return (
-    <Button type="submit" loading={pending} onClick={onClick}>
+    <Button type="submit" loading={pending} disabled={disabled} onClick={onClick}>
       {pending ? "Starting…" : children}
     </Button>
   );
@@ -280,27 +289,45 @@ function stepErrorsFrom(errors: Record<string, string> | undefined): Record<stri
   return out;
 }
 
-/** Step 1 (shipping settings) then step 2 (fulfillment costs) in one form. */
-function TwoStepFields(p: RunSetupProps & { setup: RunSetupData; schedule: Extract<RunSetupData["schedule"], { status: "ok" }> }) {
+/** What the form asks for a setup: the questions of an ok schedule (none for any other status). */
+function contextOf(setup: RunSetupData): FulfillmentFormContext {
+  const ok = setup.schedule.status === "ok" ? setup.schedule : null;
+  return {
+    questions: ok?.questions ?? [],
+    canDeriveVolume: derivePeriodVolume(setup.period).ok,
+    showPackaging: !!ok && setup.untypedPackages && ok.packagingTypes.length > 0,
+    showContent: !!ok && (!setup.hasUnits || !setup.hasLines) && ok.readsOrderContent,
+  };
+}
+
+/** The day the questions of step 2 were read for, as a sentence. */
+const onDate = (date: string | undefined) => (date ? ` on ${formatDate(date)}` : "");
+
+/**
+ * Step 1 (shipping settings) then step 2 (fulfillment costs) in one form. Step 2 asks the questions of the fee schedule
+ * version in effect on the day the run's monthly charges come from: the page loads today's (or, for a run being looked
+ * at, the run's own date), and when step 1 chooses another date the form reads that date's questions before step 2
+ * opens, keeping the answers to questions both versions ask. A date with no fee schedule in effect says so and posts
+ * no answers (there are no questions to answer); a date whose questions could not be read blocks the run with a retry,
+ * never a guess.
+ */
+function TwoStepFields(p: RunSetupProps & { setup: RunSetupData }) {
   const id = useId();
   const state = useFormState();
-  const { setup, schedule } = p;
+  const [setup, setSetup] = useState<RunSetupData>(p.setup);
+  const schedule = setup.schedule;
+  const okSchedule = schedule.status === "ok" ? schedule : null;
   const audience = p.audience ?? (p.brandId ? "staff" : "brand");
   const [step, setStep] = useState<1 | 2>(1);
+  const [load, setLoad] = useState<{ state: "idle" } | { state: "loading"; date: string } | { state: "failed"; date: string }>({ state: "idle" });
+  const latestRequest = useRef(0);
+  const stepOne = useRef<HTMLDivElement>(null);
   const shippingHeading = useRef<HTMLHeadingElement>(null);
   const fulfillmentHeading = useRef<HTMLHeadingElement>(null);
   const stepTwo = useRef<HTMLDivElement>(null);
 
-  const ctx: FulfillmentFormContext = useMemo(
-    () => ({
-      questions: schedule.questions,
-      canDeriveVolume: derivePeriodVolume(setup.period).ok,
-      showPackaging: setup.untypedPackages && schedule.packagingTypes.length > 0,
-      showContent: (!setup.hasUnits || !setup.hasLines) && schedule.readsOrderContent,
-    }),
-    [schedule, setup],
-  );
-  const [answers, setAnswers] = useState<FulfillmentFormState>(() => initialFulfillmentState(ctx, p.initial?.fulfillment));
+  const ctx: FulfillmentFormContext = useMemo(() => contextOf(setup), [setup]);
+  const [answers, setAnswers] = useState<FulfillmentFormState>(() => initialFulfillmentState(contextOf(p.setup), p.initial?.fulfillment));
   const [showErrors, setShowErrors] = useState(false);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
 
@@ -322,14 +349,47 @@ function TwoStepFields(p: RunSetupProps & { setup: RunSetupData; schedule: Extra
   const built = useMemo(() => fulfillmentFromState(answers, ctx), [answers, ctx]);
   const blocked = Object.keys(built.errors).length;
   const visibleErrors = { ...serverErrors, ...(showErrors ? built.errors : {}) };
-  const labels = useMemo(() => Object.fromEntries(schedule.questions.map((q) => [q.key, q.label])), [schedule]);
+  const labels = useMemo(() => Object.fromEntries(ctx.questions.map((q) => [q.key, q.label])), [ctx]);
   // The line compares the fulfillment answers only (the shipping settings of step 1 are not part of it), so "no changes" says which answers.
-  const diffLines = p.projectId && blocked === 0 ? diffAssumptions({ fulfillment: p.initial?.fulfillment }, { fulfillment: built.value }, { labels }) : null;
+  const diffLines = okSchedule && p.projectId && blocked === 0 ? diffAssumptions({ fulfillment: p.initial?.fulfillment }, { fulfillment: built.value }, { labels }) : null;
   const diff = diffLines === null ? null : diffLines.length > 0 ? formatAssumptionDiff(diffLines) : "Your fulfillment answers are the same as in the last run.";
 
   const goTo = (next: 1 | 2) => {
     flushSync(() => setStep(next));
     (next === 2 ? fulfillmentHeading : shippingHeading).current?.focus();
+  };
+
+  /** Reads the questions of `date`'s fee schedule version and swaps them in, keeping the answers to questions that are still asked. */
+  const refresh = async (date: string) => {
+    const datasetId = p.fulfillmentDatasetId ?? p.datasetId;
+    if (!datasetId) return;
+    const request = ++latestRequest.current;
+    setLoad({ state: "loading", date });
+    const response = await loadFulfillmentSetup(datasetId, date, p.brandId).catch(() => null);
+    // A newer request (the person went back, chose another date and continued again) owns the screen.
+    if (request !== latestRequest.current) return;
+    if (!response || !response.ok || response.setup.schedule.status === "unavailable") {
+      setLoad({ state: "failed", date });
+      return;
+    }
+    const next = response.setup;
+    const nextOk = next.schedule.status === "ok" ? next.schedule : null;
+    setSetup(next);
+    if (nextOk) setAnswers((prev) => reconcileFulfillmentState(prev, contextOf(next), nextOk.packagingTypes));
+    setServerErrors({});
+    setShowErrors(false);
+    setLoad({ state: "idle" });
+  };
+
+  /** Step 1 → step 2. When step 1 chose a date other than the one the questions were read for, they are read again first. */
+  const onContinue = () => {
+    goTo(2);
+    const form = stepOne.current?.closest("form");
+    if (!form) return;
+    const data = new FormData(form);
+    const asOf = data.get("asOfDate");
+    const date = monthlyFeeDate(data.get("pricingBasis") === "ship_date" ? "ship_date" : "fixed_date", typeof asOf === "string" ? asOf : null, setup.period);
+    if (date !== null && date !== setup.date) void refresh(date);
   };
 
   const onStart = (e: MouseEvent<HTMLButtonElement>) => {
@@ -343,16 +403,20 @@ function TwoStepFields(p: RunSetupProps & { setup: RunSetupData; schedule: Extra
   const onStepOneKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" && e.target instanceof HTMLInputElement && e.target.type !== "radio" && e.target.type !== "checkbox") {
       e.preventDefault();
-      goTo(2);
+      onContinue();
     }
   };
 
+  const staff = audience === "staff";
+  const loading = load.state === "loading";
+  const failed = load.state === "failed";
   return (
     <>
       <Identity {...p} />
-      <input type="hidden" name={FULFILLMENT_KEY} value={JSON.stringify(built.value)} />
+      {/* The answers travel only when this step asked questions of a fee schedule that is in effect: for a date with none the run is shipping only. */}
+      {okSchedule && load.state === "idle" ? <input type="hidden" name={FULFILLMENT_KEY} value={JSON.stringify(built.value)} /> : null}
 
-      <div hidden={step !== 1} className="space-y-6" onKeyDown={onStepOneKeyDown}>
+      <div ref={stepOne} hidden={step !== 1} className="space-y-6" onKeyDown={onStepOneKeyDown}>
         <div>
           <p className="text-sm font-medium text-muted">Step 1 of 2</p>
           <h3 ref={shippingHeading} tabIndex={-1} className="text-base font-semibold tracking-tight outline-none">
@@ -362,31 +426,59 @@ function TwoStepFields(p: RunSetupProps & { setup: RunSetupData; schedule: Extra
         <ResetSafe>
           <ShippingFields {...p} />
         </ResetSafe>
-        <Button onClick={() => goTo(2)}>Continue to fulfillment costs</Button>
+        <Button onClick={onContinue}>Continue to fulfillment costs</Button>
       </div>
 
       <div ref={stepTwo} hidden={step !== 2} className="space-y-6">
         <p className="text-sm font-medium text-muted">Step 2 of 2</p>
-        <ResetSafe>
-          <FulfillmentStep
-            id={`${id}-fulfillment`}
-            audience={audience}
-            schedule={schedule}
-            period={setup.period}
-            showPackaging={ctx.showPackaging}
-            showContent={ctx.showContent}
-            state={answers}
-            setState={update}
-            errors={visibleErrors}
-            headingRef={fulfillmentHeading}
-          />
-        </ResetSafe>
-        {!answers.skip && diff ? (
+        {loading ? (
+          <div role="status" className="space-y-2">
+            <h3 ref={fulfillmentHeading} tabIndex={-1} className="text-base font-semibold tracking-tight outline-none">
+              Fulfillment costs
+            </h3>
+            <p className="text-sm text-muted">{`Reading the fee schedule in effect on ${formatDate(load.date)}…`}</p>
+          </div>
+        ) : failed ? (
+          <div className="space-y-3">
+            <h3 ref={fulfillmentHeading} tabIndex={-1} className="text-base font-semibold tracking-tight outline-none">
+              Fulfillment costs
+            </h3>
+            <Alert tone="warning">{`The fulfillment questions for the fee schedule in effect on ${formatDate(load.date)} could not be loaded, so this run cannot start. Try again.`}</Alert>
+            <Button variant="secondary" onClick={() => void refresh(load.date)}>
+              Try again
+            </Button>
+          </div>
+        ) : okSchedule ? (
+          <ResetSafe>
+            <FulfillmentStep
+              id={`${id}-fulfillment`}
+              audience={audience}
+              schedule={okSchedule}
+              period={setup.period}
+              showPackaging={ctx.showPackaging}
+              showContent={ctx.showContent}
+              state={answers}
+              setState={update}
+              errors={visibleErrors}
+              headingRef={fulfillmentHeading}
+            />
+          </ResetSafe>
+        ) : (
+          <div className="space-y-2">
+            <h3 ref={fulfillmentHeading} tabIndex={-1} className="text-base font-semibold tracking-tight outline-none">
+              Fulfillment costs
+            </h3>
+            <p className="text-sm">
+              {`No fee schedule is in effect for ${staff ? "this customer" : "you"}${onDate(setup.date)}, so there are no fulfillment questions for that date. The results will say which fees could not be priced. Go back and choose another date in step 1 to answer fulfillment questions.`}
+            </p>
+          </div>
+        )}
+        {okSchedule && !loading && !failed && !answers.skip && diff ? (
           <p className="text-sm" aria-live="polite">
             {diff}
           </p>
         ) : null}
-        {!answers.skip && showErrors && blocked > 0 ? (
+        {okSchedule && !loading && !failed && !answers.skip && showErrors && blocked > 0 ? (
           <Alert tone="danger">{blocked === 1 ? "One answer needs attention before the run can start." : `${blocked} answers need attention before the run can start.`}</Alert>
         ) : null}
         {visibleErrors[FULFILLMENT_KEY] ? <Alert tone="danger">{visibleErrors[FULFILLMENT_KEY]}</Alert> : null}
@@ -394,7 +486,11 @@ function TwoStepFields(p: RunSetupProps & { setup: RunSetupData; schedule: Extra
           <Button variant="secondary" onClick={() => goTo(1)}>
             Back to shipping settings
           </Button>
-          {step === 2 ? <StartButton onClick={onStart}>{p.projectId ? "Run again with these settings" : "Run the model"}</StartButton> : null}
+          {step === 2 ? (
+            <StartButton onClick={onStart} disabled={loading || failed}>
+              {p.projectId ? "Run again with these settings" : "Run the model"}
+            </StartButton>
+          ) : null}
         </div>
       </div>
     </>

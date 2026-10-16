@@ -11,7 +11,8 @@ import { getContext, requireUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/permissions";
 import { fieldErrors, uuidSchema, type FieldErrors } from "@/lib/auth/validation";
 import { ORDER_FILE_LIMITS, ParseError, detectFileKind, parseTables, type Table } from "@/lib/import/parse-table";
-import { canonicaliseAssumptions, fulfillmentProblemFromSql, parseFulfillmentField, type FulfillmentLike } from "@/lib/modeling/assumptions";
+import { canonicaliseAssumptions, fulfillmentProblemFromSql, parseFulfillmentField, type FulfillmentLike, type RunSetupData } from "@/lib/modeling/assumptions";
+import { loadRunSetupData } from "@/lib/modeling/queries";
 import { BatchRetryError, RpcError, priceBatchCore, createBatchCaches, type ProjectRecord, type RunProgress, type RunRecord } from "@/lib/modeling/run";
 import { decimalText, weightToLb } from "@/lib/orders/cells";
 import { detectOrderFile } from "@/lib/orders/mapping";
@@ -340,6 +341,35 @@ export async function createBulkScenario(_prev: ActionState, formData: FormData)
     return { ok: false, message: started.message, errors: started.errors, values };
   }
   redirect(`${m.basePath}/runs/${started.runId}`);
+}
+
+/** A calendar date as the database reads it: "2026-02-30" is refused (it is not a day). */
+const realIsoDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/)
+  .refine((v) => {
+    const d = new Date(`${v}T00:00:00Z`);
+    return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+  });
+
+export type FulfillmentSetupResponse = { ok: true; setup: RunSetupData } | { ok: false; message: string };
+
+/**
+ * What step 2 of the run form asks for a chosen date: the questions of the fee schedule version in effect on that
+ * day, read exactly as the page reads them (customer-safe: no rule keys, ids, version numbers, notes or sources).
+ * The form calls it when the date chosen in step 1 is not the one the page was loaded for, so a run priced on a
+ * past date is asked the questions of that date's version, not today's. Authorised like every modeling action:
+ * the brand is the caller's own (brand members) or one of the tenant's (staff), and the file must be that brand's.
+ */
+export async function loadFulfillmentSetup(datasetId: string, date: string, brandId?: string): Promise<FulfillmentSetupResponse> {
+  const m = await modelingContext(brandId);
+  if (!m) return { ok: false, message: "You don't have permission to model costs for this customer." };
+  if (!uuidSchema.safeParse(datasetId).success || !realIsoDate.safeParse(date).success) return { ok: false, message: "Choose a valid date." };
+  const supabase = await createClient();
+  if (!(await withinRateLimit(supabase, "modeling.setup", 600, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
+  const { data: ds } = await supabase.from("order_datasets").select("id, brand_id, status").eq("id", datasetId).maybeSingle();
+  if (!ds || ds.brand_id !== m.brandId || ds.status !== "ready") return { ok: false, message: "The orders file is not ready." };
+  return { ok: true, setup: await loadRunSetupData(supabase, m.brandId, datasetId, date) };
 }
 
 type StartRunResult = { ok: true; runId: string } | { ok: false; message?: string; errors?: FieldErrors };

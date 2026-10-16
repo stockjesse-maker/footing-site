@@ -1,7 +1,8 @@
 import { allInAtVolumes } from "@/engine/forecast";
 import type { ForecastProfile, ForecastSummary } from "@/engine/forecast/types";
+import { MINIMUM_MEMBER_GONE_LABEL } from "@/engine/fees/monthly";
 import type { AllocationResult, FeeCategory, MinimumResult, MinimumStatus, MonthlyFeeResult } from "@/engine/fees/types";
-import type { BulkSummary, CategoryCompleteness, FeeStatus, RunPeriod } from "@/engine/modeling/types";
+import type { BulkSummary, CategoryCompleteness, FeeStatus, FeeSummary, RunPeriod } from "@/engine/modeling/types";
 import { D, type Dec } from "@/engine/money";
 import { formatDate } from "@/lib/format/date";
 import { diffAssumptions, formatMonths, formatVolume, type AssumptionsLike } from "@/lib/modeling/assumptions";
@@ -23,6 +24,21 @@ import { diffAssumptions, formatMonths, formatVolume, type AssumptionsLike } fro
  */
 
 export type HeadlineSummary = BulkSummary | ForecastSummary;
+
+/**
+ * What the headline functions read of a file run's summary, and nothing else. The lists, tiles and overview
+ * select only these parts of a stored summary (a whole summary carries every breakdown and can be large); a
+ * whole `BulkSummary` satisfies the type, so the run page passes its summary as it is.
+ */
+export type HeadlineBulkInput = Pick<BulkSummary, "version" | "imported" | "modeled" | "coverage" | "averages" | "minimums" | "minimumStatus" | "period" | "allocation" | "monthly"> & {
+  fees: Pick<FeeSummary, "mode" | "processing" | "completeness" | "statusCounts" | "assumed" | "warnings">;
+};
+/** The same for a forecast from assumptions: a whole `ForecastSummary` satisfies it. */
+export type HeadlineForecastInput = Pick<ForecastSummary, "version" | "basis" | "asOfDate" | "monthlyOrders" | "pricedSharePct" | "priceOnlyCovered" | "feeMode" | "completeness" | "minimums" | "minimumStatus" | "allocation" | "monthly"> & {
+  shipping: Pick<ForecastSummary["shipping"], "perOrder">;
+  processing: Pick<NonNullable<ForecastSummary["processing"]>, "perOrder"> | null;
+};
+export type HeadlineInput = HeadlineBulkInput | HeadlineForecastInput;
 export type HeadlineView = "shipping" | "fees" | "allin";
 export type HeadlineAudience = "brand" | "staff";
 
@@ -31,10 +47,12 @@ export const VIEW_LABEL: Record<HeadlineView, string> = { shipping: "Shipping", 
 
 /** The sentence under the view control: what each choice contains. */
 export const VIEW_SENTENCE =
-  "Shipping is the carrier cost only. Order fees add the charges that depend on each order (pick, pack, packaging). All-in also adds monthly charges such as storage and account fees, spread over your orders a month.";
+  "Shipping is the shipping charge from the rate card only. Order fees add the charges that depend on each order (pick, pack, packaging). All-in also adds monthly charges such as storage and account fees, spread over your orders a month.";
 
-export function isForecastSummary(summary: HeadlineSummary): summary is ForecastSummary {
-  return (summary as ForecastSummary).basis === "assumptions";
+export function isForecastSummary(summary: HeadlineSummary): summary is ForecastSummary;
+export function isForecastSummary(summary: HeadlineInput): summary is HeadlineForecastInput;
+export function isForecastSummary(summary: HeadlineInput): boolean {
+  return (summary as { basis?: string }).basis === "assumptions";
 }
 
 /** `?view=` value to a view; null when absent or unknown (the page then picks the default). */
@@ -79,6 +97,8 @@ export function joinWords(items: string[]): string {
 }
 
 const capitalise = (text: string): string => (text ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : text);
+/** A sentence fragment that opens a clause in the middle of a sentence ("nothing left out", not "Nothing left out"). */
+const lowerFirstLetter = (text: string): string => (text ? `${text.charAt(0).toLowerCase()}${text.slice(1)}` : text);
 
 /** The text with one full stop at its end (some stored sentences carry their own), so "{sentence}." never prints two. */
 export const endSentence = (text: string): string => (/[.!?]$/.test(text) ? text : `${text}.`);
@@ -202,9 +222,11 @@ interface Basis {
   assumed: { units: number; lines: number; skus: number; packaging: number } | null;
   warnings: { code: string; orders: number }[];
   priceOnlyCovered: boolean;
+  /** A forecast saved with "price only what the rate card covers" whose rate card left part of the volume unpriced: the share that was priced (percent text). null otherwise. */
+  pricedSharePct: string | null;
 }
 
-function basisOf(summary: HeadlineSummary): Basis {
+function basisOf(summary: HeadlineInput): Basis {
   if (isForecastSummary(summary)) {
     return {
       source: "assumptions",
@@ -227,6 +249,7 @@ function basisOf(summary: HeadlineSummary): Basis {
       assumed: null,
       warnings: [],
       priceOnlyCovered: summary.priceOnlyCovered,
+      pricedSharePct: summary.priceOnlyCovered && new D(summary.pricedSharePct).lt(100) ? summary.pricedSharePct : null,
     };
   }
   return {
@@ -250,6 +273,7 @@ function basisOf(summary: HeadlineSummary): Basis {
     assumed: summary.fees.assumed,
     warnings: summary.fees.warnings,
     priceOnlyCovered: false,
+    pricedSharePct: null,
   };
 }
 
@@ -278,7 +302,7 @@ function noProcessingReason(b: Basis): string {
 // Basis sentences
 // ---------------------------------------------------------------------------
 /** The period and volume every allocated monthly figure prints: "N orders a month over <from>–<to> (M months)". */
-export function allocationBasisSentence(summary: HeadlineSummary): string {
+export function allocationBasisSentence(summary: HeadlineInput): string {
   return allocationBasisOf(basisOf(summary));
 }
 
@@ -294,9 +318,32 @@ function allocationBasisOf(b: Basis): string {
   return range ? `${formatVolume(volume)} orders a month over ${range}` : `${formatVolume(volume)} orders a month`;
 }
 
+/** "Only 62.50% of the volume could be priced": what a forecast that priced just the part the rate card covers must say beside any per-order figure. */
+function pricedShareSentence(pricedSharePct: string): string {
+  return `Only ${pricedSharePct}% of the volume could be priced, so this is an average over that part`;
+}
+
 function shippingBasisSentence(b: Basis): string {
-  if (b.source === "assumptions") return b.monthlyOrders ? `Forecast at ${formatVolume(b.monthlyOrders)} orders a month` : "Forecast from assumptions";
+  if (b.source === "assumptions") {
+    const base = b.monthlyOrders ? `Forecast at ${formatVolume(b.monthlyOrders)} orders a month` : "Forecast from assumptions";
+    return b.pricedSharePct !== null ? `${base}. ${pricedShareSentence(b.pricedSharePct)}` : base;
+  }
   return `Based on ${n(b.modeledOrders)} of ${n(b.importedOrders)} orders (${b.ordersPct ?? "0.0"}%)`;
+}
+
+/**
+ * The share of its volume a forecast could price, as one sentence, when that is less than all of it (a forecast saved
+ * with "price only what the rate card covers"); null for every other model. Every place a per-order figure of such a
+ * forecast is shown carries it, so a lower or higher average over part of the volume never reads as a plain figure.
+ */
+export function pricedVolumeNote(summary: HeadlineInput): string | null {
+  const share = pricedVolumeShare(summary);
+  return share !== null ? pricedShareSentence(share) : null;
+}
+
+/** The percent of its volume a forecast could price (text, as stored) when that is less than all of it; null otherwise. */
+export function pricedVolumeShare(summary: HeadlineInput): string | null {
+  return basisOf(summary).pricedSharePct;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,7 +577,7 @@ function allInHeadline(b: Basis, addHref: string | undefined): HeadlineFigures {
  * Add link. F1: a minimum that is an upper bound only through coverage or undated orders leaves every
  * category priced, so the label stays and a separate sentence says "the account minimum could add up to $X".
  */
-export function headlineFigures(summary: HeadlineSummary, view: HeadlineView, provenance: HeadlineProvenance = {}, _audience: HeadlineAudience = "brand"): HeadlineFigures {
+export function headlineFigures(summary: HeadlineInput, view: HeadlineView, provenance: HeadlineProvenance = {}, _audience: HeadlineAudience = "brand"): HeadlineFigures {
   const b = basisOf(summary);
   const addHref = provenance.addHref ?? undefined;
   if (view === "shipping") return shippingHeadline(b);
@@ -552,7 +599,7 @@ export function headlineReason(h: HeadlineFigures): string | null {
 }
 
 /** All-in when its figure is complete and exact, else Shipping. */
-export function defaultView(summary: HeadlineSummary): HeadlineView {
+export function defaultView(summary: HeadlineInput): HeadlineView {
   return headlineFigures(summary, "allin").complete ? "allin" : "shipping";
 }
 
@@ -581,7 +628,7 @@ export const NEVER_INCLUDED: readonly string[] = [
   "Return shipping.",
 ];
 
-export function notIncludedGroups(summary: HeadlineSummary, provenance: HeadlineProvenance = {}, audience: HeadlineAudience = "brand"): NotIncludedGroups {
+export function notIncludedGroups(summary: HeadlineInput, provenance: HeadlineProvenance = {}, audience: HeadlineAudience = "brand"): NotIncludedGroups {
   const b = basisOf(summary);
   const addHref = provenance.addHref ?? undefined;
   const schedule = audience === "staff" ? "this customer's fee schedule" : "your fee schedule";
@@ -776,7 +823,7 @@ export interface MonthlyCharges {
 const MONTHLY_REASON: Record<string, string> = { no_answer: NO_NUMBER_REASON, replaced_rule_missing: "it depends on a number that was left out", volume_unknown: "it needs your monthly order volume" };
 
 /** The monthly charges card, from the stored monthly result (null when fees were not modeled). */
-export function monthlyCharges(summary: HeadlineSummary): MonthlyCharges | null {
+export function monthlyCharges(summary: HeadlineInput): MonthlyCharges | null {
   const b = basisOf(summary);
   if (b.feeMode !== "modeled" || !b.monthly) return null;
   const monthly = b.monthly;
@@ -931,25 +978,34 @@ export interface MinimumView {
   averageAdded: string | null;
   /** Not exact: what it could add at most, and why it could not be worked out. */
   couldAdd: string | null;
+  /**
+   * Exact, but worked out from a file too short to say what a month looks like (under 28 days) while the customer
+   * stated their monthly volume: the amount comes from the days in the file, not from that volume, so it can differ at it.
+   */
+  note: string | null;
 }
 
 const MEMBER_LABEL: Record<MinimumMemberView["state"], string> = { priced: "Counted", not_modeled: "Not modeled", not_in_schedule: "Not on your fee schedule" };
 
+
 /** The "Account minimum" card. A member that is no longer on the schedule is named generically (the engine only knows its key). */
-export function minimumViews(summary: HeadlineSummary): MinimumView[] {
+export function minimumViews(summary: HeadlineInput): MinimumView[] {
   const b = basisOf(summary);
   if (b.feeMode !== "modeled") return [];
   const fractions = new Map((b.period?.monthProfile ?? []).map((m) => [m.month, new D(m.fraction)] as const));
   const months = monthsOf(b);
+  const days = b.period?.days ?? null;
+  const shortFile = b.source === "file" && b.period?.volumeBasis === "stated" && days !== null && days < 28 && b.period.monthlyOrders !== null;
   return b.minimums.map((m) => {
     const includesShipping = m.includesShipping === true;
-    const members = m.members.map<MinimumMemberView>((x) => ({ name: x.state === "not_in_schedule" ? "A charge that is no longer on the fee schedule" : x.name, state: x.state, label: MEMBER_LABEL[x.state] }));
-    const view: MinimumView = { name: m.name, status: m.status, includesShipping, members, buckets: [], oneLine: null, averageAdded: null, couldAdd: null };
+    const members = m.members.map<MinimumMemberView>((x) => ({ name: x.state === "not_in_schedule" ? MINIMUM_MEMBER_GONE_LABEL : x.name, state: x.state, label: MEMBER_LABEL[x.state] }));
+    const view: MinimumView = { name: m.name, status: m.status, includesShipping, members, buckets: [], oneLine: null, averageAdded: null, couldAdd: null, note: null };
     if (m.status === "exact") {
       view.buckets = m.buckets.map((x) => ({ label: monthLabel(x.month), minimum: centsOf(fromE4(x.minimumE4)), counted: centsOf(fromE4(x.countedE4)), added: centsOf(fromE4(x.topUpE4)), prorated: (fractions.get(x.month) ?? new D(1)).lt(1) }));
       view.averageAdded = centsOf(fromE4(m.topUpE4).div(months));
       const only = view.buckets.length === 1 ? view.buckets[0] : undefined;
       if (only) view.oneLine = `${includesShipping ? "Fees and shipping counted toward the minimum" : "Fees counted toward the minimum"}: ${usd(only.counted)} · Minimum: ${usd(only.minimum)} · Added: ${usd(only.added)}`;
+      if (shortFile) view.note = `This was worked out from the ${plural(days!, "day")} in your file, not from the ${formatVolume(b.period!.monthlyOrders!)} orders a month you stated, so at that volume the amount could be different.`;
     } else if (m.status === "upper_bound") {
       const reasons = [...new Set(m.reasons.map(describeMinimumReason))];
       view.couldAdd = `This minimum could add up to ${usd(centsOf(fromE4(m.topUpE4).div(months)))} a month. It is not included in the all-in figure because it could not be worked out exactly${reasons.length ? `: ${joinWords(reasons)}` : ""}.`;
@@ -1163,7 +1219,7 @@ export function buildComparison(a: CompareRunInput, b: CompareRunInput): Compari
   const forecastB = isForecastSummary(b.summary) ? b.summary : null;
 
   const allInComparable = fa.allInSetKey === fb.allInSetKey;
-  const allInNote = allInComparable ? null : `These two all-in figures leave out different things (${fa.leftOutText} in the first; ${fb.leftOutText} in the second), so they are not comparable. Compare "Shipping + order fees" instead.`;
+  const allInNote = allInComparable ? null : `These two all-in figures leave out different things (${lowerFirstLetter(fa.leftOutText)} in the first; ${lowerFirstLetter(fb.leftOutText)} in the second), so they are not comparable. Compare "Shipping + order fees" instead.`;
   const orderSetsDiffer = [...fa.orderLeftOut].sort().join(",") !== [...fb.orderLeftOut].sort().join(",");
 
   const row = (group: CompareRow["group"], label: string, x: string, y: string, extra: Partial<Pick<CompareRow, "muted" | "note">> = {}): CompareRow => ({ group, label, a: x, b: y, muted: extra.muted ?? false, note: extra.note ?? null });
@@ -1174,6 +1230,17 @@ export function buildComparison(a: CompareRunInput, b: CompareRunInput): Compari
   // The all-in shipping and order fee figures average over the orders priced for both; the run page's Shipping figure averages over every priced order.
   const scopedToPriced = (s: BulkSummary | null): boolean => !!s && s.fees.mode === "modeled" && s.fees.processing.orders > 0 && s.fees.processing.orders < s.modeled.orders;
   const shippingScopeNote = scopedToPriced(sa) || scopedToPriced(sb) ? "Averaged over the orders priced for both shipping and fees, so it can differ from the Shipping figure on the model's own page." : null;
+  // A forecast that priced only the part of its volume the rate card covers averages over that part: the unpriced rest is not estimated.
+  const shareA = pricedVolumeShare(a.summary);
+  const shareB = pricedVolumeShare(b.summary);
+  const partialVolumeNote =
+    shareA !== null || shareB !== null
+      ? `A forecast saved with "price only what the rate card covers" averages over the part of its volume that could be priced (${[shareA !== null ? `${shareA}% in the first` : null, shareB !== null ? `${shareB}% in the second` : null].filter((x) => x !== null).join("; ")}); the rest is not estimated.`
+      : null;
+  const joinNotes = (...notes: (string | null)[]): string | null => {
+    const kept = notes.filter((x): x is string => x !== null);
+    return kept.length ? kept.join(" ") : null;
+  };
   // A monthly charges figure that leaves charges out says "At least"; a schedule with no monthly charges is "None", not "Not computed".
   const monthlyText = (summary: HeadlineSummary, f: CompareFacts): string => {
     const m = monthlyCharges(summary);
@@ -1195,12 +1262,12 @@ export function buildComparison(a: CompareRunInput, b: CompareRunInput): Compari
     row("basis", "Left out of the all-in", ...pair((f) => f.leftOutText)),
     row("basis", "Account minimum", ...pair((f) => f.minimumText)),
 
-    row("figures", "Shipping per order", orNotComputed(fa.shippingPerOrder), orNotComputed(fb.shippingPerOrder), { note: shippingScopeNote }),
+    row("figures", "Shipping per order", orNotComputed(fa.shippingPerOrder), orNotComputed(fb.shippingPerOrder), { note: joinNotes(shippingScopeNote, partialVolumeNote) }),
     // Order fees that leave a category out are a lower bound here exactly as on the model's own page ("At least").
     row("figures", "Order fees per order", figureText(fa.feesPerOrder, fa.shippingPlusFeesAtLeast), figureText(fb.feesPerOrder, fb.shippingPlusFeesAtLeast)),
     row("figures", "Shipping + order fees (comparable)", figureText(fa.shippingPlusFees, fa.shippingPlusFeesAtLeast), figureText(fb.shippingPlusFees, fb.shippingPlusFeesAtLeast), {
       // Only when both figures exist: a run with no order fees at all has nothing to be a lower bound of.
-      note: orderSetsDiffer && fa.shippingPlusFees !== null && fb.shippingPlusFees !== null ? "The two leave out different order fees, so these figures are not like for like; one marked At least is a lower bound." : null,
+      note: joinNotes(orderSetsDiffer && fa.shippingPlusFees !== null && fb.shippingPlusFees !== null ? "The two leave out different order fees, so these figures are not like for like; one marked At least is a lower bound." : null, partialVolumeNote),
     }),
     row("figures", "Per package", sa ? orDash(sa.averages.expectedPerPackage) : "—", sb ? orDash(sb.averages.expectedPerPackage) : "—"),
     row("figures", "Projected shipping spend (the orders in the file)", sa ? orDash(sa.modeled.orders ? sa.totals.expected : null) : "—", sb ? orDash(sb.modeled.orders ? sb.totals.expected : null) : "—"),
@@ -1209,6 +1276,8 @@ export function buildComparison(a: CompareRunInput, b: CompareRunInput): Compari
     row("figures", "Could not be decided (up to)", sa ? inFile(sa.exposure.unresolved.amount) : forecastA ? `${usd(forecastA.shipping.unresolvedUpTo)} a month` : "—", sb ? inFile(sb.exposure.unresolved.amount) : forecastB ? `${usd(forecastB.shipping.unresolvedUpTo)} a month` : "—"),
     row("figures", "May be added after shipping (up to)", sa ? inFile(sa.exposure.conditional.amount) : forecastA ? `${usd(forecastA.shipping.conditionalUpTo)} a month` : "—", sb ? inFile(sb.exposure.conditional.amount) : forecastB ? `${usd(forecastB.shipping.conditionalUpTo)} a month` : "—"),
 
+    // Every allocated figure below is monthly charges shared over a volume: the volume and period each was shared over come first.
+    row("allin", "Spread over", allocationBasisSentence(a.summary), allocationBasisSentence(b.summary), { muted: !allInComparable }),
     row("allin", "Monthly charges a month (without the account minimum)", monthlyText(a.summary, fa), monthlyText(b.summary, fb), { muted: !allInComparable }),
     row("allin", "Monthly charges spread over orders (with any account minimum)", figureText(fa.monthlyChargesPerOrder, fa.monthlyChargesLeftOut), figureText(fb.monthlyChargesPerOrder, fb.monthlyChargesLeftOut), { muted: !allInComparable }),
     row("allin", `All-in cost per order${allInComparable ? "" : " (not comparable)"}`, `${headlineText(fa.allIn)}${fa.allIn.amount !== null && fa.leftOut.length ? ` (without ${fa.leftOutText})` : ""}`, `${headlineText(fb.allIn)}${fb.allIn.amount !== null && fb.leftOut.length ? ` (without ${fb.leftOutText})` : ""}`, { muted: !allInComparable, note: allInNote }),

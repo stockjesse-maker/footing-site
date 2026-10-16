@@ -1,10 +1,12 @@
+import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BulkSummary } from "@/engine/modeling";
 import type { ModelingView } from "@/lib/modeling/page-context";
 import { fakeSupabase, type FakeOptions } from "../fixtures/forecast/fake-supabase";
-import { A, B, C, D2, complete, finalize, forecast, noStorageAnswer, schedule, skipped, standard } from "../fixtures/modeling/fee-runs";
+import { A, B, C, D2, complete, finalize, forecast, noStorageAnswer, partialForecast, schedule, skipped, standard } from "../fixtures/modeling/fee-runs";
+import { leanAssumptions, leanColumns } from "../fixtures/modeling/summary-columns";
 
 /**
  * The server side of the results screens with a fake database: the read models (orders, shipping per order,
@@ -315,7 +317,7 @@ describe("RunView for a customer", () => {
     expect(t).toContain("$275.00");
     expect(t).not.toContain("All-in cost per order, without");
     for (const label of ["Shipping", "Order fees", "All-in"]) expect(t).toContain(label);
-    expect(t).toContain("Shipping is the carrier cost only. Order fees add the charges that depend on each order");
+    expect(t).toContain("Shipping is the shipping charge from the rate card only. Order fees add the charges that depend on each order");
     const h = html(node);
     expect(h).toContain('href="/portal/model/runs/' + RUN + '?view=shipping"');
     expect(h).toContain('href="/portal/model/runs/' + RUN + '?view=fees"');
@@ -457,6 +459,38 @@ describe("RunView for a customer", () => {
     expect(h).toContain('value="14"');
   });
 
+  describe("step 2 of the run-again form asks the questions of the date the model was priced for", () => {
+    const period = { data: { population: 4, dated: 4, undated: 0, from: "2026-03-01", to: "2026-04-30", days: 61, months: "2.000000", inPeriod: 4, trimmed: 0 }, error: null };
+    const inEffect = { data: { status: "ok", snapshot: { ...standard, versionId: "v-1" } }, error: null };
+    const notInEffect = { data: { status: "not_effective", scheduleId: "sched", name: "Standard fulfillment" }, error: null };
+
+    it("reads the version in effect on the as-of date (not today's), so an Add link on a past model leads to a form that has step 2", async () => {
+      const asked: unknown[] = [];
+      // Only the model's own date has a version in effect; today does not.
+      const rpc = { dataset_forecast_period: period, brand_fee_schedule_on: (args: Record<string, unknown>) => (asked.push(args.p_date), args.p_date === "2026-03-15" ? inEffect : notInEffect) };
+      const h = html(await runPage(complete, { run: { pricing_basis: "fixed_date", as_of_date: "2026-03-15" }, rpc }));
+      // The first read is the form's (the model's date); the second is the "fees have changed since" notice's, which is about today.
+      expect(asked[0]).toBe("2026-03-15");
+      expect(text(h)).toContain("Step 2 of 2");
+      expect(h).toContain('name="fulfillment"');
+    });
+
+    it("reads the version in effect at the end of the file's period for a model priced on each order's own date", async () => {
+      const asked: unknown[] = [];
+      const rpc = { dataset_forecast_period: period, brand_fee_schedule_on: (args: Record<string, unknown>) => (asked.push(args.p_date), inEffect) };
+      await runPage(complete, { run: { pricing_basis: "ship_date", as_of_date: null }, rpc });
+      expect(asked[0]).toBe("2026-04-30");
+    });
+
+    it("has no step 2 when no version was in effect on that date, and says there are no questions", async () => {
+      const rpc = { dataset_forecast_period: period, brand_fee_schedule_on: () => notInEffect };
+      const h = html(await runPage(complete, { run: { pricing_basis: "fixed_date", as_of_date: "2019-01-01" }, rpc }));
+      expect(text(h)).not.toContain("Step 2 of 2");
+      expect(h).not.toContain('name="fulfillment"');
+      expect(text(h)).toContain("is not in effect today, so there are no fulfillment questions to answer here");
+    });
+  });
+
   it("shows no rule key, id, version or note to the customer", async () => {
     const pages = [await runPage(complete), await runPage(noStorageAnswer, { params: { view: "allin" } }), await runPage(skipped)];
     for (const p of pages) {
@@ -504,6 +538,7 @@ describe("RunView for 3PL staff", () => {
 // ---------------------------------------------------------------------------
 // Hub and compare
 // ---------------------------------------------------------------------------
+/** A run row as the lists' lean select answers it: the run's columns and the headline inputs of its summary, never the whole summary. */
 const projectRow = (id: string, name: string, runId: string, summary: unknown, over: { kind?: string; run?: Record<string, unknown> } = {}) => ({
   id,
   kind: over.kind ?? "bulk",
@@ -514,8 +549,11 @@ const projectRow = (id: string, name: string, runId: string, summary: unknown, o
   dataset_id: over.kind === "forecast" ? null : "d-1",
   rate_cards: { name: "Fixture card" },
   order_datasets: over.kind === "forecast" ? null : { name: "March orders" },
-  simulation_runs: [{ id: runId, status: "completed", kind: over.kind ?? "bulk", pricing_basis: "fixed_date", as_of_date: "2026-03-15", created_at: "2026-10-14T09:00:00Z", finished_at: "2026-10-14T09:05:00Z", last_progress_at: "2026-10-14T09:05:00Z", total_shipments: 4, processed_shipments: 4, modeled_orders: 4, total_expected: "50.00", summary, service_override_id: null, assumptions: {}, shipping_services: null, ...over.run }],
+  simulation_runs: [{ id: runId, status: "completed", kind: over.kind ?? "bulk", pricing_basis: "fixed_date", as_of_date: "2026-03-15", created_at: "2026-10-14T09:00:00Z", finished_at: "2026-10-14T09:05:00Z", last_progress_at: "2026-10-14T09:05:00Z", total_shipments: 4, processed_shipments: 4, modeled_orders: 4, total_expected: "50.00", ...leanColumns(summary), service_override_id: null, ...leanAssumptions(null), shipping_services: null, ...over.run }],
 });
+
+/** A run as the comparison reads it: the whole summary and every assumption (`loadRunsForCompare`). */
+const fullRun = (id: string, summary: unknown, assumptions: unknown = {}, kind = "bulk") => ({ id, kind, summary, assumptions });
 
 describe("ModelHubView", () => {
   it("shows a customer the headline with its completeness label, the forecast card and their fee schedule", async () => {
@@ -555,14 +593,51 @@ describe("ModelHubView", () => {
   });
 });
 
+describe("a forecast that priced only part of its volume", () => {
+  const forecastRun = "11111111-1111-4111-8111-555555555555";
+  const spring = "99999999-9999-4999-8999-dddddddddddd";
+  const SENTENCE = "Only 80.00% of the volume could be priced";
+
+  it("says how much on the hub's forecast tile and on its line in the scenario list, never a plain shipping figure", async () => {
+    const v = modelingView(false, { order_datasets: [], simulation_projects: [projectRow(spring, "Spring plan", forecastRun, partialForecast(), { kind: "forecast" })] });
+    const t = text(await views.ModelHubView(v));
+    expect(t).toContain("Forecast from assumptions: Estimated shipping cost per order");
+    expect(t).toContain("Forecast at 1,250 orders a month. Only 80.00% of the volume could be priced, so this is an average over that part");
+    // The list line: label, figure, then the share, in brackets.
+    expect(t).toMatch(/Estimated shipping cost per order: \$[\d.,]+ \(only 80\.00% of the volume could be priced, so this is an average over that part\)/);
+    // Once on the tile, once on the list line.
+    expect(t.match(/only 80\.00% of the volume could be priced/gi)).toHaveLength(2);
+    expect(t).not.toMatch(FORBIDDEN_TEXT);
+  });
+
+  it("says nothing of the kind for a forecast that priced everything", async () => {
+    const v = modelingView(false, { order_datasets: [], simulation_projects: [projectRow(spring, "Spring plan", forecastRun, forecast(), { kind: "forecast" })] });
+    expect(text(await views.ModelHubView(v))).not.toContain("of the volume could be priced");
+  });
+
+  it("the customer's overview (the portal page's tiles) carries it too", async () => {
+    const projects = (await queries.loadModelingLists(modelingView(false, { simulation_projects: [projectRow(spring, "Spring plan", forecastRun, partialForecast(), { kind: "forecast" })], order_datasets: [] }).supabase, BRAND)).projects;
+    const t = text(createElement(lists.OverviewFigures, { projects, basePath: "/portal/model", tenantName: "Acme 3PL", audience: "brand" }));
+    expect(t).toContain(SENTENCE);
+  });
+
+  it("is flagged in the comparison on the per-order rows, with the share", async () => {
+    const projects = [projectRow(PROJECT, "March plan", RUN, complete), projectRow(spring, "Spring plan", forecastRun, partialForecast(), { kind: "forecast" })];
+    const runs = [fullRun(RUN, complete), fullRun(forecastRun, partialForecast(), {}, "forecast")];
+    const t = text(await views.ReportsView(modelingView(false, { order_datasets: [], simulation_projects: projects, simulation_runs: runs }), { a: forecastRun, b: RUN }));
+    expect(t).toContain('averages over the part of its volume that could be priced (80.00% in the first); the rest is not estimated.');
+    expect(t).toContain("80.00% of the volume");
+  });
+});
+
 describe("ReportsView compare", () => {
   const second = "99999999-9999-4999-8999-bbbbbbbbbbbb";
   const projects = [projectRow(PROJECT, "March plan", RUN, complete), projectRow(second, "No storage numbers", RUN_B, noStorageAnswer), projectRow("99999999-9999-4999-8999-cccccccccccc", "Spring forecast", "11111111-1111-4111-8111-444444444444", forecast(), { kind: "forecast" })];
 
   it("compares two models with the basis first, the comparable row, and greyed all-in rows with a note", async () => {
-    const answers = (drivers: Record<string, string | null>) => ({ assumptions: { fulfillment: { drivers, orderShares: {} } } });
-    const withAnswers = [projectRow(PROJECT, "March plan", RUN, complete, { run: answers({ pallets: "10" }) }), projectRow(second, "No storage numbers", RUN_B, noStorageAnswer, { run: answers({}) }), projects[2]!];
-    const node = await views.ReportsView(modelingView(false, { order_datasets: [], simulation_projects: withAnswers }), { a: RUN, b: RUN_B });
+    const answers = (drivers: Record<string, string | null>) => ({ fulfillment: { drivers, orderShares: {} } });
+    const runs = [fullRun(RUN, complete, answers({ pallets: "10" })), fullRun(RUN_B, noStorageAnswer, answers({}))];
+    const node = await views.ReportsView(modelingView(false, { order_datasets: [], simulation_projects: projects, simulation_runs: runs }), { a: RUN, b: RUN_B });
     const t = text(node);
     expect(t.indexOf("What each one is based on")).toBeLessThan(t.indexOf("Per order"));
     expect(t.indexOf("Per order")).toBeLessThan(t.indexOf("All-in, with monthly charges spread over orders"));
@@ -580,7 +655,8 @@ describe("ReportsView compare", () => {
     const forecastRun = "11111111-1111-4111-8111-444444444444";
     const pick = text(await views.ReportsView(modelingView(false, { order_datasets: [], simulation_projects: projects }), { a: RUN }));
     expect(pick).toContain("Forecast: Spring forecast");
-    const t = text(await views.ReportsView(modelingView(false, { order_datasets: [], simulation_projects: projects }), { a: RUN, b: forecastRun }));
+    const runs = [fullRun(RUN, complete), fullRun(forecastRun, forecast(), {}, "forecast")];
+    const t = text(await views.ReportsView(modelingView(false, { order_datasets: [], simulation_projects: projects, simulation_runs: runs }), { a: RUN, b: forecastRun }));
     expect(t).toContain("Forecast from assumptions");
     expect(t).toContain("One of these is a forecast from assumptions and the other is built from an orders file.");
     expect(t).toContain("A typical month, as described");

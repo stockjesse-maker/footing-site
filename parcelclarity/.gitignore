@@ -12,3 +12,6 @@ test-results
 .local-stack
 coverage
 .DS_Store
+
+# state handed between e2e spec files
+tests/e2e/.state

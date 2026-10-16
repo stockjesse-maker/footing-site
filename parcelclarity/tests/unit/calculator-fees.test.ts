@@ -234,7 +234,7 @@ describe("form drafts to box", () => {
 
   it("sends no box and shows no error while nothing has been entered", () => {
     const r = boxFromDrafts(emptyBoxDrafts(), options);
-    expect(r).toEqual({ box: null, errors: {}, started: false });
+    expect(r).toEqual({ box: null, errors: {}, unitsNote: null, started: false });
     expect(boxFromDrafts(emptyBoxDrafts(), null).box).toBeNull();
   });
 
@@ -244,11 +244,25 @@ describe("form drafts to box", () => {
     expect(r.box).toEqual({ units: 3, packaging: null });
   });
 
-  it("asks for the items when anything else is entered without them", () => {
-    expect(boxFromDrafts(drafts({ products: "2" }), options).errors["box.units"]).toBe("Enter the number of items to see order fees.");
-    expect(boxFromDrafts(drafts({ packaging: "box" }), options).errors["box.units"]).toBeDefined();
-    expect(boxFromDrafts(drafts({ counts: { inserts: "1" } }), options).errors["box.units"]).toBeDefined();
-    expect(boxFromDrafts(drafts({ packaging: "box" }), options).box).toBeNull();
+  it("notes that the order fees wait for the items when anything else is entered without them, and never blocks the shipping price", () => {
+    for (const given of [{ products: "2" }, { packaging: "box" }, { counts: { inserts: "1" } }]) {
+      const r = boxFromDrafts(drafts(given), options);
+      // A note, not an error: an error stops the calculation, and the shipping price never waits for the box.
+      expect(r.unitsNote).toBe("Enter the number of items to see order fees.");
+      expect(r.errors).toEqual({});
+      expect(r.box).toBeNull();
+      expect(r.started).toBe(true);
+    }
+    // Typing the items takes the note away; an items value that cannot be read is an error, not a note.
+    expect(boxFromDrafts(drafts({ units: "3", packaging: "box" }), options)).toMatchObject({ unitsNote: null, errors: {}, box: { units: 3, packaging: "box" } });
+    expect(boxFromDrafts(drafts({ units: "x", packaging: "box" }), options)).toMatchObject({ unitsNote: null, errors: { "box.units": "Enter a whole number, for example 3." } });
+  });
+
+  it("still blocks on a real problem in the box even while the items are blank", () => {
+    const r = boxFromDrafts(drafts({ products: "x" }), options);
+    expect(r.errors["box.products"]).toBe("Enter a whole number, for example 3.");
+    expect(r.unitsNote).toBe("Enter the number of items to see order fees.");
+    expect(boxFromDrafts(drafts({ counts: { inserts: "-1" } }), options).errors["box.counts.inserts"]).toBeDefined();
   });
 
   it("flags products above items inline, and builds nothing until it is fixed", () => {
@@ -299,7 +313,7 @@ describe("form drafts to box", () => {
     expect(boxFromDrafts(drafts({ units: "2", packaging: PACKAGING_OTHER }), mailerOptions).box).toEqual({ units: 2, packaging: null });
     expect(boxFromDrafts(drafts({ units: "2", packaging: "poly mailer" }), mailerOptions).box).toEqual({ units: 2, packaging: "poly mailer" });
     // A hidden stale choice is not "something typed in the block": items blank + stale packaging is an empty block, not an error.
-    expect(boxFromDrafts(drafts({ packaging: "box" }), tiersOptions)).toEqual({ box: null, errors: {}, started: false });
+    expect(boxFromDrafts(drafts({ packaging: "box" }), tiersOptions)).toEqual({ box: null, errors: {}, unitsNote: null, started: false });
   });
 
   it("the built box is what the schema accepts", () => {
@@ -680,6 +694,17 @@ describe("the box block in the form", () => {
     const tiersHtml = render(boxOptionsFromSnapshot(tiers));
     expect(tiersHtml).not.toContain(">Packaging</label>");
     expect(tiersHtml).not.toContain("count-");
+  });
+
+  it("shows the items note as plain text under Items: not an error, not marked invalid, and says the shipping price does not wait", () => {
+    const html = renderToStaticMarkup(createElement(BoxBlock, { idPrefix: "t", options: boxOptionsFromSnapshot(standard), drafts: { ...emptyBoxDrafts(), packaging: "box" }, errors: {}, unitsNote: "Enter the number of items to see order fees.", packageCount: 1, onChange: () => undefined }));
+    expect(text(html)).toContain("Enter the number of items to see order fees. The shipping price does not wait for it.");
+    expect(html).not.toContain("t-box-units-error");
+    expect(html).not.toMatch(/id="t-box-units"[^>]*aria-invalid/);
+    expect(html).not.toContain('role="alert"');
+    // Without the note the hint is the plain one.
+    expect(text(render())).toContain("Total units in the box, across all products.");
+    expect(text(render())).not.toContain("The shipping price does not wait for it.");
   });
 
   it("shows the inline error on the field, marks it invalid and ties it to the control", () => {

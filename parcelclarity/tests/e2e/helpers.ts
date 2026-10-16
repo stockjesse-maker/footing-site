@@ -10,6 +10,21 @@ export const PASSWORD = "correct-horse-battery-staple";
 
 export const uniqueEmail = (label: string) => `${label}-${randomUUID().slice(0, 8)}@example.test`;
 
+// State handed from one spec file to another (fees.spec.ts writes it, mobile.spec.ts reads it): the people and ids of the
+// Milestone 4 story, so the phone checks run on the same screens without building a second 3PL.
+const STATE_DIR = path.resolve(__dirname, ".state");
+
+export function saveSharedState(name: string, state: object) {
+  fs.mkdirSync(STATE_DIR, { recursive: true });
+  fs.writeFileSync(path.join(STATE_DIR, `${name}.json`), JSON.stringify(state, null, 2));
+}
+
+export function loadSharedState<T extends object>(name: string): T {
+  const file = path.join(STATE_DIR, `${name}.json`);
+  if (!fs.existsSync(file)) throw new Error(`No shared state "${name}": run tests/e2e/${name}.spec.ts first (it writes ${file}).`);
+  return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+}
+
 function decodeQuotedPrintable(input: string): string {
   return input.replace(/=\r?\n/g, "").replace(/=([0-9A-F]{2})/g, (_m, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 }

@@ -6,6 +6,7 @@ import { D } from "@/engine/money";
 import type { CalculatorCard, CalculatorVersion } from "@/components/pricing/calculator-form";
 import { driverQuestions, loadBrandFeeSchedule, packagingTypes } from "@/lib/fees/queries";
 import { scheduleReadsOrderContent, type RunSetupData, type RunSetupPeriod, type RunSetupSchedule } from "@/lib/modeling/assumptions";
+import type { HeadlineBulkInput, HeadlineForecastInput, HeadlineInput } from "@/lib/modeling/headline";
 import type { RunAssumptions } from "@/lib/modeling/run";
 
 /**
@@ -113,6 +114,11 @@ export interface ProjectListRow {
   simulation_runs: RunListRow[];
 }
 
+/**
+ * A run as the lists read it: the run's own columns and the headline inputs of its summary (never the whole
+ * summary, whose breakdowns and, for a forecast, grid of cells can be large; see `SUMMARY_PARTS`). The pages
+ * that need a whole summary (a run's own page, a comparison) read that run alone.
+ */
 export interface RunListRow {
   id: string;
   status: string;
@@ -126,12 +132,128 @@ export interface RunListRow {
   processed_shipments: number;
   modeled_orders: number | null;
   total_expected: string | number | null;
-  /** A file run's `BulkSummary`, or a forecast's `ForecastSummary` (see `fileSummaryOf` / `forecastSummaryOf`); a pre-fee (version 1) summary is possible in an old database. */
-  summary: BulkSummary | ForecastSummary | null;
+  /**
+   * The headline inputs of a file run's current (version 2) summary or of a forecast's; null while the run has no
+   * summary, and for a summary of an older shape (a model priced before fulfillment fees existed).
+   */
+  summary: HeadlineInput | null;
   service_override_id: string | null;
-  /** The run's assumptions as stored (canonical): shipping assumptions and the fulfillment answers. */
-  assumptions: RunAssumptions | null;
+  /** The only part of the run's assumptions the lists read: whether every shipment was priced on one chosen service (a what-if). */
+  assumptions: { overrideAllServices?: boolean } | null;
   shipping_services: { name: string } | null;
+}
+
+// ---------------------------------------------------------------------------
+// Lean summaries: the headline inputs, selected as JSON paths of `summary`
+// ---------------------------------------------------------------------------
+/**
+ * The parts of a stored run summary the headline functions read, as `[column alias, path]`. A list selects each as
+ * `alias:summary->path` (PostgREST returns the part of the document under the alias, null when the summary lacks
+ * it), so the lists never transfer the whole summary. Both shapes are listed: a file run fills the first group, a
+ * forecast the second. Adding a field to `HeadlineBulkInput` or `HeadlineForecastInput` means adding it here and in
+ * `summaryFromColumns`.
+ */
+export const SUMMARY_PARTS = [
+  ["s_version", "version"],
+  ["s_basis", "basis"],
+  ["s_imported", "imported"],
+  ["s_modeled", "modeled"],
+  ["s_coverage", "coverage"],
+  ["s_averages", "averages"],
+  ["s_feesMode", "fees->mode"],
+  ["s_feesProcessing", "fees->processing"],
+  ["s_feesCompleteness", "fees->completeness"],
+  ["s_feesStatusCounts", "fees->statusCounts"],
+  ["s_feesAssumed", "fees->assumed"],
+  ["s_feesWarnings", "fees->warnings"],
+  ["s_minimums", "minimums"],
+  ["s_minimumStatus", "minimumStatus"],
+  ["s_period", "period"],
+  ["s_allocation", "allocation"],
+  ["s_monthly", "monthly"],
+  ["s_asOfDate", "asOfDate"],
+  ["s_completeness", "completeness"],
+  ["s_monthlyOrders", "monthlyOrders"],
+  ["s_pricedSharePct", "pricedSharePct"],
+  ["s_priceOnlyCovered", "priceOnlyCovered"],
+  ["s_feeMode", "feeMode"],
+  ["s_shippingPerOrder", "shipping->perOrder"],
+  ["s_processingPerOrder", "processing->perOrder"],
+] as const;
+
+type SummaryColumn = (typeof SUMMARY_PARTS)[number][0];
+export type SummaryColumns = Partial<Record<SummaryColumn, unknown>>;
+
+/** The select list for the headline inputs of a run's summary. */
+export const SUMMARY_HEADLINE_SELECT = SUMMARY_PARTS.map(([alias, path]) => `${alias}:summary->${path}`).join(", ");
+
+/** The part of a run's assumptions the lists read, selected the same way. */
+const ASSUMPTIONS_SELECT = "a_overrideAllServices:assumptions->overrideAllServices";
+
+const RUN_LIST_COLUMNS = "id, status, kind, pricing_basis, as_of_date, created_at, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, service_override_id, shipping_services(name)";
+
+/**
+ * Rebuilds the headline inputs from the selected columns: a forecast (`basis` "assumptions") or a file run's current
+ * (version 2) summary; null for no summary, an older shape, or a document that lacks something the headline needs
+ * (nothing is guessed). A whole `BulkSummary` or `ForecastSummary` is never involved.
+ */
+export function summaryFromColumns(c: SummaryColumns): HeadlineInput | null {
+  if (c.s_basis === "assumptions") {
+    if ([c.s_asOfDate, c.s_monthlyOrders, c.s_pricedSharePct, c.s_feeMode, c.s_completeness, c.s_minimums, c.s_minimumStatus, c.s_shippingPerOrder].some((v) => v === undefined || v === null)) return null;
+    const forecast: HeadlineForecastInput = {
+      version: 2,
+      basis: "assumptions",
+      asOfDate: c.s_asOfDate as HeadlineForecastInput["asOfDate"],
+      monthlyOrders: c.s_monthlyOrders as HeadlineForecastInput["monthlyOrders"],
+      pricedSharePct: c.s_pricedSharePct as HeadlineForecastInput["pricedSharePct"],
+      priceOnlyCovered: c.s_priceOnlyCovered === true,
+      feeMode: c.s_feeMode as HeadlineForecastInput["feeMode"],
+      completeness: c.s_completeness as HeadlineForecastInput["completeness"],
+      minimums: c.s_minimums as HeadlineForecastInput["minimums"],
+      minimumStatus: c.s_minimumStatus as HeadlineForecastInput["minimumStatus"],
+      allocation: (c.s_allocation ?? null) as HeadlineForecastInput["allocation"],
+      monthly: (c.s_monthly ?? null) as HeadlineForecastInput["monthly"],
+      shipping: { perOrder: c.s_shippingPerOrder as string },
+      processing: c.s_processingPerOrder === null || c.s_processingPerOrder === undefined ? null : { perOrder: c.s_processingPerOrder as string },
+    };
+    return forecast;
+  }
+  if (c.s_version !== 2) return null;
+  const required = [c.s_imported, c.s_modeled, c.s_coverage, c.s_averages, c.s_feesMode, c.s_feesProcessing, c.s_feesCompleteness, c.s_feesStatusCounts, c.s_feesAssumed, c.s_feesWarnings, c.s_minimums, c.s_minimumStatus, c.s_period];
+  if (required.some((v) => v === undefined || v === null)) return null;
+  const file: HeadlineBulkInput = {
+    version: 2,
+    imported: c.s_imported as HeadlineBulkInput["imported"],
+    modeled: c.s_modeled as HeadlineBulkInput["modeled"],
+    coverage: c.s_coverage as HeadlineBulkInput["coverage"],
+    averages: c.s_averages as HeadlineBulkInput["averages"],
+    fees: {
+      mode: c.s_feesMode as HeadlineBulkInput["fees"]["mode"],
+      processing: c.s_feesProcessing as HeadlineBulkInput["fees"]["processing"],
+      completeness: c.s_feesCompleteness as HeadlineBulkInput["fees"]["completeness"],
+      statusCounts: c.s_feesStatusCounts as HeadlineBulkInput["fees"]["statusCounts"],
+      assumed: c.s_feesAssumed as HeadlineBulkInput["fees"]["assumed"],
+      warnings: c.s_feesWarnings as HeadlineBulkInput["fees"]["warnings"],
+    },
+    minimums: c.s_minimums as HeadlineBulkInput["minimums"],
+    minimumStatus: c.s_minimumStatus as HeadlineBulkInput["minimumStatus"],
+    period: c.s_period as HeadlineBulkInput["period"],
+    allocation: (c.s_allocation ?? null) as HeadlineBulkInput["allocation"],
+    monthly: (c.s_monthly ?? null) as HeadlineBulkInput["monthly"],
+  };
+  return file;
+}
+
+type RunDbRow = Omit<RunListRow, "summary" | "assumptions"> & SummaryColumns & { a_overrideAllServices?: boolean | null };
+
+interface ProjectDbRow extends Omit<ProjectListRow, "simulation_runs"> {
+  simulation_runs: RunDbRow[];
+}
+
+/** One embedded run row (the run's columns plus the selected parts of its summary and assumptions) as a `RunListRow`. */
+function runFromDb(row: RunDbRow): RunListRow {
+  const base = Object.fromEntries(Object.entries(row).filter(([key]) => !key.startsWith("s_") && !key.startsWith("a_"))) as Omit<RunListRow, "summary" | "assumptions">;
+  return { ...base, summary: summaryFromColumns(row), assumptions: row.a_overrideAllServices === true ? { overrideAllServices: true } : null };
 }
 
 export async function loadModelingLists(supabase: SupabaseClient, brandId: string): Promise<{ datasets: DatasetListRow[]; projects: ProjectListRow[] }> {
@@ -139,15 +261,16 @@ export async function loadModelingLists(supabase: SupabaseClient, brandId: strin
     supabase.from("order_datasets").select("id, name, status, created_at, order_count, shipment_count, package_count, shared_with_brand").eq("brand_id", brandId).neq("status", "discarded").order("created_at", { ascending: false }).limit(50).overrideTypes<DatasetListRow[], { merge: false }>(),
     supabase
       .from("simulation_projects")
-      .select("id, kind, name, created_at, shared_with_brand, archived_at, dataset_id, rate_cards(name), order_datasets(name), simulation_runs(id, status, kind, pricing_basis, as_of_date, created_at, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, service_override_id, assumptions, shipping_services(name))")
+      .select(`id, kind, name, created_at, shared_with_brand, archived_at, dataset_id, rate_cards(name), order_datasets(name), simulation_runs(${RUN_LIST_COLUMNS}, ${ASSUMPTIONS_SELECT}, ${SUMMARY_HEADLINE_SELECT})`)
       .eq("brand_id", brandId)
       .is("archived_at", null)
       .order("created_at", { ascending: false })
       .limit(50)
-      .overrideTypes<ProjectListRow[], { merge: false }>(),
+      .overrideTypes<ProjectDbRow[], { merge: false }>(),
   ]);
-  for (const p of projects ?? []) p.simulation_runs.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
-  return { datasets: datasets ?? [], projects: projects ?? [] };
+  const rows: ProjectListRow[] = (projects ?? []).map((p) => ({ ...p, simulation_runs: p.simulation_runs.map(runFromDb) }));
+  for (const p of rows) p.simulation_runs.sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  return { datasets: datasets ?? [], projects: rows };
 }
 
 /** A what-if prices every shipment on one chosen service: it is a comparison, never the baseline. */
@@ -155,17 +278,52 @@ export function isWhatIf(run: Pick<RunListRow, "assumptions">): boolean {
   return run.assumptions?.overrideAllServices === true;
 }
 
-/** The run's summary as a file run's current (version 2) `BulkSummary`; null for forecasts, single runs, older shapes or no summary. */
-export function fileSummaryOf(run: Pick<RunListRow, "kind" | "summary">): BulkSummary | null {
+/**
+ * The run's summary as a file run's current (version 2) summary; null for forecasts, single runs, older shapes or no
+ * summary. A list row carries the headline inputs (`HeadlineBulkInput`), a run read whole carries a `BulkSummary`:
+ * the same shape comes back.
+ */
+export function fileSummaryOf<S extends HeadlineInput>(run: { kind: string; summary: S | null }): Extract<S, { fees: unknown }> | null {
   const s = run.summary;
-  if (run.kind !== "bulk" || !s || (s as { version?: number }).version !== 2 || (s as ForecastSummary).basis === "assumptions" || !(s as BulkSummary).fees) return null;
-  return s as BulkSummary;
+  if (run.kind !== "bulk" || !s || (s as { version?: number }).version !== 2 || (s as { basis?: string }).basis === "assumptions" || !(s as { fees?: unknown }).fees) return null;
+  return s as Extract<S, { fees: unknown }>;
 }
 
-/** The run's summary as a forecast's `ForecastSummary`; null otherwise. */
-export function forecastSummaryOf(run: Pick<RunListRow, "kind" | "summary">): ForecastSummary | null {
+/** The run's summary as a forecast's (the headline inputs of one on a list row, a `ForecastSummary` when read whole); null otherwise. */
+export function forecastSummaryOf<S extends HeadlineInput>(run: { kind: string; summary: S | null }): Extract<S, { basis: "assumptions" }> | null {
   const s = run.summary;
-  return run.kind === "forecast" && s && (s as ForecastSummary).basis === "assumptions" ? (s as ForecastSummary) : null;
+  return run.kind === "forecast" && s && (s as { basis?: string }).basis === "assumptions" ? (s as Extract<S, { basis: "assumptions" }>) : null;
+}
+
+/** A completed run read whole for a comparison: the whole summary and every assumption it was run with. */
+export interface CompareRunRow {
+  id: string;
+  summary: BulkSummary | ForecastSummary;
+  assumptions: RunAssumptions | null;
+}
+
+interface CompareDbRow {
+  id: string;
+  kind: "single" | "bulk" | "forecast";
+  summary: BulkSummary | ForecastSummary | null;
+  assumptions: RunAssumptions | null;
+}
+
+/**
+ * The whole summaries and assumptions of the runs a comparison puts side by side, under the caller's Row Level
+ * Security. Lists carry only headline inputs, so a comparison reads its two runs here. null when the read fails
+ * or a run is missing or has no current summary: the page then says so rather than comparing less.
+ */
+export async function loadRunsForCompare(supabase: SupabaseClient, brandId: string, runIds: string[]): Promise<Map<string, CompareRunRow> | null> {
+  const { data, error } = await supabase.from("simulation_runs").select("id, kind, summary, assumptions").eq("brand_id", brandId).in("id", runIds).overrideTypes<CompareDbRow[], { merge: false }>();
+  if (error) return null;
+  const rows = new Map<string, CompareRunRow>();
+  for (const r of data ?? []) {
+    if (!runIds.includes(r.id)) continue;
+    const summary = fileSummaryOf(r) ?? forecastSummaryOf(r);
+    if (summary) rows.set(r.id, { id: r.id, summary, assumptions: r.assumptions });
+  }
+  return runIds.every((id) => rows.has(id)) ? rows : null;
 }
 
 function newest<T extends { run: RunListRow }>(a: T | null, b: T): T {
@@ -252,15 +410,15 @@ interface DatasetSetupRow {
 /**
  * Everything run setup step 2 asks and explains, read under the caller's Row Level Security:
  * the file's forecast period (`dataset_forecast_period`, computed in SQL and never recomputed here), the
- * fee schedule in effect today for the brand (`brand_fee_schedule_on`) as customer-safe questions and
+ * fee schedule version in effect on `date` (today by default) for the brand (`brand_fee_schedule_on`) as customer-safe questions and
  * packaging types (no rule keys, ids, version numbers, notes or sources), and what the file does and
  * does not say about item counts, line data and packaging. A query that fails is reported as such (a
  * null period, an `unavailable` schedule), never as "no fees" or "no data".
  */
-export async function loadRunSetupData(supabase: SupabaseClient, brandId: string, datasetId: string): Promise<RunSetupData> {
+export async function loadRunSetupData(supabase: SupabaseClient, brandId: string, datasetId: string, date: string = new Date().toISOString().slice(0, 10)): Promise<RunSetupData> {
   const [periodResult, schedule, datasetResult, untypedResult] = await Promise.all([
     supabase.rpc("dataset_forecast_period", { p_dataset: datasetId }),
-    loadBrandFeeSchedule(supabase, brandId),
+    loadBrandFeeSchedule(supabase, brandId, date),
     supabase.from("order_datasets").select("line_count, validation").eq("id", datasetId).eq("brand_id", brandId).maybeSingle().overrideTypes<DatasetSetupRow, { merge: false }>(),
     supabase.from("packages").select("id").eq("dataset_id", datasetId).is("packaging_type", null).limit(1),
   ]);
@@ -289,6 +447,7 @@ export async function loadRunSetupData(supabase: SupabaseClient, brandId: string
 
   const counts = datasetResult.data?.validation?.counts;
   return {
+    date,
     period: periodResult.error ? null : toPeriod(periodResult.data),
     schedule: setupSchedule,
     hasUnits: Number(counts?.units ?? 0) > 0,

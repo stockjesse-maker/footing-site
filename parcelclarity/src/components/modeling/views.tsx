@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
+import type { ForecastSummary } from "@/engine/forecast/types";
+import type { BulkSummary } from "@/engine/modeling/types";
 import type { ShipmentCalculation, ShipmentInput } from "@/engine/types";
 import { DatasetList, HubCard, OverviewFigures, ScenarioList, overviewModels, runStateLabel } from "@/components/modeling/lists";
 import { OrderMappingWizard, type DatasetValidation } from "@/components/modeling/order-mapping-wizard";
@@ -32,10 +34,10 @@ import { can } from "@/lib/auth/permissions";
 import { getContext } from "@/lib/auth/session";
 import { uuidSchema } from "@/lib/auth/validation";
 import { formatDate } from "@/lib/format/date";
-import { assumptionsLine, buildComparison, defaultView, feeScheduleLine, feesChangedSince, parseView, uncoveredFeeDatesNote, type CompareRunInput, type HeadlineView } from "@/lib/modeling/headline";
+import { assumptionsLine, buildComparison, defaultView, feeScheduleLine, feesChangedSince, isForecastSummary, parseView, uncoveredFeeDatesNote, type CompareRunInput, type HeadlineView } from "@/lib/modeling/headline";
 import type { AssumptionsLike } from "@/lib/modeling/assumptions";
-import { loadRunSetupData } from "@/lib/modeling/queries";
 import type { ModelingView } from "@/lib/modeling/page-context";
+import type { RunAssumptions } from "@/lib/modeling/run";
 import {
   fileSummaryOf,
   forecastSummaryOf,
@@ -46,6 +48,9 @@ import {
   loadOrderResults,
   loadOrderShipping,
   loadRunFeeContexts,
+  loadRunSetupData,
+  loadRunsForCompare,
+  type CompareRunRow,
   type ProjectListRow,
   type RunListRow,
 } from "@/lib/modeling/queries";
@@ -263,7 +268,10 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
-interface RunRow extends RunListRow {
+/** A run read whole for its own page: the whole summary and every assumption, where a list row carries only the headline inputs. */
+interface RunRow extends Omit<RunListRow, "summary" | "assumptions"> {
+  summary: BulkSummary | ForecastSummary | null;
+  assumptions: RunAssumptions | null;
   project_id: string;
   brand_id: string;
   created_by: string | null;
@@ -307,7 +315,7 @@ export interface RunSearchParams {
 }
 
 /** True when the run carries fulfillment answers the customer or the 3PL typed (not a skip, not an empty set). */
-function hasFulfillmentAnswers(f: NonNullable<RunListRow["assumptions"]>["fulfillment"]): boolean {
+function hasFulfillmentAnswers(f: NonNullable<RunRow["assumptions"]>["fulfillment"]): boolean {
   if (!f || f.skip) return false;
   return Object.keys(f.drivers ?? {}).length > 0 || Object.keys(f.orderShares ?? {}).length > 0 || !!f.monthlyOrders || !!f.packagingDefault || (f.orderContent?.rows.length ?? 0) > 0;
 }
@@ -368,13 +376,17 @@ export async function RunView(v: ModelingView, runId: string, searchParams: RunS
   const assigned = await loadAssignedCards(v.supabase, v.brandId, v.tenantDefaultOriginZip);
   const dataset = project.order_datasets;
   const assumptions = run.assumptions ?? {};
-  // Step 2 of the form (fulfillment costs) is read for the file of this run and opens with the answers it was run with.
-  const setupData = run.status !== "running" && project.dataset_id ? await loadRunSetupData(v.supabase, v.brandId, project.dataset_id) : null;
+  // Step 2 of the form (fulfillment costs) is read for the file of this run and opens with the answers it was run with. Its questions are those of the fee
+  // schedule version in effect on the day this run took its monthly charges from (the as-of date, or the end of the file's period), not today's: an "Add"
+  // link on a model priced for a past date must lead to the questions of that date's version, or to a form with no step 2 at all.
+  const runFeeDate = run.pricing_basis === "fixed_date" ? run.as_of_date : (fileSummaryOf(run)?.period.to ?? null);
+  const setupData = run.status !== "running" && project.dataset_id ? await loadRunSetupData(v.supabase, v.brandId, project.dataset_id, runFeeDate ?? undefined) : null;
   const setup = (
     <div id="run-again" className="scroll-mt-4">
       <RunSetupForm
         brandId={brandIdProp}
         projectId={project.id}
+        fulfillmentDatasetId={project.dataset_id ?? undefined}
         cards={[]}
         services={assigned.services.map((s) => ({ id: s.id, carrierCode: s.carrierCode, name: s.name }))}
         askResidential={dataset?.mapping?.columns.residential === null}
@@ -587,12 +599,11 @@ function isComparable(run: RunListRow): boolean {
   return run.status === "completed" && (fileSummaryOf(run) !== null || forecastSummaryOf(run) !== null);
 }
 
-function compareInput(x: ComparableRun): CompareRunInput | null {
-  const forecast = forecastSummaryOf(x.run);
-  const summary = fileSummaryOf(x.run) ?? forecast;
-  if (!summary) return null;
+/** A comparison reads each of its two runs whole (the lists only carry headline inputs): the row for the list's run, the summary and assumptions from `full`. */
+function compareInput(x: ComparableRun, full: CompareRunRow): CompareRunInput {
+  const forecast = isForecastSummary(full.summary) ? full.summary : null;
   return {
-    summary,
+    summary: full.summary,
     datasetId: x.project.dataset_id,
     datasetName: x.project.order_datasets?.name ?? null,
     rateCardName: forecast ? forecast.provenance.rateCardName : (x.project.rate_cards?.name ?? null),
@@ -600,9 +611,9 @@ function compareInput(x: ComparableRun): CompareRunInput | null {
     asOfDate: x.run.as_of_date,
     serviceOverrideId: x.run.service_override_id,
     serviceOverrideName: x.run.shipping_services?.name ?? null,
-    overrideAllServices: x.run.assumptions?.overrideAllServices ?? false,
+    overrideAllServices: full.assumptions?.overrideAllServices ?? false,
     // A forecast stores its own assumptions in the same column; only the fields both kinds share are read.
-    assumptions: x.run.assumptions as AssumptionsLike | null,
+    assumptions: full.assumptions as AssumptionsLike | null,
   };
 }
 
@@ -617,6 +628,10 @@ export async function ReportsView(v: ModelingView, searchParams: { a?: string; b
   const pick = (id: string | undefined) => (id && uuidSchema.safeParse(id).success ? completed.find((x) => x.run.id === id) : undefined);
   const a = pick(searchParams.a);
   const b = pick(searchParams.b);
+  // The two runs are read whole for the comparison only; the lists above and below carry just the headline inputs.
+  const full = a && b ? await loadRunsForCompare(v.supabase, v.brandId, a.run.id === b.run.id ? [a.run.id] : [a.run.id, b.run.id]) : null;
+  const fullA = a ? full?.get(a.run.id) : undefined;
+  const fullB = b ? full?.get(b.run.id) : undefined;
   return (
     <>
       {v.staff ? <BackLink href={v.basePath} label="Model Costs" /> : null}
@@ -639,8 +654,10 @@ export async function ReportsView(v: ModelingView, searchParams: { a?: string; b
                   ))}
               </ul>
             </div>
+          ) : fullA && fullB ? (
+            <CompareTable a={a} b={b} fullA={fullA} fullB={fullB} labelA={label(a)} labelB={label(b)} />
           ) : (
-            <CompareTable a={a} b={b} labelA={label(a)} labelB={label(b)} />
+            <Alert tone="warning">These models could not be loaded for comparison just now. Reload the page to try again; if it keeps failing, run them again to price them with the current fees.</Alert>
           )}
         </Card>
       ) : null}
@@ -651,11 +668,8 @@ export async function ReportsView(v: ModelingView, searchParams: { a?: string; b
 
 const COMPARE_GROUP_TITLE = { basis: "What each one is based on", figures: "Per order", allin: "All-in, with monthly charges spread over orders" } as const;
 
-function CompareTable({ a, b, labelA, labelB }: { a: ComparableRun; b: ComparableRun; labelA: string; labelB: string }) {
-  const ia = compareInput(a);
-  const ib = compareInput(b);
-  if (!ia || !ib) return <Alert tone="warning">One of these models has no results that can be compared. Run it again to price it with the current fees.</Alert>;
-  const c = buildComparison(ia, ib);
+function CompareTable({ a, b, fullA, fullB, labelA, labelB }: { a: ComparableRun; b: ComparableRun; fullA: CompareRunRow; fullB: CompareRunRow; labelA: string; labelB: string }) {
+  const c = buildComparison(compareInput(a, fullA), compareInput(b, fullB));
   const groups = (["basis", "figures", "allin"] as const).map((g) => ({ group: g, rows: c.rows.filter((r) => r.group === g) }));
   return (
     <div className="space-y-4">
