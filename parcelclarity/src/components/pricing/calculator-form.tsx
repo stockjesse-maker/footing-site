@@ -331,7 +331,7 @@ export function BoxBlock({
                 type="text"
                 inputMode="numeric"
                 autoComplete="off"
-                placeholder="0"
+                placeholder="e.g. 2"
                 value={drafts.counts[c.key] ?? ""}
                 onChange={(e) => onChange({ counts: { ...drafts.counts, [c.key]: e.target.value } })}
               />
@@ -475,6 +475,8 @@ interface PricedRun {
   fees: CalculatorFeesResponse | null;
   /** The box options the request was made with (for the echo), and whether the block was on offer. */
   boxOptions: CalculatorBoxOptionsOk | null;
+  /** True when Calculate was pressed while the fee schedule for the ship date was still loading: no box could be sent. */
+  boxPending: boolean;
 }
 
 export function CalculatorForm({ cards, initialRateCardId, initialVersionId, allowVersionChoice = true, audience = "staff", brandId, canSave = false }: CalculatorFormProps) {
@@ -661,6 +663,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
     const cardName = card?.name ?? "Rate card";
     const requestShipDate = built.request.shipDate;
     const requestBoxOptions = boxOk;
+    const requestBoxPending = boxKey !== null && boxOptions === null;
     startTransition(async () => {
       let response: CalculatorResponse;
       try {
@@ -682,6 +685,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
         request: built.request,
         fees: response.fees ?? null,
         boxOptions: requestBoxOptions,
+        boxPending: requestBoxPending,
       });
     });
   };
@@ -811,7 +815,15 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
             </Button>
           </fieldset>
 
-          {boxOk ? <BoxBlock idPrefix={idPrefix} options={boxOk} drafts={boxDrafts} errors={boxErrors} packageCount={packages.length} onChange={patchBox} /> : boxOptions ? <BoxNote options={boxOptions} /> : null}
+          {boxOk ? (
+            <BoxBlock idPrefix={idPrefix} options={boxOk} drafts={boxDrafts} errors={boxErrors} packageCount={packages.length} onChange={patchBox} />
+          ) : boxOptions ? (
+            <BoxNote options={boxOptions} />
+          ) : boxKey ? (
+            <p role="status" className="text-sm text-muted">
+              Checking your fee schedule for this ship date…
+            </p>
+          ) : null}
 
           {message ? <Alert tone="danger">{message}</Alert> : null}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -850,6 +862,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
             <p className="mt-1 text-sm text-muted">{describeRequest(run.request, run.boxOptions)}</p>
           </div>
           {run.boxOptions && !run.request.box ? <Alert tone="info">Add what&apos;s in the box to see order fees.</Alert> : null}
+          {run.boxPending ? <Alert tone="info">Order fees are not included: the fee schedule for this ship date was still loading. Calculate again to see them.</Alert> : null}
           {run.fees && run.fees.status !== "computed" ? (
             <Alert tone={run.fees.status === "load_failed" ? "warning" : "info"}>
               {run.fees.status === "load_failed" ? "Order fees could not be calculated right now. The shipping price is unaffected; try again in a moment." : "No fee schedule in effect on this date, so no order fees are included."}

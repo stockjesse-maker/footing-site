@@ -166,7 +166,8 @@ export interface CalculatorBoxOptionsOk {
 export type CalculatorBoxOptions = CalculatorBoxOptionsOk | { status: "no_schedule" | "not_effective" | "load_failed" | "unavailable" };
 
 const capitalise = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
-const singular = (unit: string) => (unit.endsWith("s") && unit.length > 3 ? unit.slice(0, -1) : unit);
+/** The singular of a driver's unit word, as `describeFeeRule` words it ("inserts" -> "insert"). */
+export const singular = (unit: string) => (unit.endsWith("s") && unit.length > 3 ? unit.slice(0, -1) : unit);
 
 /** The order-share clause of `describeFeeRule`: the calculator asks for the count on this order, not a share of orders. */
 const SHARE_CLAUSE = ", on the share of orders you say get them";
@@ -231,13 +232,15 @@ export type ParsedCount = { kind: "empty" } | { kind: "ok"; value: number } | { 
 
 /**
  * "1,200" -> 1200; "" -> empty; "2.5", "abc", "-1" -> invalid. A very long run of digits is still a whole
- * number (the range check says "1,000,000 or fewer"), so it is not called "not a whole number".
+ * number (the range check says "1,000,000 or fewer"), so it is not called "not a whole number". Commas are
+ * accepted only as thousands separators: "2,5" (a decimal comma) or "1,23" is not 25 or 123, it is invalid.
  */
 export function parseCount(raw: string): ParsedCount {
-  const v = raw.trim().replace(/[,\s]/g, "");
+  const v = raw.trim();
   if (v === "") return { kind: "empty" };
-  if (!/^\d{1,12}$/.test(v)) return { kind: "invalid" };
-  return { kind: "ok", value: Number(v) };
+  if (/^\d{1,12}$/.test(v)) return { kind: "ok", value: Number(v) };
+  if (/^\d{1,3}(,\d{3}){1,3}$/.test(v)) return { kind: "ok", value: Number(v.replace(/,/g, "")) };
+  return { kind: "invalid" };
 }
 
 /**

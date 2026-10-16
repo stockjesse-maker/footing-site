@@ -462,7 +462,8 @@ function NotComputedRow({ item, audience, onAdd }: { item: OrderFeeNotComputedVi
         {audience === "staff" && item.ruleKey ? <span className="font-mono text-xs text-muted">{item.ruleKey}</span> : null}
       </div>
       {add && onAdd ? (
-        <Button type="button" size="md" variant="secondary" className="self-start" onClick={() => onAdd(add.field)}>
+        // Several fees can ask for the same thing (three packaging fees, one "Choose packaging" each): the name says which fee it is for.
+        <Button type="button" size="md" variant="secondary" className="self-start" aria-label={`${add.label} (${item.name})`} onClick={() => onAdd(add.field)}>
           {add.label}
         </Button>
       ) : null}
@@ -479,6 +480,8 @@ function NotComputedRow({ item, audience, onAdd }: { item: OrderFeeNotComputedVi
 export function OrderFeesSection({ fees, audience, uid, onAdd }: { fees: OrderFeesView; audience: ResultAudience; uid: string; onAdd?: (field: BoxFieldRef) => void }) {
   const partial = fees.status !== "ok";
   const left = fees.notComputed.length;
+  // "Add what is missing" only when something can be added; a fee that depends on the monthly volume cannot be.
+  const addable = fees.notComputed.some((n) => n.add !== null);
   const atLeast = partial && fees.orderFees !== null ? " (at least)" : "";
   return (
     <section aria-labelledby={`${uid}-fees`} className="space-y-3">
@@ -495,7 +498,9 @@ export function OrderFeesSection({ fees, audience, uid, onAdd }: { fees: OrderFe
           value={fees.orderFees === null ? "Not computed" : dollars(fees.orderFees)}
           note={
             fees.orderFees === null
-              ? "Add what is missing to see them."
+              ? addable
+                ? "Add what is missing to see them."
+                : "They depend on information this calculator does not ask for."
               : left
                 ? `${left === 1 ? "1 fee is" : `${left} fees are`} left out below.`
                 : fees.lines.length

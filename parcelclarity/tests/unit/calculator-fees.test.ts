@@ -223,6 +223,10 @@ describe("form drafts to box", () => {
     expect(parseCount("12")).toEqual({ kind: "ok", value: 12 });
     expect(parseCount("1,200")).toEqual({ kind: "ok", value: 1200 });
     for (const bad of ["2.5", "abc", "-1", "1e3"]) expect(parseCount(bad), bad).toEqual({ kind: "invalid" });
+    // A comma is a thousands separator or nothing: a decimal comma or a stray one is not read as a bigger number ("2,5" is not 25).
+    expect(parseCount("12,345,678")).toEqual({ kind: "ok", value: 12_345_678 });
+    for (const bad of ["2,5", "1,23", "1,2,3", "1 2", "1,2000", ",5", "1,"]) expect(parseCount(bad), bad).toEqual({ kind: "invalid" });
+    expect(boxFromDrafts(drafts({ units: "2,5" }), options).errors["box.units"]).toBe("Enter a whole number, for example 3.");
     // A long run of digits is a whole number that is too big, and is told so (not "enter a whole number").
     expect(parseCount("123456789")).toEqual({ kind: "ok", value: 123_456_789 });
     expect(boxFromDrafts(drafts({ units: "2,000,000" }), options).errors["box.units"]).toBe("Enter 1,000,000 or fewer.");
@@ -458,6 +462,15 @@ describe("order fees for a calculation (customer-safe view)", () => {
     expect(view.lines[4]!.explanation).toContain("5% of the shipping cost ($18.56)");
   });
 
+  it("words an inserts line for this order, not for a share of orders, and reads one insert in the singular", () => {
+    const text = (inserts: number, audience: "brand" | "staff" = "brand") => priceStandard(audience, { units: 3, products: 2, packaging: "poly mailer", counts: { inserts } }).lines.find((l) => l.name === "Marketing inserts")?.explanation;
+    // Two inserts, the first included: 1 chargeable. Three: 2 chargeable. The count is this order's own, so no "one of the 100% of orders".
+    expect(text(2)).toBe("1 insert × $0.25 = $0.25.");
+    expect(text(3)).toBe("2 inserts × $0.25 = $0.50.");
+    expect(text(3, "staff")).toBe("2 inserts × $0.25 = $0.50.");
+    for (const n of [2, 3]) expect(text(n)).not.toMatch(/100%|one of the|orders that get/);
+  });
+
   it("brand views carry no rule keys; staff views carry them and the version number", () => {
     const brand = priceStandard("brand", { units: 1 });
     const brandText = JSON.stringify(brand);
@@ -588,6 +601,28 @@ describe("rendering", () => {
     expect(t).toContain("Definite");
   });
 
+  it("names the fee each Add button is for, since several fees can ask for the same thing", () => {
+    const html = renderToStaticMarkup(createElement(OrderFeesSection, { fees: view(), audience: "brand", uid: "u1", onAdd: () => undefined }));
+    // Three packaging fees each offer "Choose packaging": the accessible names differ and still start with the visible text.
+    for (const name of ["Poly mailer", "Box", "Other packaging"]) expect(html).toContain(`aria-label="Choose packaging (${name})"`);
+    expect(html).toContain('aria-label="Add inserts (Marketing inserts)"');
+  });
+
+  it("only says 'add what is missing' when something can be added", () => {
+    const monthlyVolumeOnly: FeeScheduleSnapshot = { ...tiers, rules: tiers.rules.filter((r) => r.tiers?.on === "monthly_quantity") };
+    const [none] = computed(priceOrderFees({ schedule: okSchedule(monthlyVolumeOnly), box: { units: 5 }, calculations: [shipment()], audience: "brand" }));
+    expect(none!.status).toBe("no_content");
+    expect(none!.notComputed.every((n) => n.add === null)).toBe(true);
+    const noneText = text(renderToStaticMarkup(createElement(OrderFeesSection, { fees: none!, audience: "brand", uid: "u1", onAdd: () => undefined })));
+    expect(noneText).toContain("Not computed");
+    expect(noneText).toContain("They depend on information this calculator does not ask for.");
+    expect(noneText).not.toContain("Add what is missing");
+    expect(text(renderToStaticMarkup(createElement(OrderFeesSection, { fees: view(), audience: "brand", uid: "u1" })))).not.toContain("Add what is missing");
+    const packagingOnly: FeeScheduleSnapshot = { ...standard, rules: standard.rules.filter((r) => r.key === "pack_mailer") };
+    const [addable] = computed(priceOrderFees({ schedule: okSchedule(packagingOnly), box: { units: 1, packaging: null }, calculations: [shipment()], audience: "brand" }));
+    expect(text(renderToStaticMarkup(createElement(OrderFeesSection, { fees: addable!, audience: "brand", uid: "u1" })))).toContain("Add what is missing to see them.");
+  });
+
   it("offers the Add buttons only where the page can act on them", () => {
     const without = renderToStaticMarkup(createElement(OrderFeesSection, { fees: view(), audience: "brand", uid: "u1" }));
     expect(without).not.toContain("<button");
@@ -663,6 +698,13 @@ describe("the box block in the form", () => {
     expect(html).not.toMatch(/<option value="box"/);
     const picked = render(boxOptionsFromSnapshot(mailerOnly), { ...emptyBoxDrafts(), units: "2", packaging: "poly mailer" });
     expect(picked).toMatch(/<option value="poly mailer" selected="">Poly mailer<\/option>/);
+  });
+
+  it("does not pre-fill a count with a grey 0: blank means not sure, 0 means none", () => {
+    const html = render();
+    expect(html).not.toContain('placeholder="0"');
+    expect(html).toMatch(/id="t-box-count-inserts"[^>]*placeholder="e\.g\. 2"/);
+    expect(text(html)).toContain("Enter 0 if there are none; leave it blank if you are not sure");
   });
 
   it("says the packaging applies to every package when there are several", () => {

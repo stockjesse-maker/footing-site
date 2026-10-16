@@ -1,5 +1,5 @@
 import { calculateOrderFees, describeFeeRule, e4ToCents, roundE4ToCents } from "@/engine/fees";
-import type { FeeRule, FeeScheduleSnapshot, FeeUnresolvedReason, OrderFeeResult } from "@/engine/fees/types";
+import type { FeeLine, FeeRule, FeeScheduleSnapshot, FeeUnresolvedReason, OrderFeeResult } from "@/engine/fees/types";
 import type { ShipmentCalculation } from "@/engine/types";
 import type { BrandFeeSchedule } from "@/lib/fees/queries";
 import {
@@ -7,6 +7,7 @@ import {
   boxToOrderFeeInput,
   describeBox,
   shippingInputFromCalculation,
+  singular,
   type BoxFieldRef,
   type CalculatorBox,
   type CalculatorBoxOptionsOk,
@@ -72,7 +73,8 @@ function notComputedWording(reason: FeeUnresolvedReason, rule: FeeRule | undefin
     case "packaging_unknown":
       return { reason: "Needs the packaging used.", add: { field: "packaging", label: "Choose packaging" } };
     case "packaging_unmatched":
-      return { reason: "Your fee schedule has no packaging fee for this type of packaging, so none was added.", add: { field: "packaging", label: "Change packaging" } };
+      // Left out, like every fee in this list: the schedule not listing the type does not make the fee $0, so the wording must not say "none was added".
+      return { reason: "Your fee schedule does not list a packaging fee for this type of packaging, so it is left out. Ask your 3PL what applies.", add: { field: "packaging", label: "Change packaging" } };
     case "shipping_unknown":
       return { reason: "Needs a shipping price, and this shipment could not be priced.", add: null };
     case "assumption_missing": {
@@ -84,6 +86,19 @@ function notComputedWording(reason: FeeUnresolvedReason, rule: FeeRule | undefin
     case "replaced":
       return { reason: "Replaced by another fee.", add: null };
   }
+}
+
+/**
+ * The engine words an order-driver line for a share of orders ("this order is one of the 100% of orders that get
+ * inserts") and names the unit in the plural even for one ("1 inserts"). In the calculator the count is this
+ * order's own, so that sentence is dropped and a single unit reads in the singular ("1 insert × $0.25 = $0.25.").
+ */
+function boxLineExplanation(line: FeeLine, rule: FeeRule | undefined): string {
+  if (line.basis !== "order_driver") return line.explanation;
+  let text = line.explanation.replace(/ \(this order is one of the [^)]*\)(?=\.$)/, "");
+  const unit = rule?.driver?.unit;
+  if (unit && line.quantity === "1" && text.startsWith(`1 ${unit} `)) text = `1 ${singular(unit)} ${text.slice(unit.length + 3)}`;
+  return text;
 }
 
 /**
@@ -127,7 +142,7 @@ export function orderFeesView(args: {
     category: l.category,
     chargeClass: l.chargeClass,
     amount: e4ToCents(l.amountE4),
-    explanation: l.explanation,
+    explanation: boxLineExplanation(l, rulesByKey.get(l.ruleKey)),
     ...(staff ? { ruleKey: l.ruleKey } : {}),
   }));
 

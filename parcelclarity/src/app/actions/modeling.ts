@@ -532,7 +532,9 @@ export async function saveSingleScenario(request: unknown, name: string, brandId
       fees = { status: "load_failed" };
     }
     if (fees.status === "load_failed") return { ok: false, message: "The fee schedule could not be loaded, so the order fees were not saved. Try again in a moment." };
-    if (fees.status === "computed") orderFees = fees.byService[0] ?? undefined;
+    // The customer saw order fees; a schedule that has since ended or been unassigned must not turn them into a scenario that silently has none.
+    if (fees.status !== "computed") return { ok: false, message: "No fee schedule is in effect on that ship date any more, so the order fees were not saved. Calculate again to see the current result." };
+    orderFees = fees.byService[0] ?? undefined;
   }
   const { data, error } = await supabase.rpc("save_single_simulation", {
     p_brand: m.brandId,
