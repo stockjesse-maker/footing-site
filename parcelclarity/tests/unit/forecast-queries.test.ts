@@ -220,12 +220,12 @@ describe("loadSavedForecast", () => {
   const evaluated = evaluateForecast(assumptions, { pricing, schedule: standard, pinnedRates: {}, feeEngineVersion: FEE_ENGINE_VERSION, engineVersion: ENGINE_VERSION, hash: sha256Hex });
   if (evaluated.status !== "ok") throw new Error("fixture forecast must price");
   const summary = evaluated.summary;
-  const project = (runs: unknown[], over: Record<string, unknown> = {}) => ({ id: "p1", name: "Spring plan", created_at: "2026-03-16T10:00:00Z", shared_with_brand: true, archived_at: null, rate_cards: { name: "Fixture rate card" }, simulation_runs: runs, ...over });
+  const project = (runs: unknown[], over: Record<string, unknown> = {}) => ({ id: "p1", name: "Spring plan", created_at: "2026-03-16T10:00:00Z", shared_with_brand: true, archived_at: null, rate_card_id: "card-1", rate_cards: { name: "Fixture rate card" }, simulation_runs: runs, ...over });
   const run = (over: Record<string, unknown> = {}) => ({ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary, assumptions, ...over });
 
   it("reads back the project, its completed run, the summary and the assumptions that prefill an edit", async () => {
     const saved = await loadSavedForecast(fake({ tables: { simulation_projects: [project([run()])] } }), "b", "p1");
-    expect(saved).toMatchObject({ projectId: "p1", runId: "r1", name: "Spring plan", sharedWithBrand: true, archivedAt: null, rateCardName: "Fixture rate card", asOfDate: "2026-03-15" });
+    expect(saved).toMatchObject({ projectId: "p1", runId: "r1", name: "Spring plan", sharedWithBrand: true, archivedAt: null, rateCardId: "card-1", rateCardName: "Fixture rate card", asOfDate: "2026-03-15" });
     expect(saved!.summary.basis).toBe("assumptions");
     expect(saved!.assumptions).toEqual(assumptions);
   });

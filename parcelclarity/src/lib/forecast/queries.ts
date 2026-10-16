@@ -152,6 +152,8 @@ export interface SavedForecast {
   createdAt: string;
   sharedWithBrand: boolean;
   archivedAt: string | null;
+  /** The rate card the forecast was priced on (an edit starts from it while it is still assigned). */
+  rateCardId: string | null;
   rateCardName: string | null;
   asOfDate: string;
   summary: ForecastSummary;
@@ -165,6 +167,7 @@ interface SavedRow {
   created_at: string;
   shared_with_brand: boolean;
   archived_at: string | null;
+  rate_card_id: string | null;
   rate_cards: { name: string } | null;
   simulation_runs: { id: string; kind: string; status: string; as_of_date: string | null; created_at: string; summary: unknown; assumptions: unknown }[];
 }
@@ -179,7 +182,7 @@ function isForecastSummary(value: unknown): value is ForecastSummary {
 export async function loadSavedForecast(supabase: SupabaseClient, brandId: string, projectId: string): Promise<SavedForecast | null> {
   const { data, error } = await supabase
     .from("simulation_projects")
-    .select("id, name, created_at, shared_with_brand, archived_at, rate_cards(name), simulation_runs(id, kind, status, as_of_date, created_at, summary, assumptions)")
+    .select("id, name, created_at, shared_with_brand, archived_at, rate_card_id, rate_cards(name), simulation_runs(id, kind, status, as_of_date, created_at, summary, assumptions)")
     .eq("id", projectId)
     .eq("brand_id", brandId)
     .eq("kind", "forecast")
@@ -198,6 +201,7 @@ export async function loadSavedForecast(supabase: SupabaseClient, brandId: strin
     createdAt: data.created_at,
     sharedWithBrand: data.shared_with_brand,
     archivedAt: data.archived_at,
+    rateCardId: data.rate_card_id ?? null,
     rateCardName: data.rate_cards?.name ?? null,
     asOfDate: run.as_of_date ?? summary.asOfDate,
     summary,

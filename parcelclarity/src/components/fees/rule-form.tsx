@@ -227,8 +227,10 @@ export function RuleForm({ versionId, rule, source, otherRules: siblingRules, on
   const hasConditions = [values.minUnits, values.maxUnits, values.minLines, values.maxLines, values.minPackages, values.maxPackages, values.packagingTypes].some((x) => x.trim() !== "");
   const conditionsInvalid = Object.keys(errors).some((k) => k === "conditions" || k.startsWith("conditions."));
   const groupInvalid = Object.keys(errors).some((k) => k === "exclusiveGroup" || k === "priority");
-  const [conditionsOpen] = useState(hasConditions);
-  const [groupOpen] = useState(values.exclusiveGroup.trim() !== "");
+  // Whether each disclosure is open is remembered as the person toggles it: reading `open` straight from the
+  // errors would close the panel under their hands the moment the last error in it is fixed.
+  const [conditionsOpen, setConditionsOpen] = useState(hasConditions);
+  const [groupOpen, setGroupOpen] = useState(values.exclusiveGroup.trim() !== "");
   const rateLabel = values.basis === "month" ? "Amount per month (USD)" : values.basis === "order" ? "Amount per order (USD)" : `Amount per ${noun.singular}${period} (USD)`;
   const methodOptions: { value: FeeMethod; label: string }[] = [
     { value: "flat", label: "The same rate for every unit" },
@@ -655,7 +657,7 @@ export function RuleForm({ versionId, rule, source, otherRules: siblingRules, on
       ) : null}
 
       {order ? (
-        <details className="rounded-control border border-line" open={conditionsOpen || conditionsInvalid}>
+        <details className="rounded-control border border-line" open={conditionsOpen || conditionsInvalid} onToggle={(e) => setConditionsOpen(e.currentTarget.open)}>
           <summary className="flex min-h-11 cursor-pointer items-center px-4 text-base font-semibold">Only some orders (optional)</summary>
           <div className="space-y-4 border-t border-line p-4">
             <p className="text-sm text-muted">The charge applies only to orders that fall inside every range you fill in. Leave a box empty for no limit.</p>
@@ -690,7 +692,7 @@ export function RuleForm({ versionId, rule, source, otherRules: siblingRules, on
       ) : null}
 
       {order ? (
-        <details className="rounded-control border border-line" open={groupOpen || groupInvalid}>
+        <details className="rounded-control border border-line" open={groupOpen || groupInvalid} onToggle={(e) => setGroupOpen(e.currentTarget.open)}>
           <summary className="flex min-h-11 cursor-pointer items-center px-4 text-base font-semibold">Alternatives (optional)</summary>
           <div className="space-y-4 border-t border-line p-4">
             <p className="text-sm text-muted">

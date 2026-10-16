@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { archiveFeeSchedule, archiveFeeVersion, renameFeeSchedule, unassignFeeSchedule } from "@/app/actions/fee-schedules";
 import { NotSupportedPanel } from "@/components/fees/not-supported";
+import { countsRules, versionInEffect } from "@/components/fees/shared";
 import { ActivateVersionButton, EndVersionButton, NewDraftControl } from "@/components/fees/version-controls";
 import { ActionForm, SubmitButton, TextField } from "@/components/forms/action-form";
 import { ConfirmAction } from "@/components/forms/confirm-action";
@@ -18,16 +19,12 @@ import { can } from "@/lib/auth/permissions";
 import { requireTenantContext } from "@/lib/auth/session";
 import { uuidSchema } from "@/lib/auth/validation";
 import { formatDate } from "@/lib/format/date";
-import { loadFeeSchedule, type FeeVersionSummary } from "@/lib/fees/queries";
+import { loadFeeSchedule } from "@/lib/fees/queries";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Fee schedule" };
 
 const roundingText = (rounding: string) => (rounding === "transaction" ? "rounded per order" : "rounded per invoice line");
-
-function inEffectToday(v: FeeVersionSummary, today: string): boolean {
-  return v.status === "active" && v.effectiveDate !== null && v.effectiveDate <= today && (v.expirationDate === null || v.expirationDate >= today);
-}
 
 export default async function FeeScheduleDetail({ params }: { params: Promise<{ scheduleId: string }> }) {
   const ctx = await requireTenantContext("ratecard.view");
@@ -43,7 +40,7 @@ export default async function FeeScheduleDetail({ params }: { params: Promise<{ 
   const today = new Date().toISOString().slice(0, 10);
   const archived = schedule.status === "archived";
   const draft = schedule.versions.find((v) => v.status === "draft") ?? null;
-  const inEffect = schedule.versions.find((v) => inEffectToday(v, today)) ?? null;
+  const inEffect = versionInEffect(schedule.versions, today);
   const hasActive = schedule.versions.some((v) => v.status === "active");
   const copyable = schedule.versions.map((v) => ({ id: v.id, versionNumber: v.versionNumber, status: v.status }));
 
@@ -98,7 +95,8 @@ export default async function FeeScheduleDetail({ params }: { params: Promise<{ 
                     </p>
                     <p className="text-sm text-muted">{formatEffectivity(v.effectiveDate, v.expirationDate)}</p>
                     <p className="tabular text-sm text-muted">
-                      {v.ruleCount.toLocaleString("en-US")} {v.ruleCount === 1 ? "rule" : "rules"} · {roundingText(v.rounding)} · created {formatDate(v.createdAt)}
+                      {countsRules(v) ? `${v.ruleCount.toLocaleString("en-US")} ${v.ruleCount === 1 ? "rule" : "rules"} · ` : ""}
+                      {roundingText(v.rounding)} · created {formatDate(v.createdAt)}
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -123,7 +121,7 @@ export default async function FeeScheduleDetail({ params }: { params: Promise<{ 
                         {manage ? <EndVersionButton versionId={v.id} versionNumber={v.versionNumber} expirationDate={v.expirationDate} /> : null}
                         {manage ? (
                           <ConfirmAction action={archiveFeeVersion.bind(null, v.id)} label="Archive" confirmLabel="Archive version" variant="danger">
-                            Customers lose these fees immediately. An archived version cannot be reactivated.
+                            Its dates still apply unless another active version covers them; end the version to stop that. An archived version cannot be reactivated.
                           </ConfirmAction>
                         ) : null}
                       </>

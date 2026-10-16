@@ -42,9 +42,10 @@ export default async function BrandFeeSchedulePage() {
         </EmptyState>
       ) : result.status === "not_effective" ? (
         <div className="space-y-4">
-          <h2 className="text-xl font-semibold tracking-tight">{result.schedule.name}</h2>
+          {result.schedule.name ? <h2 className="text-xl font-semibold tracking-tight">{result.schedule.name}</h2> : null}
           <Alert tone="warning">
-            {v.tenantName} has assigned this fee schedule to you, but none of its fees is in effect today, so fulfillment fees are left out of your cost models. Ask {v.tenantName} for the current schedule.
+            {v.tenantName} has assigned this fee schedule to you, but none of its fees is in effect today. A cost model includes fulfillment fees only for dates this schedule covers. Ask {v.tenantName} for the current
+            schedule.
           </Alert>
         </div>
       ) : (
@@ -61,8 +62,8 @@ export default async function BrandFeeSchedulePage() {
           <Card>
             <p className="text-sm font-medium">What this page does not cover</p>
             <p className="mt-1 text-sm text-muted">
-              Your shipping charges come from your rate card. Special projects and anything outside this schedule are quoted by {v.tenantName} separately, as are taxes and carrier adjustments after
-              shipping. Amounts that depend on what you store, receive or return are worked out from the numbers you give when you run a model.
+              Your shipping charges come from your rate card. Special projects, return shipping, taxes, carrier adjustments after shipping and anything else outside this schedule are quoted by{" "}
+              {v.tenantName} separately. Amounts that depend on what you store, receive or return are worked out from the numbers you give when you run a model.
             </p>
           </Card>
         </div>

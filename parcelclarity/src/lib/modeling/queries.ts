@@ -381,22 +381,53 @@ interface OrderShipmentDbRow {
   expected: string | number;
 }
 
+/** Order ids travel in the request URL: 100 of them stay far below any URL limit. */
+const SHIPPING_CHUNK = 100;
+/** Rows per read; the server may cap a read, so a short page is the only sign of the end. */
+const SHIPPING_PAGE = 1000;
+/** Chunks read at the same time. */
+const SHIPPING_PARALLEL = 4;
+
+async function readShippingChunk(supabase: SupabaseClient, runId: string, orderIds: string[]): Promise<{ rows: OrderShipmentDbRow[]; error: string | null }> {
+  const rows: OrderShipmentDbRow[] = [];
+  for (let from = 0; ; from += SHIPPING_PAGE) {
+    const { data, error } = await supabase
+      .from("simulation_results")
+      .select("order_id, status, expected")
+      .eq("run_id", runId)
+      .in("order_id", orderIds)
+      .order("row_no")
+      .range(from, from + SHIPPING_PAGE - 1)
+      .overrideTypes<OrderShipmentDbRow[], { merge: false }>();
+    if (error) return { rows: [], error: error.message };
+    rows.push(...(data ?? []));
+    if (!data || data.length < SHIPPING_PAGE) return { rows, error: null };
+  }
+}
+
 /**
- * Shipping per order for a page of orders, summed from the stored shipment results (decimal arithmetic, no
+ * Shipping per order for a set of orders, summed from the stored shipment results (decimal arithmetic, no
  * floats). An order with any unpriced shipment has no shipping figure: it is not shown as a partial sum.
- * Keep `orderIds` small (a page): the ids travel in the request URL.
+ * The ids are read in chunks (and each chunk page by page), so a page of the screen and a 1,000-order page of
+ * an export use the same function.
  */
 export async function loadOrderShipping(supabase: SupabaseClient, runId: string, orderIds: string[]): Promise<{ shipping: OrderShipping; error: string | null }> {
   const shipping: OrderShipping = new Map();
   if (!orderIds.length) return { shipping, error: null };
-  const { data, error } = await supabase.from("simulation_results").select("order_id, status, expected").eq("run_id", runId).in("order_id", orderIds).overrideTypes<OrderShipmentDbRow[], { merge: false }>();
-  if (error) return { shipping, error: error.message };
+  const chunks: string[][] = [];
+  for (let i = 0; i < orderIds.length; i += SHIPPING_CHUNK) chunks.push(orderIds.slice(i, i + SHIPPING_CHUNK));
   const sums = new Map<string, { total: InstanceType<typeof D>; ok: boolean }>();
-  for (const r of data ?? []) {
-    const entry = sums.get(r.order_id) ?? { total: new D(0), ok: true };
-    if (r.status === "ok") entry.total = entry.total.plus(String(r.expected));
-    else entry.ok = false;
-    sums.set(r.order_id, entry);
+  for (let i = 0; i < chunks.length; i += SHIPPING_PARALLEL) {
+    const results = await Promise.all(chunks.slice(i, i + SHIPPING_PARALLEL).map((ids) => readShippingChunk(supabase, runId, ids)));
+    for (const result of results) {
+      if (result.error) return { shipping, error: result.error };
+      for (const r of result.rows) {
+        const entry = sums.get(r.order_id) ?? { total: new D(0), ok: true };
+        if (r.status === "ok") entry.total = entry.total.plus(String(r.expected));
+        else entry.ok = false;
+        sums.set(r.order_id, entry);
+      }
+    }
   }
   for (const [orderId, entry] of sums) shipping.set(orderId, { expected: entry.ok ? entry.total.toFixed(2) : null });
   return { shipping, error: null };
@@ -445,4 +476,22 @@ export async function loadCurrentFeeVersion(supabase: SupabaseClient, brandId: s
   if (result.status === "ok") return { status: "ok", versionId: result.activeVersion.versionId };
   if (result.status === "no_schedule" || result.status === "not_effective") return { status: "none" };
   return { status: "unknown" };
+}
+
+/** Who entered the assumptions of a run, from the viewer's side. */
+export type AssumptionsAuthor = "you" | "tenant" | "other";
+
+/**
+ * "Assumptions entered by you / by {tenant} / by another user". The viewer's own runs are "you". For anyone
+ * else the answer needs the memberships of the run's customer, which only a viewer who may see members can
+ * read: when the creator is not a member of the customer the run was prepared by the 3PL's team ("tenant");
+ * when the viewer cannot tell (no permission, or the read fails) the honest answer is "another user", never a guess.
+ */
+export async function loadAssumptionsAuthor(supabase: SupabaseClient, input: { createdBy: string | null; viewerId: string; viewerCanSeeMembers: boolean; brandId: string }): Promise<AssumptionsAuthor> {
+  if (!input.createdBy) return "other";
+  if (input.createdBy === input.viewerId) return "you";
+  if (!input.viewerCanSeeMembers) return "other";
+  const { data, error } = await supabase.from("memberships").select("id").eq("user_id", input.createdBy).eq("brand_id", input.brandId).limit(1);
+  if (error) return "other";
+  return (data?.length ?? 0) > 0 ? "other" : "tenant";
 }

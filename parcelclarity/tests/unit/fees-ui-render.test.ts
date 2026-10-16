@@ -23,7 +23,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: 
 
 const { RuleForm } = await import("@/components/fees/rule-form");
 const { RulesWorkspace } = await import("@/components/fees/rules-workspace");
-const { TryOrderPanel } = await import("@/components/fees/try-order-panel");
+const { TryOrderPanel, TryOrderOutcome } = await import("@/components/fees/try-order-panel");
 const { ActivateVersionButton, EndVersionButton, NewDraftControl, RoundingSelect, VersionNotesForm } = await import("@/components/fees/version-controls");
 
 /**
@@ -139,6 +139,48 @@ describe("try-an-order panel renders", () => {
     expect(withTiers).toContain("Orders a month");
     expect(withTiers).not.toContain("Share of orders (%)");
     expect(withTiers).toContain("never as $0");
+  });
+});
+
+describe("try-an-order outcome", () => {
+  type Result = Parameters<typeof TryOrderOutcome>[0]["priced"]["result"];
+  const empty: Result = { status: "ok", lines: [], definiteE4: 0, estimatedE4: 0, unresolved: [], warnings: [] };
+  const show = (result: Result) => text(renderToStaticMarkup(createElement(TryOrderOutcome, { priced: { result, versionNumber: 2 }, namesByKey: new Map([["pack_mailer", "Poly mailer"]]) })));
+
+  it("never prints $0.00 for an order that nothing could be computed for", () => {
+    const t = show({ ...empty, status: "no_content", unresolved: [{ ruleKey: "pick_additional", name: "Each additional item", reason: "units_unknown" }] });
+    expect(t).toContain("Nothing could be computed from what you entered.");
+    expect(t).toMatch(/Each additional item\s*: needs the number of items\./);
+    expect(t).not.toContain("$0.00");
+    expect(t).not.toContain("No fee produced a charge"); // that sentence is for an order whose fees were all computed
+    expect(t.match(/Not computed/g)?.length).toBeGreaterThanOrEqual(4); // three figures and the list heading
+  });
+
+  it("calls a partial total a minimum, and says monthly charges are not in it", () => {
+    const t = show({
+      ...empty,
+      status: "partial",
+      lines: [{ ruleKey: "pick_order", name: "Pick & pack, per order", category: "pick_pack", basis: "order", quantity: "1", unitAmountE4: 25000, amountE4: 25000, chargeClass: "definite", explanation: "1 order at $2.50" }],
+      definiteE4: 25000,
+      unresolved: [{ ruleKey: "pick_additional", name: "Each additional item", reason: "units_unknown" }],
+    });
+    expect(t).toContain("At least, with the fees not computed left out $2.50");
+    expect(t).not.toContain("Computed fees together");
+    expect(t).toContain("not per order, so they are not in these amounts");
+    expect(t).toContain("These are left out of the amounts above, not counted as $0.");
+  });
+
+  it("shows a real zero as $0.00 when every applicable fee was computed", () => {
+    const t = show(empty);
+    expect(t).toContain("Every applicable fee was computed.");
+    expect(t).toContain("$0.00");
+    expect(t).not.toContain("Not computed");
+  });
+
+  it("does not offer to price an order on a version with no rules", () => {
+    const t = text(renderToStaticMarkup(createElement(TryOrderPanel, { versionId: "v", rules: [], packagingTypes: [] })));
+    expect(t).toContain("nothing to price");
+    expect(t).not.toContain("Price this order");
   });
 });
 

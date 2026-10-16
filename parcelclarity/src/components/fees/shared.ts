@@ -111,3 +111,26 @@ export function slugify(name: string): string {
   if (!slug) return "";
   return /^[a-z]/.test(slug) ? slug : `r_${slug}`.slice(0, 61);
 }
+
+/** The few fields of a version that decide which one pricing uses on a day. */
+export interface VersionDates {
+  status: string;
+  versionNumber: number;
+  effectiveDate: string | null;
+  expirationDate: string | null;
+}
+
+/**
+ * The version pricing uses on a day (`today`, an ISO date), as `app.fee_version_on` resolves it: an active or an
+ * archived version whose dates cover the day (archived versions keep resolving so past models stay explainable),
+ * an active one first, then the newest. Archiving a version therefore does not stop it applying inside its dates;
+ * ending it does.
+ */
+export function versionInEffect<T extends VersionDates>(versions: T[], today: string): T | null {
+  const covering = versions.filter((v) => (v.status === "active" || v.status === "archived") && v.effectiveDate !== null && v.effectiveDate <= today && (v.expirationDate === null || v.expirationDate >= today));
+  covering.sort((a, b) => Number(b.status === "active") - Number(a.status === "active") || b.versionNumber - a.versionNumber);
+  return covering[0] ?? null;
+}
+
+/** A draft's stored rule count is only set at activation, so it would read "0 rules" on a draft full of rules. */
+export const countsRules = (v: { status: string }): boolean => v.status === "active" || v.status === "archived";

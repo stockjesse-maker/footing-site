@@ -34,10 +34,9 @@ const todayUtc = () => new Date().toISOString().slice(0, 10);
 /** The form: describe the orders you expect, preview the expected cost per order, save it. `?from=` starts from a saved forecast. */
 export async function ForecastNewView(v: ModelingView, searchParams: { from?: string }) {
   const fromId = searchParams.from && uuidSchema.safeParse(searchParams.from).success ? searchParams.from : null;
-  const [context, saved] = await Promise.all([
-    loadForecastContext(v.supabase, { brandId: v.brandId, tenantDefaultOriginZip: v.tenantDefaultOriginZip, asOfDate: todayUtc() }),
-    fromId ? loadSavedForecast(v.supabase, v.brandId, fromId) : Promise.resolve(null),
-  ]);
+  const saved = fromId ? await loadSavedForecast(v.supabase, v.brandId, fromId) : null;
+  // An edit starts on the rate card the saved forecast used, while the customer still has it (the loader falls back to the first card otherwise).
+  const context = await loadForecastContext(v.supabase, { brandId: v.brandId, tenantDefaultOriginZip: v.tenantDefaultOriginZip, asOfDate: todayUtc(), rateCardId: saved?.rateCardId ?? null });
   const whose = v.staff ? "the customer's" : "your";
   return (
     <>
@@ -47,6 +46,7 @@ export async function ForecastNewView(v: ModelingView, searchParams: { from?: st
         description={`Describe the orders you expect and see the expected cost per order on ${whose} rate card and fee schedule. A forecast is an estimate, never an invoice or a quote.${v.staff ? " What you prepare stays private to your team until you share it with the customer." : ""}`}
       />
       {fromId && !saved ? <Alert tone="info" className="mb-6">That forecast could not be found, so you are starting from scratch.</Alert> : null}
+      {saved && !saved.assumptions ? <Alert tone="info" className="mb-6">{saved.name} was saved with numbers this form can no longer read, so you are starting from scratch. The saved forecast is unchanged.</Alert> : null}
       {context.status === "no_card" ? (
         <EmptyState title="Nothing to price against yet">{v.staff ? "Assign an active rate card to this customer first." : `${v.tenantName} has not assigned a rate card to your account yet.`}</EmptyState>
       ) : context.status === "no_rates" ? (

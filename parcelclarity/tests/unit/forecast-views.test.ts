@@ -135,6 +135,25 @@ describe("ForecastNewView", () => {
     expect(text(await ForecastNewView(view(false), { from: "../../etc/passwd" }))).not.toContain("could not be found");
   });
 
+  it("starts an edit on the rate card the saved forecast used, not on the first card by name", async () => {
+    const cards = [
+      { rate_card_id: "card-a", allowed_service_ids: null, default_origin_zip: "90001", rate_cards: { id: "card-a", name: "A first card", status: "active" } },
+      { rate_card_id: "card-b", allowed_service_ids: null, default_origin_zip: "90001", rate_cards: { id: "card-b", name: "Fixture rate card", status: "active" } },
+    ];
+    const project = (rateCardId: string) => [{ id: PROJECT, name: "Spring plan", created_at: "2026-03-16T10:00:00Z", shared_with_brand: true, archived_at: null, rate_card_id: rateCardId, rate_cards: { name: "Fixture rate card" }, simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary, assumptions }] }];
+    const picked = (html: string) => /<option value="([^"]+)" selected/.exec(html)?.[1];
+    expect(picked(renderToStaticMarkup((await ForecastNewView(view(false, { brand_rate_card_assignments: cards, simulation_projects: project("card-b") }), { from: PROJECT })) as never))).toBe("card-b");
+    // A card the customer no longer has: the first card by name, never an error.
+    expect(picked(renderToStaticMarkup((await ForecastNewView(view(false, { brand_rate_card_assignments: cards, simulation_projects: project("card-gone") }), { from: PROJECT })) as never))).toBe("card-a");
+  });
+
+  it("says so when a saved forecast's numbers can no longer be read into the form, and starts from scratch", async () => {
+    const unreadable = [{ id: PROJECT, name: "Old plan", created_at: "2026-03-16T10:00:00Z", shared_with_brand: true, archived_at: null, rate_card_id: "card", rate_cards: { name: "Fixture rate card" }, simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary, assumptions: { version: 1, nonsense: true } }] }];
+    const t = text(await ForecastNewView(view(false, { simulation_projects: unreadable }), { from: PROJECT }));
+    expect(t).toContain("Old plan was saved with numbers this form can no longer read, so you are starting from scratch. The saved forecast is unchanged.");
+    expect(t).not.toContain("Starting from Old plan");
+  });
+
   it("says what is missing instead of showing a form that cannot work", async () => {
     expect(text(await ForecastNewView(view(false, { brand_rate_card_assignments: [] }), {}))).toContain("Fixture 3PL has not assigned a rate card to your account yet.");
     expect(text(await ForecastNewView(view(true, { brand_rate_card_assignments: [] }), {}))).toContain("Assign an active rate card to this customer first.");

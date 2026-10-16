@@ -1,6 +1,6 @@
 import { formatMoney } from "@/components/pricing/calculation-result";
 import { e4ToCents } from "@/engine/fees/tiers";
-import type { FeeCategory } from "@/engine/fees/types";
+import type { FeeCategory, FeeScope } from "@/engine/fees/types";
 import type { ForecastCaveat, ForecastSummary, ForecastVolumePoint } from "@/engine/forecast/types";
 import { formatDate } from "@/lib/format/date";
 
@@ -82,6 +82,8 @@ export type AddTarget = { kind: "driver"; key: string } | { kind: "content" } | 
 export interface NotIncludedItem {
   category: FeeCategory;
   categoryLabel: string;
+  /** Charged per order, or once a month from a stated quantity. */
+  scope: FeeScope;
   name: string;
   /** The rate in the customer's words ("$15.00 per pallet per month"). */
   rate: string;
@@ -121,6 +123,7 @@ export function notIncludedItems(summary: ForecastSummary): NotIncludedItem[] {
       items.push({
         category: category.category,
         categoryLabel: CATEGORY_LABEL[category.category],
+        scope: rule.scope,
         name: rule.name,
         rate: rule.describe,
         reason: notComputedReason(rule.reason),
@@ -147,7 +150,10 @@ export interface ForecastHeadline {
   perOrder: string | null;
   monthly: string | null;
   annual: string | null;
-  /** The parts per order: shipping, order fees and the monthly charges spread over the volume. Null where a part was not computed. */
+  /**
+   * The parts per order: shipping, order fees and the monthly charges spread over the volume. A part
+   * is null when none of its fees could be computed (it is then "not computed", never $0).
+   */
   parts: { shipping: string; orderFees: string | null; monthlyCharges: string | null };
   notIncluded: NotIncludedItem[];
   /** "The account minimum could add up to $X a month" when the minimum is an upper bound (dollars), else null. */
@@ -172,7 +178,14 @@ function joinWords(words: string[]): string {
  */
 export function forecastHeadline(summary: ForecastSummary, notIncluded: NotIncludedItem[] = notIncludedItems(summary)): ForecastHeadline {
   const allocation = summary.allocation;
-  const parts = { shipping: summary.shipping.perOrder, orderFees: summary.processing?.perOrder ?? null, monthlyCharges: summary.allocated?.perOrder ?? null };
+  // A part none of whose fees could be computed is "not computed", never the $0.00 its empty sum would print.
+  const orderFeesNotComputed = notIncluded.some((i) => i.scope === "order") && (summary.processing?.byRule.length ?? 0) === 0;
+  const monthlyNotComputed = notIncluded.some((i) => i.scope === "monthly") && (summary.monthly?.lines.length ?? 0) === 0;
+  const parts = {
+    shipping: summary.shipping.perOrder,
+    orderFees: orderFeesNotComputed ? null : (summary.processing?.perOrder ?? null),
+    monthlyCharges: monthlyNotComputed ? null : (summary.allocated?.perOrder ?? null),
+  };
   const upperBound = summary.minimums.filter((m) => m.status === "upper_bound");
   const upTo = upperBound.reduce((n, m) => n + m.topUpE4, 0);
   const minimumUpTo = upTo > 0 ? e4ToCents(upTo) : null;

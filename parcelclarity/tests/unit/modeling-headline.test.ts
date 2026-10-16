@@ -1,14 +1,16 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { evaluateForecast, type ForecastAssumptions, type ForecastDeps, type ForecastSummary } from "@/engine/forecast";
-import { FEE_ENGINE_VERSION, type FeeRule, type FeeScheduleSnapshot } from "@/engine/fees/types";
-import { emptyPartial, finalizeSummary, foldBatch, type BulkSummary, type CompactFeeLine, type DatasetCounts, type FeeDictionaryEntry, type FeeStatus, type FinalizeFeeInput, type FoldOrder, type FoldOrderFees, type PartialSummary, type RunPeriod } from "@/engine/modeling";
-import { ENGINE_VERSION } from "@/engine/types";
-import { sha256Hex } from "@/lib/forecast/hash";
+import type { BulkSummary } from "@/engine/modeling";
+import type { CompareRunInput } from "@/lib/modeling/headline";
 import {
+  MONTHLY_CSV_COLUMNS,
+  ORDERS_CSV_COLUMNS,
   assumptionsLine,
+  buildComparison,
   categoryName,
   compareFacts,
+  csvCell,
+  csvComment,
+  csvText,
   defaultView,
   describeMinimumReason,
   diffForecastProfiles,
@@ -23,17 +25,49 @@ import {
   minimumViews,
   monthLabel,
   monthlyCharges,
+  monthlyCsv,
   notIncludedGroups,
   orderFeeRows,
+  ordersCsvComments,
+  ordersCsvRecord,
   orderRowFigures,
   parseView,
   ruleNameIndex,
   toCents,
+  uncoveredFeeDatesNote,
+  unresolvedRuleNames,
   usd,
   volumeDiffers,
   volumeSensitivity,
 } from "@/lib/modeling/headline";
-import { fixtureContext } from "../fixtures/pricing/load";
+import {
+  A,
+  ADD,
+  B,
+  C,
+  D2,
+  PICK,
+  complete,
+  counts,
+  feeLine,
+  fees,
+  finalize,
+  forecast,
+  forecastAssumptions,
+  lowCoverage,
+  modeledOrder,
+  noContent,
+  noMinimumRun,
+  noSchedule,
+  noStorageAnswer,
+  noVolume,
+  notEffective,
+  oneMonth,
+  returnsRun,
+  skipped,
+  undated,
+  zeroVolume,
+} from "../fixtures/modeling/fee-runs";
 
 /**
  * The headline function (design section 6, the F1 rule of section 10) and the pure helpers behind the
@@ -46,218 +80,7 @@ import { fixtureContext } from "../fixtures/pricing/load";
  *   minimum $500 a month over pick, box, inserts, storage: March counts 183.50 (added 316.50), April 184.25 (added 315.75)
  */
 
-// ---------------------------------------------------------------------------
-// Fixture: the finalize test's small schedule
-// ---------------------------------------------------------------------------
-function rule(r: Partial<FeeRule> & Pick<FeeRule, "id" | "key" | "name" | "category" | "scope" | "basis" | "method" | "position">): FeeRule {
-  return { amount: null, percent: null, ...r };
-}
-
-const schedule: FeeScheduleSnapshot = {
-  scheduleId: "s-1",
-  name: "Standard fulfillment",
-  versionId: "v-1",
-  versionNumber: 1,
-  effectiveDate: "2026-01-01",
-  expirationDate: null,
-  rounding: "invoice_line",
-  rules: [
-    rule({ id: "r-pick", key: "pick_order", name: "Order pick", category: "pick_pack", scope: "order", basis: "order", method: "flat", amount: "1.50", position: 0 }),
-    rule({ id: "r-box", key: "pack_box", name: "Box", category: "packaging", scope: "order", basis: "package", method: "flat", amount: "0.50", conditions: { packagingTypes: ["box"] }, position: 1 }),
-    rule({ id: "r-ins", key: "inserts", name: "Inserts", category: "other", scope: "order", basis: "order_driver", method: "flat", amount: "0.25", driver: { key: "inserts", label: "Orders that get an insert", unit: "inserts", kind: "order_share" }, position: 2 }),
-    rule({ id: "r-pallet", key: "storage_pallet", name: "Pallet storage", category: "storage", scope: "monthly", basis: "driver", method: "flat", amount: "18.00", driver: { key: "pallets", label: "Pallets stored, on average", unit: "pallets", kind: "monthly_quantity" }, position: 3 }),
-    rule({ id: "r-admin", key: "admin", name: "Account fee", category: "account", scope: "monthly", basis: "month", method: "flat", amount: "25.00", position: 4 }),
-    rule({
-      id: "r-min",
-      key: "minimum",
-      name: "Monthly minimum",
-      category: "account",
-      scope: "monthly",
-      basis: "minimum",
-      method: "minimum",
-      minimum: { amount: "500", appliesTo: { categories: [], includeRuleKeys: [], excludeRuleKeys: [] }, includesShipping: false },
-      resolvedRuleKeys: ["pick_order", "pack_box", "inserts", "storage_pallet"],
-      position: 5,
-    }),
-  ],
-};
-const noMinimum: FeeScheduleSnapshot = { ...schedule, rules: schedule.rules.filter((r) => r.basis !== "minimum") };
-
-const feeDictionary: FeeDictionaryEntry[] = [
-  { ruleId: "r-pick", key: "pick_order", name: "Order pick", category: "pick_pack", basis: "order", scope: "order" },
-  { ruleId: "r-box", key: "pack_box", name: "Box", category: "packaging", basis: "package", scope: "order" },
-  { ruleId: "r-ins", key: "inserts", name: "Inserts", category: "other", basis: "order_driver", scope: "order" },
-];
-const PICK = 0;
-const BOX = 1;
-const INSERTS = 2;
-
-const feeLine = (index: number, amountE4: number, cls: "d" | "e" = "d"): CompactFeeLine => [index, amountE4, cls];
-
-function fees(status: FeeStatus, opts: Partial<Omit<FoldOrderFees, "status" | "definiteE4" | "estimatedE4">> = {}): FoldOrderFees {
-  const lines = opts.lines ?? [];
-  return {
-    status,
-    lines,
-    unresolved: opts.unresolved ?? [],
-    warnings: opts.warnings ?? [],
-    definiteE4: lines.filter((l) => l[2] === "d").reduce((s, l) => s + l[1], 0),
-    estimatedE4: lines.filter((l) => l[2] === "e").reduce((s, l) => s + l[1], 0),
-    assumed: opts.assumed ?? {},
-  };
-}
-
-function modeledOrder(key: string, rowNo: number, orderDate: string | null, shippingExpected: string, orderFees: FoldOrderFees): FoldOrder {
-  return {
-    orderKey: key,
-    orderDate,
-    orderMonth: orderDate?.slice(0, 7) ?? null,
-    cancelled: false,
-    shipments: [
-      {
-        rowNo,
-        packageCount: 1,
-        serviceId: "svc-1",
-        serviceName: "Ground",
-        carrierCode: "ups",
-        excludedReason: null,
-        result: {
-          status: "ok",
-          unavailableReason: null,
-          rateCardVersionId: "rcv-1",
-          shipDate: orderDate ?? "2026-03-15",
-          zone: "5",
-          serviceId: "svc-1",
-          billableLb: ["1"],
-          definite: shippingExpected,
-          estimated: "0.00",
-          expected: shippingExpected,
-          conditionalExposure: "0.00",
-          unresolved: "0.00",
-          lines: [[0, Math.round(Number(shippingExpected) * 100), "c", "d", 0]],
-          warningCodes: [],
-        },
-        assumed: { residential: false, originZip: false, weight: false, dimensions: false },
-        packagesWithoutDimensions: 0,
-      },
-    ],
-    fees: orderFees,
-  };
-}
-
-const A = modeledOrder("A", 1, "2026-03-03", "10.00", fees("ok", { lines: [feeLine(PICK, 15000), feeLine(BOX, 5000)] }));
-const B = modeledOrder("B", 2, "2026-03-20", "12.00", fees("ok", { lines: [feeLine(PICK, 15000)] }));
-const C = modeledOrder("C", 3, "2026-04-05", "20.00", fees("ok", { lines: [feeLine(PICK, 15000), feeLine(BOX, 10000)] }));
-const D2 = modeledOrder("D", 4, "2026-04-18", "8.00", fees("ok", { lines: [feeLine(PICK, 15000), feeLine(INSERTS, 2500, "e")] }));
-
-const period: RunPeriod = {
-  from: "2026-03-01",
-  to: "2026-04-30",
-  days: 61,
-  months: "2.000000",
-  population: 4,
-  inPeriod: 4,
-  trimmed: 0,
-  undated: 0,
-  volumeBasis: "file",
-  monthlyOrders: "2.0000",
-  monthlyUnits: null,
-  monthProfile: [
-    { month: "2026-03", fraction: "1.000000", orders: 2 },
-    { month: "2026-04", fraction: "1.000000", orders: 2 },
-  ],
-};
-const counts: DatasetCounts = { rows: 4, orders: 4, shipments: 4, packages: 4 };
-
-function fold(orders: FoldOrder[]): PartialSummary {
-  return foldBatch({ ...emptyPartial(), feeDictionary }, orders);
-}
-
-function input(overrides: Partial<FinalizeFeeInput> = {}): FinalizeFeeInput {
-  return {
-    mode: "modeled",
-    feeEngineVersion: "1.0.0",
-    monthlySchedule: schedule,
-    answers: { drivers: { pallets: "10" }, orderShares: { inserts: { sharePct: "25.00", countPerOrder: 1 } } },
-    period,
-    provenance: { scheduleName: "Standard fulfillment", versions: [{ versionId: "v-1", effectiveDate: "2026-01-01" }] },
-    ...overrides,
-  };
-}
-
-const finalize = (orders: FoldOrder[], over: Partial<FinalizeFeeInput> = {}, c: DatasetCounts = counts): BulkSummary => finalizeSummary(fold(orders), c, [], "2.2.0", input(over));
-
-const ADD = "/portal/model/runs/run-1#run-again";
-
-// The scenarios
-const complete = finalize([A, B, C, D2]);
-const noStorageAnswer = finalize([A, B, C, D2], { answers: { drivers: {}, orderShares: { inserts: { sharePct: "25.00", countPerOrder: 1 } } } });
-const noMinimumRun = finalize([A, B, C, D2], { monthlySchedule: noMinimum });
-const undatedOrder = modeledOrder("U", 5, null, "5.00", fees("ok", { lines: [feeLine(PICK, 15000)] }));
-const undated = finalize([A, B, C, D2, undatedOrder], { period: { ...period, population: 5, undated: 1 } }, { ...counts, orders: 5, shipments: 5, packages: 5, rows: 5 });
-const orderE = modeledOrder("E", 3, "2026-03-28", "8.00", fees("ok", { lines: [feeLine(PICK, 15000)] }));
-const lowCoverage = finalize([A, B, orderE], { period: { ...period, to: "2026-03-31", days: 31, months: "1.000000", population: 5, inPeriod: 5, monthlyOrders: "5.0000", monthProfile: [{ month: "2026-03", fraction: "1.000000", orders: 5 }] } }, { rows: 5, orders: 5, shipments: 5, packages: 5 });
-const skipped = finalize([A, B, C, D2].map((o) => ({ ...o, fees: fees("skipped") })), { mode: "skipped" });
-const noSchedule = finalize([A, B, C, D2].map((o) => ({ ...o, fees: fees("no_schedule") })), { mode: "no_schedule", monthlySchedule: null, provenance: null });
-const noContent = finalize([A, B, C, D2].map((o) => ({ ...o, fees: fees("no_content", { unresolved: [{ ruleKey: "pick_order", reason: "units_unknown" }] }) })));
-const notEffective = finalize([A, B, C, D2].map((o) => ({ ...o, fees: fees("not_effective") })));
-const zeroVolume = finalize([A, B, C, D2], { period: { ...period, monthlyOrders: "0", volumeBasis: "stated" } });
-const noVolume = finalize([A, B, C, D2], { period: { ...period, from: null, to: null, days: null, months: null, monthlyOrders: null, volumeBasis: "none", monthProfile: [] } });
-const oneMonth = finalize([A, B], { period: { ...period, to: "2026-03-31", days: 31, months: "1.000000", population: 2, inPeriod: 2, monthlyOrders: "2.0000", monthProfile: [{ month: "2026-03", fraction: "1.000000", orders: 2 }] } }, { rows: 2, orders: 2, shipments: 2, packages: 2 });
-
-// Returns processing scales with volume: 1,000 orders a month, 10 % returned at $3.00 each.
-const withReturns: FeeScheduleSnapshot = {
-  ...noMinimum,
-  rules: [...noMinimum.rules, rule({ id: "r-ret", key: "returns_proc", name: "Returns processing", category: "returns", scope: "monthly", basis: "driver", method: "flat", amount: "3.00", driver: { key: "returns_rate", label: "Percent of orders returned", unit: "returns", kind: "returns_rate" }, position: 6 })],
-};
-const returnsRun = finalize([A, B, C, D2], { monthlySchedule: withReturns, answers: { drivers: { pallets: "10", returns_rate: "10" }, orderShares: { inserts: { sharePct: "25.00", countPerOrder: 1 } } }, period: { ...period, monthlyOrders: "1000.0000" } });
-
-// ---------------------------------------------------------------------------
-// Forecasts: real summaries from the forecast engine over the fixture rate card and standard fee schedule
-// ---------------------------------------------------------------------------
-const schedules = JSON.parse(readFileSync(new URL("../fixtures/fees/schedules.json", import.meta.url), "utf8")) as Record<string, FeeScheduleSnapshot>;
-const standard = schedules.standard!;
-const UPS_GROUND = { serviceId: "svc-ups-ground", carrierCode: "ups", serviceCode: "ground", name: "UPS Ground" };
-const USPS_GA = { serviceId: "svc-usps-ga", carrierCode: "usps", serviceCode: "ground_advantage", name: "USPS Ground Advantage" };
-
-function forecastAssumptions(over: Partial<ForecastAssumptions> = {}): ForecastAssumptions {
-  return {
-    version: 1,
-    monthlyOrders: "1250",
-    asOfDate: "2026-03-15",
-    originZip: "90001",
-    parcels: [
-      { weightLb: "1", lengthIn: "10", widthIn: "8", heightIn: "4", packagingType: "box", sharePct: "60" },
-      { weightLb: "0.5", packagingType: "poly mailer", sharePct: "40", unknownSize: true },
-    ],
-    zones: [
-      { zone: "2", sharePct: "50" },
-      { zone: "5", sharePct: "30" },
-      { zone: "8", sharePct: "20" },
-    ],
-    services: [
-      { ...UPS_GROUND, sharePct: "70" },
-      { ...USPS_GA, sharePct: "30" },
-    ],
-    residentialPct: "80",
-    multiPackage: { pct: "10", packagesPerOrder: 2 },
-    content: { rows: [{ units: 1, lines: 1, sharePct: "60" }, { units: 3, lines: 2, sharePct: "40" }] },
-    fulfillment: {
-      drivers: { pallets_stored: "10", long_term_pallets: "2", pallets_received: "4", cases_received: "20", returns_rate: "3" },
-      orderShares: { inserts: { sharePct: "40", countPerOrder: 2 } },
-      packagingDefault: null,
-    },
-    ...over,
-  };
-}
-
-function forecast(assumptions: ForecastAssumptions = forecastAssumptions()): ForecastSummary {
-  const deps: ForecastDeps = { pricing: fixtureContext(), schedule: standard, pinnedRates: {}, feeEngineVersion: FEE_ENGINE_VERSION, engineVersion: ENGINE_VERSION, hash: sha256Hex };
-  const result = evaluateForecast(assumptions, deps);
-  if (result.status !== "ok") throw new Error(`expected ok, got ${JSON.stringify(result)}`);
-  return result.summary;
-}
-
+// The scenarios live in tests/fixtures/modeling/fee-runs.ts (shared with the results tests).
 // ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
@@ -327,7 +150,7 @@ describe("headlineFigures: a complete run", () => {
     expect(h.parts).toEqual([
       { label: "Shipping", amount: "12.50", note: null },
       { label: "Order fees", amount: "1.94", note: null },
-      { label: "Monthly charges, spread over your orders", amount: "260.56", note: "at 2 orders a month" },
+      { label: "Monthly charges, spread over your orders", amount: "260.56", note: "at 2 orders a month, with the account minimum" },
     ]);
   });
 
@@ -531,11 +354,26 @@ describe("volumeSensitivity", () => {
     ]);
   });
 
-  it("does not guess an account minimum that has to be re-evaluated per month: only the stated volume is known", () => {
-    const points = volumeSensitivity(complete);
-    expect(points.map((p) => [p.multiplier, p.known])).toEqual([["0.5", false], ["1", true], ["2", false], ["4", false]]);
-    expect(points[1]).toMatchObject({ monthlyTotal: "550.00", allInPerOrder: "275.00" });
-    expect(points[0]).toMatchObject({ monthlyTotal: null, allInPerOrder: null });
+  it("works the account minimum out again for each month at each volume, from the stored month figures", () => {
+    // Order charges counted in March 3.50 and in April 4.25, storage 180 in both; the $500 minimum is checked month by month.
+    //   0.5x: March 1.75 + 180, April 2.125 + 180: adds 318.25 + 317.875 = 636.125, 318.0625 a month; total 14.4375 + 205 + 318.0625 = 537.50
+    //   2x:   March 7.00 + 180, April 8.50 + 180:  adds 313.00 + 311.50 = 624.50,  312.25 a month;   total 57.75 + 205 + 312.25 = 575.00
+    //   4x:   March 14.00 + 180, April 17.00 + 180: adds 306.00 + 303.00 = 609.00, 304.50 a month;   total 115.50 + 205 + 304.50 = 625.00
+    expect(volumeSensitivity(complete)).toEqual([
+      { multiplier: "0.5", monthlyOrders: "1", monthlyTotal: "537.50", allInPerOrder: "537.50", known: true },
+      { multiplier: "1", monthlyOrders: "2", monthlyTotal: "550.00", allInPerOrder: "275.00", known: true },
+      { multiplier: "2", monthlyOrders: "4", monthlyTotal: "575.00", allInPerOrder: "143.75", known: true },
+      { multiplier: "4", monthlyOrders: "8", monthlyTotal: "625.00", allInPerOrder: "78.13", known: true }, // 78.125
+    ]);
+  });
+
+  it("a minimum that is not exact stays out, as in the headline; a monthly charge inside its set that follows volume grows with it", () => {
+    const points = volumeSensitivity(noStorageAnswer);
+    expect(points[0]).toMatchObject({ monthlyOrders: "1", known: true });
+    // Without the minimum: 14.4375 + 25 = 39.4375 a month, per order 39.44 at half the volume.
+    expect(points[0]).toMatchObject({ monthlyTotal: "39.44", allInPerOrder: "39.44" });
+    // A schedule with no minimum rule has no top-up at any volume.
+    expect(volumeSensitivity(returnsRun).every((p) => p.known)).toBe(true);
   });
 
   it("rejects a multiplier that is not a positive decimal", () => {
@@ -836,5 +674,240 @@ describe("customer-safe output", () => {
     // Not fixable by entering numbers, so it is listed as not covered by the schedule rather than offered an Add link.
     expect(h.notIncluded.map((i) => i.name)).not.toContain("Packaging (tube)");
     expect(notIncludedGroups(s, { addHref: ADD }).notOnSchedule.map((i) => i.label)).toContain("Packaging (tube)");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compare two models (basis rows, the comparable row, greyed all-in rows, warnings, assumptions diff)
+// ---------------------------------------------------------------------------
+const FORBIDDEN_TEXT = /pick_order|pack_box|storage_pallet|returns_proc|packaging:[a-z_*]|\br-(pick|box|pallet|admin|min|ins|ret)\b|\bv-1\b|\bs-1\b/;
+const baseRun: Omit<CompareRunInput, "summary" | "assumptions"> = { datasetId: "d1", datasetName: "March orders", rateCardName: "Fixture card", pricingBasis: "fixed_date", asOfDate: "2026-03-15", serviceOverrideId: null, serviceOverrideName: null, overrideAllServices: false };
+const withAnswers = (drivers: Record<string, string | null>) => ({ fulfillment: { drivers, orderShares: { inserts: { sharePct: "25.00", countPerOrder: 1 } } } });
+const fileRun = (summary: BulkSummary, drivers: Record<string, string | null> | null = null, over: Partial<typeof baseRun> = {}): CompareRunInput => ({ ...baseRun, ...over, summary, assumptions: drivers ? withAnswers(drivers) : null });
+const rowOf = (c: ReturnType<typeof buildComparison>, label: string) => c.rows.find((r) => r.label === label)!;
+
+describe("buildComparison", () => {
+  it("puts the basis rows first, then the per-order figures, then the all-in rows", () => {
+    const c = buildComparison(fileRun(complete), fileRun(complete));
+    expect(c.rows[0]).toMatchObject({ group: "basis", label: "Based on", a: "Orders file", b: "Orders file" });
+    const order = c.rows.map((r) => r.group);
+    expect(order).toEqual([...order].sort((x, y) => ["basis", "figures", "allin"].indexOf(x) - ["basis", "figures", "allin"].indexOf(y)));
+    expect(c.rows.filter((r) => r.group === "basis").map((r) => r.label)).toEqual(["Based on", "Orders file", "Rate card", "Rates", "Priced on", "Orders a month", "Period", "Fee schedule", "Orders modeled", "Left out of the all-in", "Account minimum"]);
+    expect(rowOf(c, "Orders a month")).toMatchObject({ a: "2 (from the file)", b: "2 (from the file)" });
+    expect(rowOf(c, "Fee schedule").a).toBe("'Standard fulfillment', in effect from Jan 1, 2026");
+    expect(rowOf(c, "Account minimum").a).toBe("Adds $316.13 a month");
+  });
+
+  it("two identical models: all-in rows comparable and nothing flagged", () => {
+    const c = buildComparison(fileRun(complete, { pallets: "10" }), fileRun(complete, { pallets: "10" }));
+    expect(c).toMatchObject({ warnings: [], changes: [], allInComparable: true, allInNote: null });
+    expect(c.rows.every((r) => !r.muted && r.note === null)).toBe(true);
+    expect(rowOf(c, "All-in cost per order").a).toBe("$275.00");
+  });
+
+  it("a model that left storage out: the all-in rows are greyed with a note and the comparable row is not; the changed answer is named", () => {
+    const c = buildComparison(fileRun(complete, { pallets: "10" }), fileRun(noStorageAnswer, {}));
+    expect(c.allInComparable).toBe(false);
+    const allIn = c.rows.filter((r) => r.group === "allin");
+    expect(allIn.length).toBeGreaterThan(0);
+    expect(allIn.every((r) => r.muted)).toBe(true);
+    // Not colour alone: the label and the note say it too.
+    const headline = rowOf(c, "All-in cost per order (not comparable)");
+    expect(headline).toMatchObject({ a: "$275.00", b: "At least $26.94 (without storage)" });
+    expect(headline.note).toContain("leave out different things");
+    expect(headline.note).toContain('Compare "Shipping + order fees" instead.');
+    // Shipping + order fees is the same in both, and stays comparable.
+    expect(rowOf(c, "Shipping + order fees (comparable)")).toMatchObject({ a: "$14.44", b: "$14.44", muted: false, note: null });
+    expect(rowOf(c, "Left out of the all-in")).toMatchObject({ a: "Nothing left out", b: "storage" });
+    expect(rowOf(c, "Account minimum")).toMatchObject({ a: "Adds $316.13 a month", b: "Up to $496.13 a month, not included" });
+    expect(c.changes).toEqual(["pallet storage 10 → left out"]);
+  });
+
+  it("warns when the volumes differ by more than 5 %", () => {
+    const c = buildComparison(fileRun(complete), fileRun(returnsRun));
+    expect(c.warnings).toContain("The two models are at different volumes (2 and 1,000 orders a month), so monthly charges spread over orders are not directly comparable.");
+    expect(buildComparison(fileRun(complete), fileRun(complete)).warnings.some((w) => w.includes("different volumes"))).toBe(false);
+  });
+
+  it("warns about different files, pricing dates, services and coverage", () => {
+    const c = buildComparison(fileRun(complete), fileRun(lowCoverage, null, { datasetId: "d2", asOfDate: "2026-04-01", serviceOverrideId: "svc-9", serviceOverrideName: "UPS Ground", overrideAllServices: true }));
+    expect(c.warnings).toEqual(expect.arrayContaining(["Different orders files were modeled, so the averages are not directly comparable.", "The share of orders that could be priced differs by more than 5 points.", "The two models use different pricing dates.", "The two models price shipments on different services (one is a what-if)."]));
+    expect(rowOf(c, "Priced on")).toMatchObject({ a: "services in the file", b: "everything on UPS Ground" });
+  });
+
+  it("a model without fees has shipping but no fee figures, and the warning says only shipping can be compared", () => {
+    const c = buildComparison(fileRun(complete), fileRun(skipped));
+    expect(c.warnings).toContain("Order fees are not modeled in one of these (skipped, or no fee schedule in effect), so only shipping can be compared.");
+    expect(rowOf(c, "Shipping + order fees (comparable)")).toMatchObject({ a: "$14.44", b: "Not computed" });
+    expect(rowOf(c, "Order fees per order").b).toBe("Not computed");
+    expect(rowOf(c, "Shipping per order").b).toBe("$12.50");
+    expect(rowOf(c, "Fee schedule").b).toBe("Fulfillment costs skipped");
+  });
+
+  it("a forecast is compared through the same rows, and the warning says what kind of figure each is", () => {
+    const forecastRun = { ...baseRun, datasetId: null, datasetName: null, summary: forecast(), assumptions: forecastAssumptions() as never };
+    const c = buildComparison(forecastRun, fileRun(complete));
+    expect(c.warnings[0]).toMatch(/^One of these is a forecast from assumptions and the other is built from an orders file/);
+    expect(rowOf(c, "Based on")).toMatchObject({ a: "Forecast from assumptions", b: "Orders file" });
+    expect(rowOf(c, "Orders file")).toMatchObject({ a: "—", b: "March orders" });
+    expect(rowOf(c, "Period").a).toBe("A typical month, as described");
+    expect(rowOf(c, "Orders modeled").a).toMatch(/% of the volume$/);
+    expect(rowOf(c, "Per package").a).toBe("—");
+    // A forecast's monthly "up to" amounts say they are monthly.
+    expect(rowOf(c, "Could not be decided (up to)").a).toMatch(/ a month$/);
+    expect(rowOf(c, "Shipping + order fees (comparable)").a).toMatch(/^\$\d/);
+    expect(c.warnings.some((w) => w.includes("different volumes"))).toBe(true);
+  });
+
+  it("two forecasts: what differs in the profile and in the answers", () => {
+    const a = { ...baseRun, datasetId: null, datasetName: null, summary: forecast(), assumptions: forecastAssumptions() as never };
+    const changed = forecastAssumptions({ monthlyOrders: "1400", residentialPct: "60" });
+    const b = { ...baseRun, datasetId: null, datasetName: null, summary: forecast(changed), assumptions: changed as never };
+    const c = buildComparison(a, b);
+    expect(c.changes).toEqual(["orders a month 1,250 → 1,400", "home deliveries 80% → 60%"]);
+    expect(c.warnings).toEqual(["The two models are at different volumes (1,250 and 1,400 orders a month), so monthly charges spread over orders are not directly comparable."]);
+    expect(c.allInComparable).toBe(true);
+    const answers = forecastAssumptions({ fulfillment: { ...forecastAssumptions().fulfillment, drivers: { ...forecastAssumptions().fulfillment.drivers, pallets_stored: "14" } } });
+    const d = buildComparison(a, { ...b, summary: forecast(answers), assumptions: answers as never });
+    expect(d.changes).toEqual(["pallet storage 10 → 14"]);
+  });
+
+  it("never prints a rule key, an id or a version", () => {
+    const runs = [complete, noStorageAnswer, noMinimumRun, undated, lowCoverage, skipped, noSchedule, noContent, notEffective, zeroVolume, noVolume, returnsRun].map((s) => fileRun(s, { pallets: "10" }));
+    for (const x of runs) for (const y of runs) expect(JSON.stringify(buildComparison(x, y))).not.toMatch(FORBIDDEN_TEXT);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CSV exports
+// ---------------------------------------------------------------------------
+describe("csv helpers", () => {
+  it("quotes what needs quoting and neutralises formulas in text from the customer's own file", () => {
+    expect(csvCell('a,"b"')).toBe('"a,""b"""');
+    expect(csvCell(null)).toBe("");
+    for (const bad of ["=SUM(A1)", "+1", "-1", "@cmd", "\tx"]) expect(csvText(bad)).toBe(`'${bad}`);
+    expect(csvText("ORD-1001")).toBe("ORD-1001");
+    expect(csvText("a=b")).toBe("a=b");
+  });
+
+  it("keeps a comment on one line, so a name with a line break cannot end it", () => {
+    expect(csvComment('Plan "A"\r\n1,2\n3')).toBe('# Plan "A" 1,2 3');
+  });
+});
+
+describe("orders.csv", () => {
+  const names = ruleNameIndex(complete);
+  const order = { externalOrderId: "ORD-1", orderDate: "2026-03-03", units: 3, lines: 2, packages: 1, shipments: 1, assumed: {}, feeStatus: "ok", definiteE4: 20000, estimatedE4: 0, shippingExpected: "10.00", unresolved: [] };
+
+  it("has exactly the per-order columns: no allocated or all-in column, ever", () => {
+    expect([...ORDERS_CSV_COLUMNS]).toEqual(["order_id", "order_date", "units", "lines", "packages", "shipments", "shipping_expected", "order_fees", "shipping_plus_fees", "fee_status", "not_computed"]);
+    expect(ORDERS_CSV_COLUMNS.join(",")).not.toMatch(/all_in|allocated|monthly|per_order/);
+  });
+
+  it("a priced order: amounts to the cent, shipping + order fees rounded once", () => {
+    expect(ordersCsvRecord(order, names)).toEqual(["ORD-1", "2026-03-03", "3", "2", "1", "1", "10.00", "2.00", "12.00", "priced", ""]);
+    // $1.2345 of fees + $2.50 shipping: 3.7345 rounds to 3.73, fees alone 1.23.
+    expect(ordersCsvRecord({ ...order, definiteE4: 12345, shippingExpected: "2.50" }, names).slice(6, 9)).toEqual(["2.50", "1.23", "3.73"]);
+  });
+
+  it("blank is not computed, never zero: unknown units, unpriced shipping, orders without fees", () => {
+    const unknown = ordersCsvRecord({ ...order, units: null, lines: null, shippingExpected: null }, names);
+    expect(unknown.slice(2, 4)).toEqual(["", ""]);
+    expect(unknown.slice(6, 9)).toEqual(["", "2.00", ""]);
+    const noFees = ordersCsvRecord({ ...order, feeStatus: "not_effective", definiteE4: 0 }, names);
+    expect(noFees.slice(6, 11)).toEqual(["10.00", "", "", "not_computed", "No fee schedule was in effect on the order date"]);
+    expect(ordersCsvRecord({ ...order, feeStatus: "skipped" }, names)[10]).toBe("Fulfillment costs were skipped");
+  });
+
+  it("assumed order content is marked and its units and lines left blank", () => {
+    const r = ordersCsvRecord({ ...order, units: 2, lines: 1, assumed: { units: true, lines: true } }, names);
+    expect(r.slice(2, 4)).toEqual(["", ""]);
+    expect(r[9]).toBe("priced_on_assumed_content");
+    expect(r[7]).toBe("2.00");
+  });
+
+  it("a rule that could not be computed makes the order partly priced and is named, joined by semicolons", () => {
+    const r = ordersCsvRecord({ ...order, feeStatus: "partial", unresolved: [{ ruleKey: "pack_box", reason: "packaging_unknown" }, { ruleKey: "inserts", reason: "assumption_missing" }, { ruleKey: "pick_order", reason: "replaced" }] }, names);
+    expect(r[9]).toBe("partly_priced");
+    expect(r[10]).toBe("Box;Inserts");
+    expect(r.join("|")).not.toMatch(FORBIDDEN_TEXT);
+  });
+
+  it("an order id that would run as a formula is neutralised", () => {
+    expect(ordersCsvRecord({ ...order, externalOrderId: "=HYPERLINK(1)" }, names)[0]).toBe("'=HYPERLINK(1)");
+  });
+
+  it("the header comments carry the headline and its label, and say where the monthly charges are", () => {
+    const meta = { scenarioName: "March plan", rateCardName: "Fixture card", feeScheduleLine: feeScheduleLine("Acme 3PL", complete.provenance) };
+    const lines = ordersCsvComments(complete, meta);
+    expect(lines.every((l) => l.startsWith("# ") && !l.includes("\n"))).toBe(true);
+    expect(lines[0]).toBe("# Estimates for \"March plan\" from Fixture card and Acme 3PL fee schedule 'Standard fulfillment', in effect from Jan 1, 2026, not an invoice. Amounts in USD.");
+    expect(lines[1]).toBe("# All-in cost per order: $275.00. 2 orders a month over Mar 1, 2026–Apr 30, 2026 (2 months).");
+    expect(lines.join("\n")).toContain("monthly.csv");
+    const incomplete = ordersCsvComments(noStorageAnswer, meta);
+    expect(incomplete[1]).toMatch(/^# All-in cost per order, without storage: At least \$26\.94\./);
+    expect(incomplete[1]).toContain("Not included yet: Pallet storage");
+    expect(ordersCsvComments(skipped, meta)[1]).toMatch(/^# Estimated shipping cost per order: \$12\.50\./);
+    expect(lines.join("\n")).not.toMatch(FORBIDDEN_TEXT);
+  });
+});
+
+describe("monthly.csv", () => {
+  const meta = { scenarioName: "March plan", rateCardName: "Fixture card", feeScheduleLine: feeScheduleLine("Acme 3PL", complete.provenance) };
+  const lines = (csv: ReturnType<typeof monthlyCsv>) => csv.rows.map((r) => r.join(","));
+
+  it("lists every monthly charge with quantity, rate, amount and class, then the minimum month by month", () => {
+    const csv = monthlyCsv(complete, meta);
+    expect([...MONTHLY_CSV_COLUMNS]).toEqual(["row_type", "name", "period", "status", "quantity", "unit_amount", "amount", "class", "note"]);
+    expect(lines(csv)).toEqual([
+      "charge,Pallet storage,a month,priced,10,18.00,180.00,based_on_assumptions,10 pallets × $18.00 = $180.00 a month.",
+      "charge,Account fee,a month,priced,1,25.00,25.00,from_rate_card,$25.00 a month.",
+      "total,Monthly charges priced,a month,priced,,,205.00,,",
+      "minimum,Monthly minimum,2026-03,exact,,,316.50,,Counted $183.50 toward a $500.00 minimum; amount is what is added",
+      "minimum,Monthly minimum,2026-04,exact,,,315.75,,Counted $184.25 toward a $500.00 minimum; amount is what is added",
+    ]);
+  });
+
+  it("prints the period and volume in the header comments, and never a per-order amount", () => {
+    const csv = monthlyCsv(complete, meta);
+    expect(csv.comments).toContain("# Basis: 2 orders a month over Mar 1, 2026–Apr 30, 2026 (2 months).");
+    expect(csv.comments.join("\n")).toContain("not per-order fees");
+    expect(MONTHLY_CSV_COLUMNS.join(",")).not.toMatch(/per_order|all_in/);
+  });
+
+  it("a charge with no number given is listed as not modeled with its rate, blank, never zero; the minimum is an upper bound", () => {
+    const csv = monthlyCsv(noStorageAnswer, meta);
+    expect(lines(csv)).toEqual([
+      "charge,Account fee,a month,priced,1,25.00,25.00,from_rate_card,$25.00 a month.",
+      "charge,Pallet storage,a month,not_modeled,,,,,No number was given. Rate: $18.00 per pallet per month.",
+      "total,Monthly charges priced,a month,priced,,,25.00,,Charges that are not modeled are not in this total",
+      "minimum,Monthly minimum,,up_to,,,,,Could add up to $496.13 a month; not included in any all-in figure (Pallet storage is not modeled)",
+    ]);
+  });
+
+  it("says so when fulfillment costs were skipped, and lists nothing", () => {
+    const csv = monthlyCsv(skipped, meta);
+    expect(csv.rows).toEqual([]);
+    expect(csv.comments.join("\n")).toContain("Fulfillment costs were not modeled for this run");
+  });
+
+  it("holds no rule key, id or version for any scenario", () => {
+    for (const s of [complete, noStorageAnswer, noMinimumRun, undated, lowCoverage, skipped, noSchedule, noContent, notEffective, zeroVolume, noVolume, returnsRun]) {
+      const csv = monthlyCsv(s, meta);
+      expect([...csv.comments, ...lines(csv)].join("\n")).not.toMatch(FORBIDDEN_TEXT);
+    }
+  });
+});
+
+describe("fee dates no schedule covered", () => {
+  it("says nothing when every date was covered, one sentence otherwise", () => {
+    expect(uncoveredFeeDatesNote(null)).toBeNull();
+    expect(uncoveredFeeDatesNote({ from: "2026-03-03", to: "2026-03-03", dates: 1 })).toBe("No fee schedule was in effect on Mar 3, 2026, so orders dated then have no fees.");
+    expect(uncoveredFeeDatesNote({ from: "2026-01-05", to: "2026-02-27", dates: 31 })).toBe("No fee schedule was in effect on 31 of the order dates (between Jan 5, 2026 and Feb 27, 2026), so orders dated then have no fees.");
+  });
+
+  it("names the rules an order could not be computed on, never keys, and skips a replaced rule", () => {
+    const names = new Map([["a", "Box"]]);
+    expect(unresolvedRuleNames([{ ruleKey: "a", reason: "packaging_unknown" }, { ruleKey: "a", reason: "units_unknown" }, { ruleKey: "zz_key", reason: "units_unknown" }, { ruleKey: "b", reason: "replaced" }], names)).toEqual(["Box", "A fee"]);
   });
 });

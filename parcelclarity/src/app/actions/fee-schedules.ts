@@ -276,7 +276,8 @@ export async function saveFeeRule(versionId: string, ruleId: string | null, inpu
     return { ok: true, ruleId: data.id as string, message: "Rule added." };
   }
 
-  const { version_id: _v, tenant_id: _t, position: _p, ...columns } = ruleFormToRow(parsed.data, { versionId, tenantId: ctx.active.tenantId, position: 0 });
+  // The key is fixed once the rule exists (the editor says so, and other rules refer to it), so an edit never rewrites it.
+  const { version_id: _v, tenant_id: _t, position: _p, key: _k, ...columns } = ruleFormToRow(parsed.data, { versionId, tenantId: ctx.active.tenantId, position: 0 });
   const { data, error } = await supabase.from("fee_rules").update(columns).eq("id", ruleId).eq("version_id", versionId).eq("tenant_id", ctx.active.tenantId).select("id");
   if (error) return ruleWriteError(error);
   if (!data?.length) return { ok: false, message: "Rule not found." };
@@ -339,10 +340,14 @@ export async function saveRuleSource(ruleId: string, text: string | null): Promi
 // ---------------------------------------------------------------------------
 /** Puts a customer on a schedule; the database ends the current assignment in the same transaction. */
 export async function assignFeeSchedule(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  await requireTenantContext("ratecard.manage");
+  const ctx = await requireTenantContext("ratecard.manage");
   const parsed = z.object({ brandId: uuidSchema, scheduleId: uuidSchema }).safeParse({ brandId: formData.get("brandId"), scheduleId: formData.get("scheduleId") });
   if (!parsed.success) return { ok: false, message: "Choose a fee schedule." };
   const supabase = await createClient();
+  // The brand id comes from the form: it must be a customer of the workspace the caller is acting in (the database checks the caller's rights on it too).
+  const { data: brand, error: brandError } = await supabase.from("brands").select("id").eq("id", parsed.data.brandId).eq("tenant_id", ctx.active.tenantId).maybeSingle();
+  if (brandError) return { ok: false, message: GENERIC_FAILURE };
+  if (!brand) return { ok: false, message: "Customer not found." };
   const { error } = await supabase.rpc("assign_fee_schedule", { p_brand: parsed.data.brandId, p_schedule: parsed.data.scheduleId });
   if (error) {
     if (error.message.includes("archived schedule")) return { ok: false, message: "An archived fee schedule cannot be assigned." };
@@ -374,11 +379,15 @@ export type TryFeeOrderResult = { ok: true; result: OrderFeeResult; versionNumbe
 
 /** Staff only: a pure engine call on the version's snapshot; nothing is stored. */
 export async function tryFeeOrder(versionId: string, input: unknown): Promise<TryFeeOrderResult> {
-  await requireTenantContext("ratecard.view");
+  const ctx = await requireTenantContext("ratecard.view");
   if (!uuidSchema.safeParse(versionId).success) return { ok: false, message: "Version not found." };
   const parsed = tryOrderInputSchema.safeParse(input);
   if (!parsed.success) return { ok: false, errors: ruleFieldErrors(parsed.error) };
   const supabase = await createClient();
+  // The version id comes from the client: it must be one of the active workspace's own versions (the snapshot function authorises the caller as well).
+  const owned = await supabase.from("fee_schedule_versions").select("id").eq("id", versionId).eq("tenant_id", ctx.active.tenantId).maybeSingle();
+  if (owned.error) return { ok: false, message: GENERIC_FAILURE };
+  if (!owned.data) return { ok: false, message: "Version not found." };
   const { data, error } = await supabase.rpc("fee_schedule_snapshot", { p_version: versionId });
   if (error) return { ok: false, message: error.code === "P0002" ? "Version not found." : GENERIC_FAILURE };
   const snapshot = data as FeeScheduleSnapshot | null;

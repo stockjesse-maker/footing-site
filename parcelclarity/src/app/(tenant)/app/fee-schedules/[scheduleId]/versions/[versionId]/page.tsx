@@ -68,7 +68,7 @@ export default async function FeeVersionPage({ params }: { params: Promise<{ sch
               {active ? <EndVersionButton versionId={version.id} versionNumber={version.versionNumber} expirationDate={version.expirationDate} /> : null}
               {active ? (
                 <ConfirmAction action={archiveFeeVersion.bind(null, version.id)} label="Archive version" confirmLabel="Archive" variant="danger">
-                  Customers lose these fees immediately. An archived version cannot be reactivated.
+                  Its dates still apply unless another active version covers them; end the version to stop that. An archived version cannot be reactivated.
                 </ConfirmAction>
               ) : null}
             </>
@@ -84,7 +84,10 @@ export default async function FeeVersionPage({ params }: { params: Promise<{ sch
       ) : null}
       {version.status === "discarded" ? <Alert tone="warning" className="mb-6">This draft was discarded. Its rules are kept for reference only.</Alert> : null}
       {version.status === "archived" ? (
-        <Alert className="mb-6">This version is archived. It was in effect {formatEffectivity(version.effectiveDate, version.expirationDate).toLowerCase()} and is kept so past models stay explainable.</Alert>
+        <Alert className="mb-6">
+          This version is archived and can no longer change. Its dates stay as they were ({formatEffectivity(version.effectiveDate, version.expirationDate)}): orders and models dated inside them are still priced on it unless an
+          active version covers them, so past models stay explainable.
+        </Alert>
       ) : null}
       {scheduleArchived ? <Alert tone="warning" className="mb-6">The fee schedule itself is archived.</Alert> : null}
 

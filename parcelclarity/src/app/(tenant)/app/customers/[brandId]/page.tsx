@@ -2,7 +2,9 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { setBrandStatus } from "@/app/actions/team";
+import { FeeScheduleAssignmentCard } from "@/components/fees/assignment-card";
 import { ConfirmAction } from "@/components/forms/confirm-action";
+import { OverviewFigures, overviewModels } from "@/components/modeling/lists";
 import { CustomerPricing } from "@/components/pricing/customer-pricing";
 import { InviteForm } from "@/components/team/invite-form";
 import { MembersList, PendingInvitations, type InvitationRow, type MemberRow } from "@/components/team/members";
@@ -12,6 +14,7 @@ import { PageHeader } from "@/components/ui/page-header";
 import { assignableRoles, can } from "@/lib/auth/permissions";
 import { requireTenantContext } from "@/lib/auth/session";
 import { uuidSchema } from "@/lib/auth/validation";
+import { loadModelingLists } from "@/lib/modeling/queries";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata: Metadata = { title: "Customer" };
@@ -40,6 +43,11 @@ export default async function CustomerDetail({ params }: { params: Promise<{ bra
 
   const manage = can(role, "brand.manage");
   const canViewPricing = can(role, "ratecard.view");
+  const canModel = can(role, "simulation.run");
+  // Staff see every model of the customer, including the ones not shared yet; the figures are the customer's own wording.
+  const modelProjects = canModel ? (await loadModelingLists(supabase, brandId)).projects : [];
+  const modelBase = `/app/customers/${brand.id}/model`;
+  const models = overviewModels(modelProjects);
   return (
     <>
       <p className="mb-3 text-sm"><Link href="/app/customers" className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">← Customers</Link></p>
@@ -66,15 +74,22 @@ export default async function CustomerDetail({ params }: { params: Promise<{ bra
       {brand.status === "suspended" ? <Alert tone="warning" className="mb-6">This customer is suspended. Their users cannot sign in to the portal until you reactivate the account.</Alert> : null}
       {brand.status === "revoked" ? <Alert tone="danger" className="mb-6">This customer&apos;s access was permanently revoked.</Alert> : null}
 
-      {can(role, "simulation.run") ? (
-        <section aria-labelledby="models-heading" className="mb-8 space-y-2">
-          <h2 id="models-heading" className="text-xl font-semibold tracking-tight">Cost models</h2>
-          <p className="text-sm text-muted">
-            Price shipments or an orders file on this customer&apos;s behalf. What you prepare stays private until you share it.{" "}
-            <Link href={`/app/customers/${brand.id}/model`} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
-              Open cost models →
-            </Link>
-          </p>
+      {canModel ? (
+        <section aria-labelledby="models-heading" className="mb-8 space-y-4">
+          <div className="space-y-2">
+            <h2 id="models-heading" className="text-xl font-semibold tracking-tight">Cost models</h2>
+            <p className="text-sm text-muted">
+              Price shipments, an orders file or a forecast from assumptions on this customer&apos;s behalf. What you prepare stays private until you share it.{" "}
+              <Link href={modelBase} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+                Open cost models →
+              </Link>
+            </p>
+          </div>
+          {models.latest || models.forecast || models.whatIf ? (
+            <OverviewFigures projects={modelProjects} basePath={modelBase} tenantName={ctx.active.tenantName} audience="staff" />
+          ) : (
+            <p className="text-sm text-muted">No completed model yet. Run one on an orders file, or forecast from assumptions, to see this customer&apos;s shipping and all-in cost per order here.</p>
+          )}
         </section>
       ) : null}
       {canViewMembers ? (
@@ -100,6 +115,9 @@ export default async function CustomerDetail({ params }: { params: Promise<{ bra
       {canViewPricing ? (
         <div className="mt-10">
           <CustomerPricing brandId={brand.id} brandName={brand.name} brandStatus={brand.status} tenantId={ctx.active.tenantId} canManage={can(role, "ratecard.manage")} />
+          <div className="mt-8">
+            <FeeScheduleAssignmentCard brandId={brand.id} tenantId={ctx.active.tenantId} />
+          </div>
         </div>
       ) : null}
     </>

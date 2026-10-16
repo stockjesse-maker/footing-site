@@ -7,7 +7,7 @@ import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Stat } from "@/components/ui/stat";
 import { e4ToCents } from "@/engine/fees/tiers";
 import type { ForecastMinimum, ForecastProcessing, ForecastSummary, ForecastUnpriceable, ForecastVolumePoint } from "@/engine/forecast/types";
-import { assumptionLines, CATEGORY_LABEL, groupDigits, unpriceableReason, usd, type AddTarget, type Audience, type ForecastHeadline, type ForecastResultData, type NotIncludedItem } from "@/components/forecast/result-model";
+import { assumptionLines, CATEGORY_LABEL, groupDigits, notComputedReason, unpriceableReason, usd, type AddTarget, type Audience, type ForecastHeadline, type ForecastResultData, type NotIncludedItem } from "@/components/forecast/result-model";
 
 /**
  * Presentation of a forecast from assumptions (Milestone 4, design §7). Server-safe: no hooks, no
@@ -27,7 +27,7 @@ export interface ForecastResultProps {
 }
 
 const CLASS_LABEL: Record<Audience, { definite: string; estimated: string }> = {
-  brand: { definite: "From your fee schedule", estimated: "Based on assumptions" },
+  brand: { definite: "From your rate card", estimated: "Based on assumptions" },
   staff: { definite: "Definite", estimated: "Estimated" },
 };
 
@@ -42,6 +42,9 @@ const SHIPPING_WARNING: Record<string, string> = {
   zone_chart_missing: "A zone chart is missing for a carrier.",
   assumed_inputs: "Parts of the shipping price rest on assumed inputs.",
 };
+
+/** A figure, or "not computed" when none of the fees behind it could be (never $0). */
+const notComputed = (value: string | null): string => (value === null ? "not computed" : usd(value));
 
 const anchorFor = (target: AddTarget): string => (target.kind === "content" ? "forecast-content" : target.kind === "packaging" ? "forecast-parcels" : "forecast-fulfillment");
 
@@ -174,7 +177,8 @@ function Headline({ headline, summary, audience, onAdd, editHref }: { headline: 
           </p>
         </div>
         <p className="text-sm">
-          Shipping {usd(headline.parts.shipping)} + order fees {usd(headline.parts.orderFees)} + monthly charges {usd(headline.parts.monthlyCharges)} (spread over {orders} orders a month, the volume you gave).
+          {atLeast ? "Counted so far: shipping" : "Shipping"} {usd(headline.parts.shipping)} + order fees {notComputed(headline.parts.orderFees)} + monthly charges {notComputed(headline.parts.monthlyCharges)}
+          {headline.parts.monthlyCharges !== null ? ` (spread over ${orders} orders a month, the volume you gave)` : ""}.
         </p>
         <p className="text-sm text-muted">{CLASS_LABEL[audience].estimated}: every figure rests on the mix you described.</p>
         {headline.minimumUpTo ? <Alert tone="warning">The account minimum could add up to {usd(headline.minimumUpTo)} a month on top of this; it is not included.</Alert> : null}
@@ -189,12 +193,18 @@ function Headline({ headline, summary, audience, onAdd, editHref }: { headline: 
 // ---------------------------------------------------------------------------
 function OrderFees({ processing, summary }: { processing: ForecastProcessing; summary: ForecastSummary }) {
   const partial = summary.unpriceable.length > 0;
+  const none = processing.byRule.length === 0;
+  const unresolved = processing.unresolved;
+  // When no order fee could be computed there is no sum to show: "$0.00 a month" would read as "these orders pay nothing".
+  const allUnresolved = none && unresolved.length > 0;
   return (
     <Card className="space-y-3">
       <div>
         <CardTitle>Order fees</CardTitle>
         <CardDescription>
-          {usd(processing.expected)} a month, {usd(processing.perOrder)} per order on average{partial ? ` (over the ${summary.pricedSharePct}% of orders that could be priced)` : ""}. Fees charged per order only; monthly charges are below.
+          {allUnresolved
+            ? "None of the order fees could be computed from what you gave. Each is listed with its rate under Not included above; none is counted as $0."
+            : `${usd(processing.expected)} a month, ${usd(processing.perOrder)} per order on average${partial ? ` (over the ${summary.pricedSharePct}% of orders that could be priced)` : ""}${unresolved.length ? ", not counting the fees listed below" : ""}. Fees charged per order only; monthly charges are below.`}
         </CardDescription>
       </div>
       {processing.byRule.length ? (
@@ -217,9 +227,18 @@ function OrderFees({ processing, summary }: { processing: ForecastProcessing; su
             { label: "A month", cell: (r) => usd(r.expected), numeric: true },
           ]}
         />
-      ) : (
+      ) : allUnresolved ? null : (
         <p className="text-sm text-muted">No order fee applied to the orders you described.</p>
       )}
+      {unresolved.length ? (
+        <ul className="list-disc space-y-1 pl-5 text-sm">
+          {unresolved.map((u, i) => (
+            <li key={`${i}-${u.name}`}>
+              <span className="font-medium">{u.name}</span>: not computed for {u.sharePct}% of orders, because {notComputedReason(u.reason)}.
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {processing.warnings.length ? (
         <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
           {processing.warnings.map((w) => (
@@ -321,7 +340,7 @@ function MinimumCard({ m }: { m: ForecastMinimum }) {
 // ---------------------------------------------------------------------------
 // Sensitivity, unpriceable, assumptions, profile
 // ---------------------------------------------------------------------------
-function Sensitivity({ points, atLeast }: { points: ForecastVolumePoint[]; atLeast: boolean }) {
+function Sensitivity({ points, atLeast, orderFeesNotComputed, monthlyNotComputed }: { points: ForecastVolumePoint[]; atLeast: boolean; orderFeesNotComputed: boolean; monthlyNotComputed: boolean }) {
   if (!points.length) return null;
   const label = (p: ForecastVolumePoint) => (p.multiplier === "1" ? "Your forecast" : `${p.multiplier}× your volume`);
   return (
@@ -338,8 +357,8 @@ function Sensitivity({ points, atLeast }: { points: ForecastVolumePoint[]; atLea
           { label: "Volume", cell: (p) => (p.multiplier === "1" ? <strong>{label(p)}</strong> : label(p)) },
           { label: "Orders a month", cell: (p) => groupDigits(p.monthlyOrders), numeric: true },
           { label: "Shipping", cell: (p) => usd(p.perOrder.shipping), numeric: true },
-          { label: "Order fees", cell: (p) => usd(p.perOrder.processing), numeric: true },
-          { label: "Monthly charges spread", cell: (p) => usd(p.perOrder.allocated), numeric: true },
+          { label: "Order fees", cell: (p) => (orderFeesNotComputed ? "not computed" : usd(p.perOrder.processing)), numeric: true },
+          { label: "Monthly charges spread", cell: (p) => (monthlyNotComputed ? "not computed" : usd(p.perOrder.allocated)), numeric: true },
           { label: atLeast ? "All-in, at least" : "All-in", cell: (p) => usd(p.perOrder.allIn), numeric: true },
         ]}
       />
@@ -476,7 +495,7 @@ export function ForecastResult({ data, audience, onAdd, editHref }: ForecastResu
           ))}
         </Card>
       ) : null}
-      <Sensitivity points={sensitivity} atLeast={headline.kind !== "all_in"} />
+      <Sensitivity points={sensitivity} atLeast={headline.kind !== "all_in"} orderFeesNotComputed={headline.parts.orderFees === null} monthlyNotComputed={headline.parts.monthlyCharges === null} />
       {summary.unpriceable.length ? (
         <Card className="space-y-3">
           <CardTitle>Not priced</CardTitle>

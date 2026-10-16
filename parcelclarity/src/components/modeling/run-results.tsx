@@ -9,8 +9,10 @@ import { formatDate } from "@/lib/format/date";
 import { formatVolume } from "@/lib/modeling/assumptions";
 import {
   HEADLINE_VIEWS,
+  NO_NUMBER_REASON,
   VIEW_LABEL,
   VIEW_SENTENCE,
+  endSentence,
   feeStatusSentences,
   headlineFigures,
   minimumViews,
@@ -192,6 +194,7 @@ function HeadlineCard({ h, labelId }: { h: HeadlineFigures; labelId: string }) {
               <li key={`${item.category}:${item.name}`} className="flex flex-wrap items-center gap-x-3">
                 <span>
                   {item.name}: <span className="text-muted">{item.rate}</span>
+                  {item.reason !== NO_NUMBER_REASON ? <span className="text-muted"> (because {item.reason})</span> : null}
                 </span>
                 {item.addHref ? <AddLink href={item.addHref} name={item.name} /> : null}
               </li>
@@ -216,11 +219,14 @@ export function RunHeadline({ summary, provenance, view, viewHref }: { summary: 
   if (summary.assumptions.originZip > 0) caveats.push(`${plural(summary.assumptions.originZip, "shipment")} ${summary.assumptions.originZip === 1 ? "was" : "were"} priced assuming ${provenance.originZipDefault ? `they ship from ZIP ${provenance.originZipDefault}` : "an origin ZIP"} (the file does not say).`);
   if (summary.loadIssues.length) caveats.push(`${plural(summary.loadIssues.length, "surcharge rule")} could not be applied; totals omit ${summary.loadIssues.length === 1 ? "it" : "them"}.`);
   if (view !== "shipping") caveats.push(...h.caveats);
+  // Shipping only because fees were skipped or no fee schedule applied: say so next to the figure, not only further down.
+  const feesNote = summary.fees.mode !== "modeled" ? headlineFigures(summary, "fees", {}, provenance.audience).unavailable : null;
   const rates = provenance.pricingBasis === "fixed_date" ? `rates in effect on ${provenance.asOfDate ? formatDate(provenance.asOfDate) : "the chosen date"}` : "rates in effect on each ship date";
   return (
     <div className="space-y-4">
       <ViewControl view={view} hrefFor={viewHref} />
       <HeadlineCard h={h} labelId="run-headline-label" />
+      {view === "shipping" && feesNote ? <p className="text-sm text-muted">{feesNote}</p> : null}
       {view === "shipping" ? (
         <div className="grid gap-4 sm:grid-cols-3">
           <Stat label="Per package" value={money(summary.averages.expectedPerPackage)} note={`${plural(summary.modeled.packages, "package")} modeled`} />
@@ -443,7 +449,7 @@ export interface ShipmentRowView {
 export function ShipmentsTable({ rows, page, pageSize, total, hrefFor, status, pricedButExcluded }: { rows: ShipmentRowView[]; page: number; pageSize: number; total: number; hrefFor: (page: number, status: string) => string; status: string; pricedButExcluded: number }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
   return (
-    <Card className="space-y-3">
+    <Card id="shipments" className="scroll-mt-4 space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <CardTitle>Shipments</CardTitle>
         <div className="flex flex-wrap gap-2 text-sm">
@@ -563,28 +569,35 @@ export function OrderFeesCard({ summary, addHref }: { summary: BulkSummary; addH
               </tr>
             </thead>
             <tbody className="divide-y divide-line">
-              {rows.map((r) => (
-                <tr key={`${r.category}:${r.name}`}>
-                  <td className="py-2 pr-3">
-                    {r.name}
-                    {r.rate ? <span className="block text-xs text-muted">{r.rate}</span> : null}
-                  </td>
-                  <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{n(r.orders)}</td>
-                  <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{usd(r.definite)}</td>
-                  <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{usd(r.estimated)}</td>
-                  <td className="py-2">
-                    {r.notComputed ? (
-                      <span className="inline-flex flex-wrap items-center gap-x-3">
-                        <span>{r.notComputed}</span>
-                        {r.addable && addHref ? <AddLink href={addHref} name={r.name} /> : null}
-                      </span>
-                    ) : (
-                      <span className="text-muted">—</span>
-                    )}
-                    {r.replacedOrders > 0 ? <span className="block text-xs text-muted">{plural(r.replacedOrders, "order")} charged under another fee instead</span> : null}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((r) => {
+                // A charge that was computed for no order at all (no order could be priced, or every order lacked what it needs)
+                // has no amount: "$0.00" there would read as "this fee is free", so the cells say it was not computed.
+                const neverComputed = r.orders === 0 && (r.notComputed !== null || p.orders === 0);
+                return (
+                  <tr key={`${r.category}:${r.name}`}>
+                    <td className="py-2 pr-3">
+                      {r.name}
+                      {r.rate ? <span className="block text-xs text-muted">{r.rate}</span> : null}
+                    </td>
+                    <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{neverComputed ? "—" : n(r.orders)}</td>
+                    <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{neverComputed ? "Not computed" : usd(r.definite)}</td>
+                    <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{neverComputed ? "Not computed" : usd(r.estimated)}</td>
+                    <td className="py-2">
+                      {r.notComputed ? (
+                        <span className="inline-flex flex-wrap items-center gap-x-3">
+                          <span>{r.notComputed}</span>
+                          {r.addable && addHref ? <AddLink href={addHref} name={r.name} /> : null}
+                        </span>
+                      ) : neverComputed ? (
+                        <span>No order could be priced with fees</span>
+                      ) : (
+                        <span className="text-muted">—</span>
+                      )}
+                      {r.replacedOrders > 0 ? <span className="block text-xs text-muted">{plural(r.replacedOrders, "order")} charged under another fee instead</span> : null}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
             {p.orders > 0 ? (
               <tfoot>
@@ -635,12 +648,20 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
               </p>
             ) : null}
           </div>
-        ) : (
+        ) : m.notModeled.length ? (
           <CardDescription>No monthly charge could be priced yet.</CardDescription>
+        ) : (
+          // Nothing on the schedule is billed monthly: a known absence, not a missing number.
+          <CardDescription>The fee schedule has no monthly charges.</CardDescription>
         )}
         <p className="mt-2 text-sm text-muted">
-          {m.perOrder !== null && volume ? `Spread over your orders, that is about ${usd(m.perOrder)} per order at ${formatVolume(volume)} orders a month. This is monthly charges shared across orders, not a per-order fee. Basis: ${m.basisSentence}.` : m.basisSentence}
+          {m.perOrder !== null && volume ? `Spread over your orders, that is about ${usd(m.perOrder)} per order at ${formatVolume(volume)} orders a month. This is monthly charges shared across orders, not a per-order fee. Basis: ${endSentence(m.basisSentence)}` : m.basisSentence}
         </p>
+        {m.minimumPerMonth !== null ? (
+          <p className="mt-1 text-sm text-muted">
+            The account minimum adds {usd(m.minimumPerMonth)} a month on top (see Account minimum below){m.withMinimumPerOrder !== null ? `, so with it the monthly charges come to about ${usd(m.withMinimumPerOrder)} per order` : ""}.
+          </p>
+        ) : null}
       </div>
       {m.lines.length ? (
         <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Monthly charges">
@@ -676,7 +697,7 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
             {m.notModeled.map((x) => (
               <li key={`${x.category}:${x.name}`} className="flex flex-wrap items-center gap-x-3">
                 <span>
-                  {x.name}: <span className="text-muted">{x.rate}. Not included in the totals.</span>
+                  {x.name}: <span className="text-muted">{endSentence(x.rate)} {x.reason !== NO_NUMBER_REASON ? `Left out because ${x.reason}. ` : ""}Not included in the totals.</span>
                 </span>
                 {x.addable && addHref ? <AddLink href={addHref} name={x.name} /> : null}
               </li>
@@ -704,15 +725,15 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
                     <tr key={pt.multiplier}>
                       <td className="py-2 pr-3">{pt.multiplier === "1" ? "Your volume" : `${pt.multiplier}× your volume`}</td>
                       <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{formatVolume(pt.monthlyOrders)}</td>
-                      <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{pt.known && pt.allInPerOrder !== null ? `${prefix}${usd(pt.allInPerOrder)}` : "Depends on your account minimum"}</td>
-                      <td className="tabular py-2 text-right whitespace-nowrap">{pt.known && pt.monthlyTotal !== null ? `${prefix}${usd(pt.monthlyTotal)}` : "Depends on your account minimum"}</td>
+                      <td className="tabular py-2 pr-3 text-right whitespace-nowrap">{pt.known && pt.allInPerOrder !== null ? `${prefix}${usd(pt.allInPerOrder)}` : "Could not be worked out"}</td>
+                      <td className="tabular py-2 text-right whitespace-nowrap">{pt.known && pt.monthlyTotal !== null ? `${prefix}${usd(pt.monthlyTotal)}` : "Could not be worked out"}</td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           </div>
-          <p className="text-xs text-muted">Shipping and order fees per order are held the same; only monthly charges that follow volume (such as returns) change with it, and price breaks that depend on volume are not re-read.</p>
+          <p className="text-xs text-muted">Shipping and order fees per order are held the same; only monthly charges that follow volume (such as returns) change with it. The account minimum is worked out again for each month at each volume. Price breaks that depend on volume are not re-read, and a cent or two can differ from running the model again.</p>
         </div>
       ) : null}
     </Card>
@@ -800,12 +821,13 @@ export function NotIncludedCard({ summary, addHref, audience }: { summary: BulkS
       <CardTitle>Not included</CardTitle>
       {g.needNumbers.length ? (
         <div className="space-y-1 text-sm">
-          <h3 className="font-medium">Left out because no numbers were given</h3>
+          <h3 className="font-medium">{summary.fees.mode === "skipped" ? "Left out because fulfillment costs were skipped" : "Left out because no numbers were given"}</h3>
           <ul className="space-y-1">
             {g.needNumbers.map((item) => (
               <li key={`${item.category}:${item.name}`} className="flex flex-wrap items-center gap-x-3">
                 <span>
                   {item.name}: <span className="text-muted">{item.rate}</span>
+                  {summary.fees.mode !== "skipped" && item.reason !== NO_NUMBER_REASON ? <span className="text-muted"> (because {item.reason})</span> : null}
                 </span>
                 {item.addHref ? <AddLink href={item.addHref} name={item.name} /> : null}
               </li>
@@ -865,7 +887,7 @@ export function OrdersTable({ summary, rows, page, pageSize, total, hrefFor, loa
   const names = ruleNameIndex(summary);
   const count = (v: number | null, assumed: boolean | undefined) => (v === null ? "—" : `${n(v)}${assumed ? " (assumed)" : ""}`);
   return (
-    <Card className="space-y-3">
+    <Card id="orders" className="scroll-mt-4 space-y-3">
       <div>
         <CardTitle>Orders</CardTitle>
         <CardDescription>Shipping and order fees for each order. Monthly charges are not per-order fees and are not shown here.</CardDescription>

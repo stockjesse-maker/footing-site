@@ -85,7 +85,10 @@ function runSummaryLine(project: ProjectListRow, run: RunListRow, audience: Head
   const file = fileSummaryOf(run);
   // A model priced before fulfillment fees existed keeps its shipping line and says so.
   if (!file) return ` · estimated ${formatMoney({ amount: String(run.total_expected ?? "0.00"), currency: "USD" })} shipping for ${run.modeled_orders.toLocaleString("en-US")} orders (priced before fulfillment fees; run it again to add them)`;
-  return ` · ${headlineLine(file, audience)} · ${run.modeled_orders.toLocaleString("en-US")} of ${file.imported.orders.toLocaleString("en-US")} orders`;
+  // An all-in figure carries monthly charges spread over orders, so the line prints the volume and period it was spread over.
+  const h = headlineFigures(file, defaultView(file), {}, audience);
+  const basis = h.view === "allin" && h.amount !== null ? ` · ${h.basisSentence}` : "";
+  return ` · ${h.label}: ${headlineText(h)}${basis} · ${run.modeled_orders.toLocaleString("en-US")} of ${file.imported.orders.toLocaleString("en-US")} orders`;
 }
 
 export function ScenarioList({ projects, basePath, brandId, staff, compareHref }: { projects: ProjectListRow[]; basePath: string; brandId?: string; staff: boolean; compareHref?: string }) {
@@ -148,7 +151,20 @@ export function ModelTiles({ summary, audience = "brand" }: { summary: BulkSumma
   const reason = headlineReason(allIn);
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <Stat label={allIn.label} value={headlineText(allIn)} note={allIn.complete ? allIn.basisSentence : (reason ?? allIn.basisSentence)} />
+      <Stat
+        label={allIn.label}
+        value={headlineText(allIn)}
+        note={
+          allIn.complete || allIn.amount === null ? (
+            (allIn.complete ? allIn.basisSentence : (reason ?? allIn.basisSentence))
+          ) : (
+            <>
+              {reason}
+              <span className="block">{allIn.basisSentence}</span>
+            </>
+          )
+        }
+      />
       <Stat label={shipping.label} value={headlineText(shipping)} note={shipping.basisSentence} />
       <Stat label={fees.label} value={headlineText(fees)} note={fees.amount === null ? fees.unavailable : fees.basisSentence} />
       <Stat

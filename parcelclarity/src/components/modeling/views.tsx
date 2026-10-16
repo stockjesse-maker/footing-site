@@ -1,26 +1,54 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import type { ShipmentCalculation, ShipmentInput } from "@/engine/types";
-import type { BulkSummary } from "@/engine/modeling/types";
-import { DatasetList, HubCard, ScenarioList, runStateLabel } from "@/components/modeling/lists";
+import { DatasetList, HubCard, OverviewFigures, ScenarioList, overviewModels, runStateLabel } from "@/components/modeling/lists";
 import { OrderMappingWizard, type DatasetValidation } from "@/components/modeling/order-mapping-wizard";
 import { RunProgress } from "@/components/modeling/run-progress";
-import { RunBreakdowns, RunExclusions, RunHeadline, ShipmentsTable, type RunProvenance, type ShipmentRowView } from "@/components/modeling/run-results";
+import {
+  MinimumCard,
+  MonthlyChargesCard,
+  NotIncludedCard,
+  OrderFeesCard,
+  OrdersTable,
+  RunBreakdowns,
+  RunExclusions,
+  RunHeadline,
+  ShipmentsTable,
+  type OrderRowView,
+  type RunProvenance,
+  type ShipmentRowView,
+} from "@/components/modeling/run-results";
 import { RunSetupForm } from "@/components/modeling/run-setup-form";
 import { OrderUploadForm, SkuProfilesForm } from "@/components/modeling/upload-forms";
-import { CalculationResult, formatDecimal, formatMoney } from "@/components/pricing/calculation-result";
+import { CalculationResult, formatDecimal } from "@/components/pricing/calculation-result";
 import { CalculatorForm } from "@/components/pricing/calculator-form";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { PageHeader } from "@/components/ui/page-header";
-import { Stat } from "@/components/ui/stat";
+import { can } from "@/lib/auth/permissions";
+import { getContext } from "@/lib/auth/session";
 import { uuidSchema } from "@/lib/auth/validation";
 import { formatDate } from "@/lib/format/date";
+import { assumptionsLine, buildComparison, defaultView, feeScheduleLine, feesChangedSince, parseView, uncoveredFeeDatesNote, type CompareRunInput, type HeadlineView } from "@/lib/modeling/headline";
+import type { AssumptionsLike } from "@/lib/modeling/assumptions";
+import { loadRunSetupData } from "@/lib/modeling/queries";
 import type { ModelingView } from "@/lib/modeling/page-context";
-import { latestCompletedBulkRun, loadAssignedCards, loadModelingLists, type ProjectListRow, type RunListRow } from "@/lib/modeling/queries";
+import {
+  fileSummaryOf,
+  forecastSummaryOf,
+  loadAssignedCards,
+  loadAssumptionsAuthor,
+  loadCurrentFeeVersion,
+  loadModelingLists,
+  loadOrderResults,
+  loadOrderShipping,
+  loadRunFeeContexts,
+  type ProjectListRow,
+  type RunListRow,
+} from "@/lib/modeling/queries";
 import type { OrderDetection } from "@/lib/orders/mapping";
 import type { OrderMapping } from "@/lib/orders/types";
 
@@ -46,28 +74,35 @@ function BackLink({ href, label }: { href: string; label: string }) {
 // ---------------------------------------------------------------------------
 export async function ModelHubView(v: ModelingView) {
   const [{ datasets, projects }, assigned] = await Promise.all([loadModelingLists(v.supabase, v.brandId), loadAssignedCards(v.supabase, v.brandId, v.tenantDefaultOriginZip)]);
-  const latest = latestCompletedBulkRun(projects);
+  const models = overviewModels(projects);
   const brandIdProp = v.staff ? v.brandId : undefined;
   return (
     <>
       {v.staff ? <BackLink href={`/app/customers/${v.brandId}`} label={v.brandName} /> : null}
-      <PageHeader title={v.staff ? `Model costs for ${v.brandName}` : "Model Costs"} description={v.staff ? "What you prepare here stays private to your team until you share it with the customer." : `Estimate shipping costs on the pricing ${v.tenantName} assigned to you. Every result is an estimate, never an invoice.`} />
+      <PageHeader
+        title={v.staff ? `Model costs for ${v.brandName}` : "Model Costs"}
+        description={v.staff ? "What you prepare here stays private to your team until you share it with the customer." : `Estimate shipping and fulfillment costs on the pricing and fee schedule ${v.tenantName} assigned to you. Every result is an estimate, never an invoice.`}
+      />
       {!assigned.cards.length ? (
         <Alert tone="warning" className="mb-6">
           {v.staff ? "Assign an active rate card to this customer before modeling." : `${v.tenantName} has not assigned a rate card to your account yet, so nothing can be priced.`}
         </Alert>
       ) : null}
-      {latest ? (
-        <section className="mb-8 space-y-3" aria-labelledby="latest-heading">
-          <h2 id="latest-heading" className="text-xl font-semibold tracking-tight">
-            Latest model
-          </h2>
-          <HeadlineFromRun summary={latest.run.summary!} run={latest.run} scenarioName={latest.project.name} rateCardName={latest.project.rate_cards?.name ?? "rate card"} href={`${v.basePath}/runs/${latest.run.id}`} />
-        </section>
+      {models.latest || models.forecast || models.whatIf ? (
+        <div className="mb-8">
+          <OverviewFigures projects={projects} basePath={v.basePath} tenantName={v.tenantName} audience={v.staff ? "staff" : "brand"} />
+        </div>
       ) : null}
       <div className="grid gap-4 sm:grid-cols-2">
-        <HubCard title="Price one shipment" description="Weight, size, destination and service: see every charge explained." href={`${v.basePath}/calculator`} cta="Open the calculator" />
+        <HubCard title="Price one shipment" description="Weight, size, destination and service: see every charge explained, with the order fees for what is in the box." href={`${v.basePath}/calculator`} cta="Open the calculator" />
+        <HubCard
+          title="Forecast from assumptions"
+          description={v.staff ? "No orders file yet? Describe the orders the customer expects and see the expected cost per order, shipping and fulfillment." : "No orders file yet? Describe the orders you expect and see the expected cost per order, shipping and fulfillment."}
+          href={`${v.basePath}/forecast`}
+          cta="Forecast from assumptions"
+        />
         <HubCard title="Product weights" description="For orders files that carry no package weight (Shopify exports)." href={`${v.basePath}/products`} cta="Manage product weights" />
+        {!v.staff ? <HubCard title="Your fee schedule" description={`The fulfillment fees ${v.tenantName} charges you: what each one is and how it is counted.`} href={`${v.basePath}/fees`} cta="See your fee schedule" /> : null}
       </div>
       <div className="mt-8 space-y-8">
         {assigned.cards.length ? <OrderUploadForm brandId={brandIdProp} tenantName={v.tenantName} /> : null}
@@ -85,24 +120,6 @@ export async function ModelHubView(v: ModelingView) {
         </section>
       </div>
     </>
-  );
-}
-
-function HeadlineFromRun({ summary, run, scenarioName, rateCardName, href }: { summary: BulkSummary; run: RunListRow; scenarioName: string; rateCardName: string; href: string }) {
-  return (
-    <div className="space-y-2">
-      <div className="grid gap-4 sm:grid-cols-3">
-        <Stat label="Estimated shipping cost per order" value={summary.averages.expectedPerOrder ? formatMoney({ amount: summary.averages.expectedPerOrder, currency: "USD" }) : "—"} note={`${summary.modeled.orders.toLocaleString("en-US")} of ${summary.imported.orders.toLocaleString("en-US")} orders (${summary.coverage.ordersPct}%)`} />
-        <Stat label="Projected shipping spend" value={summary.modeled.orders ? formatMoney({ amount: summary.totals.expected, currency: "USD" }) : "—"} note={summary.modeled.orders ? `for the ${summary.modeled.orders.toLocaleString("en-US")} of ${summary.imported.orders.toLocaleString("en-US")} orders that could be priced` : "no orders could be priced"} />
-        <Stat label="Per package" value={summary.averages.expectedPerPackage ? formatMoney({ amount: summary.averages.expectedPerPackage, currency: "USD" }) : "—"} note={`${summary.modeled.packages.toLocaleString("en-US")} packages`} />
-      </div>
-      <p className="text-sm text-muted">
-        {scenarioName} · {rateCardName} · {run.pricing_basis === "fixed_date" && run.as_of_date ? `rates in effect on ${formatDate(run.as_of_date)}` : "rates on each ship date"} · estimates, not an invoice.
-      </p>
-      <Link href={href} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
-        View the results →
-      </Link>
-    </div>
   );
 }
 
@@ -187,9 +204,11 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
   const { data } = await v.supabase.from("order_datasets").select("id, name, brand_id, status, detected, mapping, validation, order_count, shipment_count, package_count").eq("id", datasetId).maybeSingle();
   const ds = data as DatasetRow | null;
   if (!ds || ds.brand_id !== v.brandId || ds.status === "discarded") notFound();
-  const [assigned, { count: skuCount }] = await Promise.all([
+  const [assigned, { count: skuCount }, setupData] = await Promise.all([
     loadAssignedCards(v.supabase, v.brandId, v.tenantDefaultOriginZip),
     v.supabase.from("sku_profiles").select("id", { count: "exact", head: true }).eq("brand_id", v.brandId),
+    // Step 2 of the run form ("Fulfillment costs") is only asked for a file that is ready to run.
+    ds.status === "ready" ? loadRunSetupData(v.supabase, v.brandId, ds.id) : Promise.resolve(null),
   ]);
   const brandIdProp = v.staff ? v.brandId : undefined;
   const unmapped = ds.validation?.issuesByCode.find((i) => i.code === "service_unmapped")?.shipments ?? 0;
@@ -232,6 +251,8 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
             earliestRatesDate={earliestRates}
             firstOrderDate={ds.validation?.dateRange.from ?? null}
             tenantName={v.tenantName}
+            fulfillment={setupData}
+            audience={v.staff ? "staff" : "brand"}
           />
         ) : null}
       </div>
@@ -245,10 +266,12 @@ export async function DatasetView(v: ModelingView, datasetId: string) {
 interface RunRow extends RunListRow {
   project_id: string;
   brand_id: string;
+  created_by: string | null;
+  monthly_fee_schedule_version_id: string | null;
   single_input: ShipmentInput | null;
   single_result: ShipmentCalculation | null;
   error: string | null;
-  simulation_projects: { id: string; name: string; dataset_id: string | null; rate_cards: { name: string } | null; order_datasets: { name: string; mapping: OrderMapping | null; validation: DatasetValidation | null } | null } | null;
+  simulation_projects: { id: string; name: string; dataset_id: string | null; shared_with_brand: boolean; rate_cards: { name: string } | null; order_datasets: { name: string; mapping: OrderMapping | null; validation: DatasetValidation | null } | null } | null;
   shipping_services: { name: string } | null;
 }
 
@@ -271,19 +294,40 @@ interface ResultRow {
 
 const PAGE_SIZE = 50;
 
-export async function RunView(v: ModelingView, runId: string, searchParams: { page?: string; status?: string }) {
+/** Where "Add" links point: the run-again form at the bottom of the run page (step 2 there takes the numbers). */
+const RUN_AGAIN_HREF = "#run-again";
+
+export interface RunSearchParams {
+  page?: string;
+  status?: string;
+  /** shipping | fees | allin */
+  view?: string;
+  /** Page of the orders table (the shipments table keeps `page`). */
+  opage?: string;
+}
+
+/** True when the run carries fulfillment answers the customer or the 3PL typed (not a skip, not an empty set). */
+function hasFulfillmentAnswers(f: NonNullable<RunListRow["assumptions"]>["fulfillment"]): boolean {
+  if (!f || f.skip) return false;
+  return Object.keys(f.drivers ?? {}).length > 0 || Object.keys(f.orderShares ?? {}).length > 0 || !!f.monthlyOrders || !!f.packagingDefault || (f.orderContent?.rows.length ?? 0) > 0;
+}
+
+export async function RunView(v: ModelingView, runId: string, searchParams: RunSearchParams) {
   if (!uuidSchema.safeParse(runId).success) notFound();
   const { data } = await v.supabase
     .from("simulation_runs")
     .select(
-      "id, project_id, brand_id, status, kind, pricing_basis, as_of_date, service_override_id, assumptions, created_at, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, single_input, single_result, error, simulation_projects(id, name, dataset_id, rate_cards(name), order_datasets(name, mapping, validation)), shipping_services(name)",
+      "id, project_id, brand_id, status, kind, pricing_basis, as_of_date, service_override_id, assumptions, created_at, created_by, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, monthly_fee_schedule_version_id, single_input, single_result, error, simulation_projects(id, name, dataset_id, shared_with_brand, rate_cards(name), order_datasets(name, mapping, validation)), shipping_services(name)",
     )
     .eq("id", runId)
     .maybeSingle();
   const run = data as RunRow | null;
   if (!run || run.brand_id !== v.brandId || !run.simulation_projects) notFound();
   const project = run.simulation_projects;
+  // A forecast from assumptions has no shipments or orders to list: it has its own page.
+  if (run.kind === "forecast") redirect(`${v.basePath}/forecast/${project.id}`);
   const brandIdProp = v.staff ? v.brandId : undefined;
+  const audience = v.staff ? "staff" : "brand";
   const state = runStateLabel(run);
 
   if (run.kind === "single") {
@@ -315,7 +359,7 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
               <p className="mt-3 text-sm text-muted">Saved {formatDate(run.created_at)}; the price does not change afterwards. To price the same shipment again, enter it in the calculator.</p>
             </Card>
           ) : null}
-          {run.single_result ? <CalculationResult result={run.single_result} audience={v.staff ? "staff" : "brand"} cardName={project.rate_cards?.name ?? "your rate card"} effectiveDate={null} shipDate={run.as_of_date} /> : <EmptyState title="No result stored" />}
+          {run.single_result ? <CalculationResult result={run.single_result} audience={audience} cardName={project.rate_cards?.name ?? "your rate card"} effectiveDate={null} shipDate={run.as_of_date} /> : <EmptyState title="No result stored" />}
         </div>
       </>
     );
@@ -324,28 +368,35 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
   const assigned = await loadAssignedCards(v.supabase, v.brandId, v.tenantDefaultOriginZip);
   const dataset = project.order_datasets;
   const assumptions = run.assumptions ?? {};
+  // Step 2 of the form (fulfillment costs) is read for the file of this run and opens with the answers it was run with.
+  const setupData = run.status !== "running" && project.dataset_id ? await loadRunSetupData(v.supabase, v.brandId, project.dataset_id) : null;
   const setup = (
-    <RunSetupForm
-      brandId={brandIdProp}
-      projectId={project.id}
-      cards={[]}
-      services={assigned.services.map((s) => ({ id: s.id, carrierCode: s.carrierCode, name: s.name }))}
-      askResidential={dataset?.mapping?.columns.residential === null}
-      askOrigin={dataset?.mapping?.columns.originZip === null}
-      defaultOriginZip={assigned.defaultOriginZip}
-      unmappedShipments={dataset?.validation?.issuesByCode.find((i) => i.code === "service_unmapped")?.shipments ?? 0}
-      earliestRatesDate={assigned.cards.flatMap((c) => c.versions.map((x) => x.effectiveDate)).filter((d): d is string => !!d).sort()[0] ?? null}
-      firstOrderDate={dataset?.validation?.dateRange.from ?? null}
-      tenantName={v.tenantName}
-      initial={{
-        pricingBasis: run.pricing_basis,
-        asOfDate: run.as_of_date,
-        serviceOverrideId: run.service_override_id,
-        overrideAllServices: assumptions.overrideAllServices ?? false,
-        residentialDefault: assumptions.residentialDefault ?? null,
-        originZipDefault: assumptions.originZipDefault ?? null,
-      }}
-    />
+    <div id="run-again" className="scroll-mt-4">
+      <RunSetupForm
+        brandId={brandIdProp}
+        projectId={project.id}
+        cards={[]}
+        services={assigned.services.map((s) => ({ id: s.id, carrierCode: s.carrierCode, name: s.name }))}
+        askResidential={dataset?.mapping?.columns.residential === null}
+        askOrigin={dataset?.mapping?.columns.originZip === null}
+        defaultOriginZip={assigned.defaultOriginZip}
+        unmappedShipments={dataset?.validation?.issuesByCode.find((i) => i.code === "service_unmapped")?.shipments ?? 0}
+        earliestRatesDate={assigned.cards.flatMap((c) => c.versions.map((x) => x.effectiveDate)).filter((d): d is string => !!d).sort()[0] ?? null}
+        firstOrderDate={dataset?.validation?.dateRange.from ?? null}
+        tenantName={v.tenantName}
+        fulfillment={setupData}
+        audience={audience}
+        initial={{
+          pricingBasis: run.pricing_basis,
+          asOfDate: run.as_of_date,
+          serviceOverrideId: run.service_override_id,
+          overrideAllServices: assumptions.overrideAllServices ?? false,
+          residentialDefault: assumptions.residentialDefault ?? null,
+          originZipDefault: assumptions.originZipDefault ?? null,
+          fulfillment: assumptions.fulfillment ?? null,
+        }}
+      />
+    </div>
   );
 
   if (run.status === "running") {
@@ -373,8 +424,30 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
     );
   }
 
+  const summary = fileSummaryOf(run);
+  if (!summary) {
+    // Priced before fulfillment fees existed (a version 1 summary): its figures have no fee sections to show.
+    return (
+      <>
+        <BackLink href={v.basePath} label="Model Costs" />
+        <PageHeader title={project.name} description={<Badge tone={state.tone}>{state.label}</Badge>} />
+        <Alert tone="info" className="mb-6">
+          This model was priced before fulfillment fees were added, so it has no fee figures to show. Run it again below to price shipping and fees together.
+        </Alert>
+        {setup}
+      </>
+    );
+  }
+
   const page = Math.max(1, Number.parseInt(searchParams.page ?? "1", 10) || 1);
+  const orderPage = Math.max(1, Number.parseInt(searchParams.opage ?? "1", 10) || 1);
   const status = searchParams.status === "ok" || searchParams.status === "unavailable" ? searchParams.status : "all";
+  const chosenView = parseView(searchParams.view);
+  const view: HeadlineView = chosenView ?? defaultView(summary);
+  const modeled = summary.fees.mode === "modeled";
+  const answered = hasFulfillmentAnswers(assumptions.fulfillment);
+  const ctx = await getContext();
+
   let query = v.supabase
     .from("simulation_results")
     .select("row_no, status, unavailable_reason, ship_date, zone, billable_lb, definite, estimated, expected, conditional_exposure, unresolved, in_totals, shipments(external_shipment_id, destination_zip, ship_date, orders(external_order_id, order_date)), shipping_services(name)", { count: "exact" })
@@ -382,7 +455,32 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
     .order("row_no")
     .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
   if (status !== "all") query = query.eq("status", status);
-  const { data: resultRows, count } = await query.overrideTypes<ResultRow[], { merge: false }>();
+  const [{ data: resultRows, count }, orderResults, contexts, currentFee, author] = await Promise.all([
+    query.overrideTypes<ResultRow[], { merge: false }>(),
+    modeled ? loadOrderResults(v.supabase, run.id, { from: (orderPage - 1) * PAGE_SIZE, to: orderPage * PAGE_SIZE - 1 }) : Promise.resolve(null),
+    modeled ? loadRunFeeContexts(v.supabase, run.id) : Promise.resolve(null),
+    modeled ? loadCurrentFeeVersion(v.supabase, v.brandId) : Promise.resolve(null),
+    answered && ctx ? loadAssumptionsAuthor(v.supabase, { createdBy: run.created_by, viewerId: ctx.user.id, viewerCanSeeMembers: can(ctx.active.role, "member.view"), brandId: v.brandId }) : Promise.resolve(null),
+  ]);
+  const orderShipping = orderResults && !orderResults.error ? await loadOrderShipping(v.supabase, run.id, orderResults.rows.map((r) => r.orderId)) : null;
+  const ordersFailed = !!orderResults && (!!orderResults.error || !orderShipping || !!orderShipping.error);
+  const orderRows: OrderRowView[] =
+    orderResults && orderShipping && !ordersFailed
+      ? orderResults.rows.map((r) => ({
+          orderId: r.orderId,
+          externalOrderId: r.externalOrderId,
+          units: r.units,
+          lines: r.lines,
+          packages: r.packages,
+          assumed: r.assumed,
+          feeStatus: r.feeStatus,
+          definiteE4: r.definiteE4,
+          estimatedE4: r.estimatedE4,
+          unresolved: r.unresolved,
+          shippingExpected: orderShipping.shipping.get(r.orderId)?.expected ?? null,
+        }))
+      : [];
+
   const rows: ShipmentRowView[] = (resultRows ?? []).map((r) => ({
     rowNo: r.row_no,
     externalOrderId: r.shipments?.orders?.external_order_id ?? "—",
@@ -402,6 +500,9 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
     conditional: String(r.conditional_exposure),
     unresolved: String(r.unresolved),
   }));
+
+  const pinnedVersions = [...(contexts?.versions.map((x) => x.versionId) ?? []), ...(run.monthly_fee_schedule_version_id ? [run.monthly_fee_schedule_version_id] : [])];
+  const csvQuery = v.staff ? `?brandId=${v.brandId}` : "";
   const provenance: RunProvenance = {
     scenarioName: project.name,
     datasetName: dataset?.name ?? null,
@@ -413,18 +514,54 @@ export async function RunView(v: ModelingView, runId: string, searchParams: { pa
     residentialDefault: assumptions.residentialDefault ?? null,
     originZipDefault: assumptions.originZipDefault ?? null,
     finishedAt: run.finished_at,
-    exportHref: `/api/runs/${run.id}/results.csv${v.staff ? `?brandId=${v.brandId}` : ""}`,
+    exportHref: `/api/runs/${run.id}/results.csv${csvQuery}`,
+    audience,
+    ordersCsvHref: modeled ? `/api/runs/${run.id}/orders.csv${csvQuery}` : null,
+    monthlyCsvHref: modeled && summary.monthly ? `/api/runs/${run.id}/monthly.csv${csvQuery}` : null,
+    addHref: RUN_AGAIN_HREF,
+    feeScheduleLine: modeled ? feeScheduleLine(v.tenantName, summary.provenance) : null,
+    feesChanged: modeled && currentFee ? feesChangedSince(pinnedVersions, currentFee) : false,
+    assumptionsLine: author ? assumptionsLine(author, v.tenantName, run.created_at) : null,
+    uncoveredNote: modeled ? uncoveredFeeDatesNote(contexts?.uncovered ?? null) : null,
   };
-  const hrefFor = (p: number, s: string) => `${v.basePath}/runs/${run.id}?page=${p}${s !== "all" ? `&status=${s}` : ""}`;
+
+  const link = (over: { view?: HeadlineView; page?: number; status?: string; opage?: number; hash?: string }) => {
+    const q = new URLSearchParams();
+    const shown = over.view ?? chosenView;
+    if (shown) q.set("view", shown);
+    const p = over.page ?? page;
+    if (p > 1) q.set("page", String(p));
+    const st = over.status ?? status;
+    if (st !== "all") q.set("status", st);
+    const op = over.opage ?? orderPage;
+    if (op > 1) q.set("opage", String(op));
+    const qs = q.toString();
+    return `${v.basePath}/runs/${run.id}${qs ? `?${qs}` : ""}${over.hash ? `#${over.hash}` : ""}`;
+  };
+
   return (
     <>
       <BackLink href={v.basePath} label="Model Costs" />
-      <PageHeader title={project.name} description={<Badge tone={state.tone}>{state.label}</Badge>} />
+      <PageHeader
+        title={project.name}
+        description={
+          <span className="flex flex-wrap items-center gap-2">
+            <Badge tone={state.tone}>{state.label}</Badge>
+            {v.staff ? <Badge tone={project.shared_with_brand ? "success" : "warning"}>{project.shared_with_brand ? "Shared with the customer" : "Private to your team"}</Badge> : null}
+          </span>
+        }
+      />
+      {v.staff ? <p className="mb-6 text-sm text-muted">Modeled on behalf of {v.brandName}. The wording and figures below are the ones the customer sees once this scenario is shared.</p> : null}
       <div className="space-y-8">
-        <RunHeadline summary={run.summary} provenance={provenance} />
-        <RunExclusions summary={run.summary} fixHref={project.dataset_id ? `${v.basePath}/orders/${project.dataset_id}` : null} staff={v.staff} />
-        <RunBreakdowns summary={run.summary} />
-        <ShipmentsTable rows={rows} page={page} pageSize={PAGE_SIZE} total={count ?? rows.length} hrefFor={hrefFor} status={status} pricedButExcluded={run.summary.pricedButExcluded.shipments} />
+        <RunHeadline summary={summary} provenance={provenance} view={view} viewHref={(next) => link({ view: next })} />
+        <RunExclusions summary={summary} fixHref={project.dataset_id ? `${v.basePath}/orders/${project.dataset_id}` : null} staff={v.staff} />
+        <OrderFeesCard summary={summary} addHref={RUN_AGAIN_HREF} />
+        <MonthlyChargesCard summary={summary} addHref={RUN_AGAIN_HREF} />
+        <MinimumCard summary={summary} />
+        <NotIncludedCard summary={summary} addHref={RUN_AGAIN_HREF} audience={audience} />
+        <RunBreakdowns summary={summary} />
+        {modeled && orderResults ? <OrdersTable summary={summary} rows={orderRows} page={orderPage} pageSize={PAGE_SIZE} total={orderResults.count ?? orderRows.length} hrefFor={(p) => link({ opage: p, hash: "orders" })} loadError={ordersFailed} /> : null}
+        <ShipmentsTable rows={rows} page={page} pageSize={PAGE_SIZE} total={count ?? rows.length} hrefFor={(p, s) => link({ page: p, status: s, hash: "shipments" })} status={status} pricedButExcluded={summary.pricedButExcluded.shipments} />
         {setup}
       </div>
     </>
@@ -443,17 +580,47 @@ function SingleDetail({ label, children }: { label: string; children: ReactNode 
   );
 }
 
+type ComparableRun = { project: ProjectListRow; run: RunListRow };
+
+/** A completed model that can be compared: an orders-file run or a forecast, with a current (fee-aware) summary. */
+function isComparable(run: RunListRow): boolean {
+  return run.status === "completed" && (fileSummaryOf(run) !== null || forecastSummaryOf(run) !== null);
+}
+
+function compareInput(x: ComparableRun): CompareRunInput | null {
+  const forecast = forecastSummaryOf(x.run);
+  const summary = fileSummaryOf(x.run) ?? forecast;
+  if (!summary) return null;
+  return {
+    summary,
+    datasetId: x.project.dataset_id,
+    datasetName: x.project.order_datasets?.name ?? null,
+    rateCardName: forecast ? forecast.provenance.rateCardName : (x.project.rate_cards?.name ?? null),
+    pricingBasis: x.run.pricing_basis,
+    asOfDate: x.run.as_of_date,
+    serviceOverrideId: x.run.service_override_id,
+    serviceOverrideName: x.run.shipping_services?.name ?? null,
+    overrideAllServices: x.run.assumptions?.overrideAllServices ?? false,
+    // A forecast stores its own assumptions in the same column; only the fields both kinds share are read.
+    assumptions: x.run.assumptions as AssumptionsLike | null,
+  };
+}
+
 export async function ReportsView(v: ModelingView, searchParams: { a?: string; b?: string }) {
   const { projects } = await loadModelingLists(v.supabase, v.brandId);
-  const completed = projects.flatMap((p) => p.simulation_runs.filter((r) => r.kind === "bulk" && r.status === "completed" && r.summary).map((r) => ({ project: p, run: r })));
-  const label = (x: { project: ProjectListRow; run: RunListRow }) => `${x.project.name} · ${x.run.pricing_basis === "fixed_date" && x.run.as_of_date ? `rates of ${formatDate(x.run.as_of_date)}` : "rates on each ship date"} · priced ${formatDate(x.run.finished_at ?? x.run.created_at)}`;
+  const completed: ComparableRun[] = projects.flatMap((p) => p.simulation_runs.filter(isComparable).map((r) => ({ project: p, run: r })));
+  const label = (x: ComparableRun) => {
+    const forecast = forecastSummaryOf(x.run);
+    const rates = forecast ? `rates of ${formatDate(forecast.asOfDate)}` : x.run.pricing_basis === "fixed_date" && x.run.as_of_date ? `rates of ${formatDate(x.run.as_of_date)}` : "rates on each ship date";
+    return `${forecast ? "Forecast: " : ""}${x.project.name} · ${rates} · priced ${formatDate(x.run.finished_at ?? x.run.created_at)}`;
+  };
   const pick = (id: string | undefined) => (id && uuidSchema.safeParse(id).success ? completed.find((x) => x.run.id === id) : undefined);
   const a = pick(searchParams.a);
   const b = pick(searchParams.b);
   return (
     <>
       {v.staff ? <BackLink href={v.basePath} label="Model Costs" /> : null}
-      <PageHeader title="Reports" description="Saved models side by side. PDF reports arrive in a later release." />
+      <PageHeader title="Reports" description="Saved models and forecasts side by side. Every figure is an estimate, never an invoice." />
       {a ? (
         <Card className="mb-6 space-y-4">
           <CardTitle>Compare</CardTitle>
@@ -482,61 +649,68 @@ export async function ReportsView(v: ModelingView, searchParams: { a?: string; b
   );
 }
 
-function CompareTable({ a, b, labelA, labelB }: { a: { project: ProjectListRow; run: RunListRow }; b: { project: ProjectListRow; run: RunListRow }; labelA: string; labelB: string }) {
-  const sa = a.run.summary!;
-  const sb = b.run.summary!;
-  const warnings: string[] = [];
-  if (a.project.dataset_id !== b.project.dataset_id) warnings.push("Different orders files were modeled, so the averages are not directly comparable.");
-  if (Math.abs(Number(sa.coverage.ordersPct) - Number(sb.coverage.ordersPct)) > 5) warnings.push("The share of orders that could be priced differs by more than 5 points.");
-  if (a.run.pricing_basis !== b.run.pricing_basis || a.run.as_of_date !== b.run.as_of_date) warnings.push("The two models use different pricing dates.");
-  if (a.run.service_override_id !== b.run.service_override_id || (a.run.assumptions?.overrideAllServices ?? false) !== (b.run.assumptions?.overrideAllServices ?? false)) warnings.push("The two models price shipments on different services (one is a what-if).");
-  const m = (x: string | null) => (x ? formatMoney({ amount: x, currency: "USD" }) : "—");
-  const pricedOn = (x: { run: RunListRow }) => (x.run.shipping_services?.name ? `${x.run.assumptions?.overrideAllServices ? "everything" : "unmapped shipments"} on ${x.run.shipping_services.name}` : "services in the file");
-  const rows: [string, string, string][] = [
-    ["Orders file", a.project.order_datasets?.name ?? "—", b.project.order_datasets?.name ?? "—"],
-    ["Rate card", a.project.rate_cards?.name ?? "—", b.project.rate_cards?.name ?? "—"],
-    ["Rates", a.run.pricing_basis === "fixed_date" && a.run.as_of_date ? `in effect on ${formatDate(a.run.as_of_date)}` : "each ship date", b.run.pricing_basis === "fixed_date" && b.run.as_of_date ? `in effect on ${formatDate(b.run.as_of_date)}` : "each ship date"],
-    ["Priced on", pricedOn(a), pricedOn(b)],
-    ["Orders modeled", `${sa.modeled.orders.toLocaleString("en-US")} of ${sa.imported.orders.toLocaleString("en-US")} (${sa.coverage.ordersPct}%)`, `${sb.modeled.orders.toLocaleString("en-US")} of ${sb.imported.orders.toLocaleString("en-US")} (${sb.coverage.ordersPct}%)`],
-    ["Estimated cost per order", m(sa.averages.expectedPerOrder), m(sb.averages.expectedPerOrder)],
-    ["Per package", m(sa.averages.expectedPerPackage), m(sb.averages.expectedPerPackage)],
-    ["Projected spend", m(sa.totals.expected), m(sb.totals.expected)],
-    ["From rate card", m(sa.totals.definite), m(sb.totals.definite)],
-    ["Based on assumptions", m(sa.totals.estimated), m(sb.totals.estimated)],
-    ["Could not be decided (up to)", m(sa.exposure.unresolved.amount), m(sb.exposure.unresolved.amount)],
-    ["May be added after shipping (up to)", m(sa.exposure.conditional.amount), m(sb.exposure.conditional.amount)],
-  ];
+const COMPARE_GROUP_TITLE = { basis: "What each one is based on", figures: "Per order", allin: "All-in, with monthly charges spread over orders" } as const;
+
+function CompareTable({ a, b, labelA, labelB }: { a: ComparableRun; b: ComparableRun; labelA: string; labelB: string }) {
+  const ia = compareInput(a);
+  const ib = compareInput(b);
+  if (!ia || !ib) return <Alert tone="warning">One of these models has no results that can be compared. Run it again to price it with the current fees.</Alert>;
+  const c = buildComparison(ia, ib);
+  const groups = (["basis", "figures", "allin"] as const).map((g) => ({ group: g, rows: c.rows.filter((r) => r.group === g) }));
   return (
-    <div className="space-y-3">
-      {warnings.length ? (
+    <div className="space-y-4">
+      {c.warnings.length ? (
         <Alert tone="warning">
           <ul className="list-disc space-y-1 pl-5">
-            {warnings.map((w) => (
+            {c.warnings.map((w) => (
               <li key={w}>{w}</li>
             ))}
           </ul>
         </Alert>
       ) : null}
+      {c.changes.length ? (
+        <div className="space-y-1 text-sm">
+          <p className="font-medium">What differs in the assumptions</p>
+          <ul className="list-disc space-y-1 pl-5 text-muted">
+            {c.changes.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       <div className="overflow-x-auto" tabIndex={0} role="region" aria-label="Comparison">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-muted">
-              <th className="py-1 pr-3 font-medium" />
+              <th className="py-1 pr-3 font-medium">
+                <span className="sr-only">Figure</span>
+              </th>
               <th className="py-1 pr-3 font-medium">{labelA}</th>
               <th className="py-1 font-medium">{labelB}</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-line">
-            {rows.map(([label, x, y]) => (
-              <tr key={label}>
-                <td className="py-2 pr-3 text-muted">{label}</td>
-                <td className="tabular py-2 pr-3">{x}</td>
-                <td className="tabular py-2">{y}</td>
+          {groups.map(({ group, rows }) => (
+            <tbody key={group} className="divide-y divide-line">
+              <tr>
+                <th colSpan={3} scope="colgroup" className="pt-4 pb-1 text-left text-xs font-semibold tracking-wide text-muted uppercase">
+                  {COMPARE_GROUP_TITLE[group]}
+                </th>
               </tr>
-            ))}
-          </tbody>
+              {rows.map((r) => (
+                <tr key={r.label} className={r.muted ? "text-muted" : undefined}>
+                  <th scope="row" className="py-2 pr-3 text-left font-normal text-muted">
+                    {r.label}
+                    {r.note ? <span className="mt-1 block text-xs font-normal">{r.note}</span> : null}
+                  </th>
+                  <td className="tabular py-2 pr-3">{r.a}</td>
+                  <td className="tabular py-2">{r.b}</td>
+                </tr>
+              ))}
+            </tbody>
+          ))}
         </table>
       </div>
+      {!c.allInComparable && c.allInNote ? <p className="text-sm text-muted">{c.allInNote}</p> : null}
     </div>
   );
 }

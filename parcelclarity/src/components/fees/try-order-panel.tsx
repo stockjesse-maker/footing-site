@@ -18,7 +18,7 @@ import type { FieldErrors } from "@/lib/auth/validation";
  * which runs the same engine the customer's models use.
  */
 
-interface Priced {
+export interface Priced {
   result: OrderFeeResult;
   versionNumber: number;
 }
@@ -79,6 +79,9 @@ export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId:
       setPriced({ result: outcome.result, versionNumber: outcome.versionNumber });
     });
   };
+
+  // An empty version would otherwise read "every applicable fee was computed: $0.00", which says the order is free.
+  if (!rules.length) return <p className="text-sm text-muted">This version has no rules yet, so there is nothing to price. Add a rule above, then try an order.</p>;
 
   return (
     <div className="space-y-6">
@@ -220,39 +223,45 @@ export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId:
       {message ? <Alert tone="danger">{message}</Alert> : null}
 
       <div aria-live="polite">
-        {priced ? <Outcome priced={priced} namesByKey={namesByKey} /> : null}
+        {priced ? <TryOrderOutcome priced={priced} namesByKey={namesByKey} /> : null}
       </div>
     </div>
   );
 }
 
-function Outcome({ priced, namesByKey }: { priced: Priced; namesByKey: Map<string, string> }) {
+export function TryOrderOutcome({ priced, namesByKey }: { priced: Priced; namesByKey: Map<string, string> }) {
   const { result, versionNumber } = priced;
   const blocking = result.unresolved.filter((u) => u.reason !== "replaced");
   const replaced = result.unresolved.filter((u) => u.reason === "replaced");
   const status =
     result.status === "ok" ? "Every applicable fee was computed." : result.status === "partial" ? "Some fees could not be computed. The amounts below are only what was computed." : "Nothing could be computed from what you entered.";
+  // Nothing computed is not $0.00: the totals say so instead of printing zeros.
+  const nothing = result.status === "no_content";
+  const figure = (e4: number) => (nothing ? <span className="text-muted">Not computed</span> : moneyE4(e4));
   return (
     <section aria-labelledby="try-result-heading" className="space-y-4 rounded-card border border-line bg-surface p-4 sm:p-5">
       <div>
         <h3 id="try-result-heading" className="text-base font-semibold">
-          What this order is charged
+          What this order would be charged in order fees
         </h3>
         <p className="mt-0.5 text-sm text-muted">Priced on version {versionNumber}. {status}</p>
+        <p className="mt-0.5 text-sm text-muted">
+          Order fees only, and a trial rather than an invoice. Storage, receiving, returns, flat monthly fees and the account minimum are worked out per month, not per order, so they are not in these amounts.
+        </p>
       </div>
 
       <dl className="grid gap-3 sm:grid-cols-3">
         <div>
           <dt className="text-sm text-muted">Definite fees</dt>
-          <dd className="tabular text-lg font-semibold">{moneyE4(result.definiteE4)}</dd>
+          <dd className="tabular text-lg font-semibold">{figure(result.definiteE4)}</dd>
         </div>
         <div>
           <dt className="text-sm text-muted">Estimated fees</dt>
-          <dd className="tabular text-lg font-semibold">{moneyE4(result.estimatedE4)}</dd>
+          <dd className="tabular text-lg font-semibold">{figure(result.estimatedE4)}</dd>
         </div>
         <div>
-          <dt className="text-sm text-muted">{result.status === "ok" ? "Together" : "Computed fees together"}</dt>
-          <dd className="tabular text-lg font-semibold">{moneyE4(result.definiteE4 + result.estimatedE4)}</dd>
+          <dt className="text-sm text-muted">{result.status === "ok" ? "Together" : "At least, with the fees not computed left out"}</dt>
+          <dd className="tabular text-lg font-semibold">{figure(result.definiteE4 + result.estimatedE4)}</dd>
         </div>
       </dl>
 
@@ -271,7 +280,7 @@ function Outcome({ priced, namesByKey }: { priced: Priced; namesByKey: Map<strin
             </li>
           ))}
         </ul>
-      ) : (
+      ) : nothing ? null : (
         <p className="text-sm text-muted">No fee produced a charge for this order.</p>
       )}
 

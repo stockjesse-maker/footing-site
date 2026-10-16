@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { NOT_SUPPORTED_ITEMS, NotSupportedPanel } from "@/components/fees/not-supported";
 import { PRESETS, blank, buildInput, splitTypes, valuesFromRule, type Values } from "@/components/fees/rule-model";
 import { FeeScheduleView, describeEffectivity, describeRounding } from "@/components/fees/schedule-view";
-import { dollars, moneyE4, resolveMinimumMembers, slugify, textOf, tidy } from "@/components/fees/shared";
+import { countsRules, dollars, moneyE4, resolveMinimumMembers, slugify, textOf, tidy, versionInEffect } from "@/components/fees/shared";
 import { buildTryOrderInput, tryOrderShape, type TryFields } from "@/components/fees/try-order-model";
 import { calculateMonthlyFees, calculateOrderFees } from "@/engine/fees";
 import type { FeeRule, FeeScheduleSnapshot, OrderFeeContext } from "@/engine/fees/types";
@@ -95,6 +95,31 @@ describe("shared helpers", () => {
     expect(slugify("Pick & pack, per order")).toBe("pick_and_pack_per_order");
     expect(slugify("3PL handling")).toBe("r_3pl_handling");
     expect(slugify("   ")).toBe("");
+  });
+
+  it("finds the version pricing uses on a day the way app.fee_version_on does", () => {
+    const v = (versionNumber: number, status: string, effectiveDate: string | null, expirationDate: string | null = null) => ({ versionNumber, status, effectiveDate, expirationDate });
+    const today = "2026-06-15";
+    // An archived version keeps pricing inside its dates (history stays explainable); archiving does not end it.
+    expect(versionInEffect([v(1, "archived", "2026-01-01")], today)?.versionNumber).toBe(1);
+    // An active version beats an archived one that covers the same day, whatever their numbers.
+    expect(versionInEffect([v(3, "archived", "2026-01-01"), v(2, "active", "2026-03-01")], today)?.versionNumber).toBe(2);
+    // Between two versions of the same standing, the newest.
+    expect(versionInEffect([v(1, "archived", "2026-01-01"), v(2, "archived", "2026-02-01")], today)?.versionNumber).toBe(2);
+    // Not yet started, already ended, a draft and a discarded draft never price today.
+    expect(versionInEffect([v(1, "active", "2026-07-01")], today)).toBeNull();
+    expect(versionInEffect([v(1, "active", "2026-01-01", "2026-06-14")], today)).toBeNull();
+    expect(versionInEffect([v(1, "draft", null), v(2, "discarded", null)], today)).toBeNull();
+    // The last effective day still counts.
+    expect(versionInEffect([v(1, "active", "2026-01-01", "2026-06-15")], today)?.versionNumber).toBe(1);
+  });
+
+  it("counts rules only where the stored count is meaningful", () => {
+    // fee_schedule_versions.rule_count is written at activation, so a draft (and a discarded draft) holds 0 however many rules it has.
+    expect(countsRules({ status: "draft" })).toBe(false);
+    expect(countsRules({ status: "discarded" })).toBe(false);
+    expect(countsRules({ status: "active" })).toBe(true);
+    expect(countsRules({ status: "archived" })).toBe(true);
   });
 
   it("resolves the minimum's members exactly as activation does", () => {

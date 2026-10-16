@@ -132,28 +132,29 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
   const patch = (next: Partial<ForecastFormState>) => setState((s) => ({ ...s, ...next }));
 
   // --- What there is to choose from, re-read when the date, ship-from ZIP or rate card changes ---
+  const originOk = /^\d{5}$/.test(state.originZip);
+  const choiceKey = `${state.rateCardId}|${asOfDate}|${originOk ? state.originZip : ctx.originZip}`;
   const loaded = useRef(`${context.rateCard.id}|${context.asOfDate}|${context.originZip}`);
   const request = useRef(0);
-  const [ctxProblem, setCtxProblem] = useState<string | null>(null);
+  // A failed read belongs to the date, ZIP and card it was made for: asking for another and coming back clears it.
+  const [ctxFailure, setCtxFailure] = useState<{ key: string; message: string } | null>(null);
+  const ctxProblem = ctxFailure !== null && ctxFailure.key === choiceKey ? ctxFailure.message : null;
   const [loadingChoices, startChoices] = useTransition();
   useEffect(() => {
-    if (!isoDate(asOfDate)) return;
-    const originOk = /^\d{5}$/.test(state.originZip);
-    const key = `${state.rateCardId}|${asOfDate}|${originOk ? state.originZip : ctx.originZip}`;
-    if (key === loaded.current) return;
+    // Whatever was asked for before is out of date as soon as the date, ZIP or card changes, even if the answer is already on screen.
     const mine = ++request.current;
+    if (!isoDate(asOfDate) || choiceKey === loaded.current) return;
     startChoices(async () => {
       const result = await loadForecastFormContext({ asOfDate, originZip: originOk ? state.originZip : undefined, rateCardId: state.rateCardId }, brandId);
       if (mine !== request.current) return;
       if (result.status === "ok") {
-        loaded.current = key;
+        loaded.current = choiceKey;
         setCtx(result);
-        setCtxProblem(null);
+        setCtxFailure(null);
         setState((s) => reconcileState(s, result));
-      } else if (result.status === "no_rates" || result.status === "failed") setCtxProblem(result.message);
-      else setCtxProblem("No rate card is assigned to this customer.");
+      } else setCtxFailure({ key: choiceKey, message: result.status === "no_rates" || result.status === "failed" ? result.message : "No rate card is assigned to this customer." });
     });
-  }, [asOfDate, state.originZip, state.rateCardId, ctx.originZip, brandId]);
+  }, [choiceKey, asOfDate, originOk, state.originZip, state.rateCardId, brandId]);
 
   // --- Validation, preview, save ---
   const built = useMemo(() => buildAssumptions(state, ctx, asOfDate), [state, ctx, asOfDate]);

@@ -502,6 +502,52 @@ describe("the result renders", () => {
     expect(t).not.toMatch(/Pallet storage[^.]{0,40}\$0\.00/);
   });
 
+  it("says 'not computed', never $0.00, for monthly charges none of which could be computed", () => {
+    // A schedule of two storage charges and no answers: every monthly figure is unknown, and there are no order fees to count.
+    const storage = schedules.storage_surcharge!;
+    const summary = summaryOf(assumptions({ fulfillment: NO_ANSWERS }), deps({ schedule: storage }));
+    const data = forecastResultData(summary, "brand");
+    expect(data.headline.kind).toBe("at_least");
+    expect(data.headline.parts.monthlyCharges).toBeNull();
+    const t = text(renderToStaticMarkup(createElement(ForecastResult, { data, audience: "brand", onAdd: () => undefined })));
+    expect(t).toContain("Counted so far: shipping");
+    expect(t).toMatch(/monthly charges not computed\./);
+    expect(t).not.toMatch(/monthly charges \$0\.00/);
+    // The monthly card says so as well, and the volume table does not print a zero for what is unknown.
+    expect(t).toContain("None could be computed from what you gave.");
+    const sensitivity = text(renderToStaticMarkup(createElement(ForecastResult, { data, audience: "brand" }))).split("Cost per order at other volumes")[1]!;
+    expect(sensitivity).toContain("not computed");
+    expect(sensitivity).not.toMatch(/Monthly charges spread[^]*?\$0\.00 \$/);
+  });
+
+  it("says 'not computed', never $0.00, when no order fee could be computed", () => {
+    // Only the inserts fee, with no answer: no order fee is counted, and the card names it instead of printing "$0.00 a month".
+    const onlyInserts = { ...standard, rules: standard.rules.filter((r) => r.key === "inserts") };
+    const summary = summaryOf(assumptions({ fulfillment: NO_ANSWERS }), deps({ schedule: onlyInserts }));
+    expect(summary.processing!.byRule).toEqual([]);
+    const data = forecastResultData(summary, "brand");
+    expect(data.headline.parts.orderFees).toBeNull();
+    const t = text(renderToStaticMarkup(createElement(ForecastResult, { data, audience: "brand", onAdd: () => undefined })));
+    expect(t).toMatch(/order fees not computed/);
+    expect(t).toContain("None of the order fees could be computed from what you gave.");
+    // (The tags are replaced by spaces in `text`, so the bold name and the colon after it read as "Marketing inserts :".)
+    expect(t).toContain("Marketing inserts : not computed for 100.00% of orders, because a number it needs was not given.");
+    expect(t).not.toContain("No order fee applied");
+    expect(t).not.toMatch(/Order fees \$0\.00 a month/);
+  });
+
+  it("names the fees that could not be computed for part of the orders, beside the ones that were", () => {
+    // Without the catch-all packaging fee, packaging "pouch" is on no packaging fee: those orders are not charged one, and the card says for how many.
+    const noCatchAll = { ...standard, rules: standard.rules.filter((r) => r.key !== "pack_other") };
+    const a = assumptions({ parcels: [{ weightLb: "1", lengthIn: "10", widthIn: "8", heightIn: "4", packagingType: "box", sharePct: "70" }, { weightLb: "0.5", packagingType: "pouch", sharePct: "30", unknownSize: true }] });
+    const summary = summaryOf(a, deps({ schedule: noCatchAll }));
+    const u = summary.processing!.unresolved.find((x) => x.reason === "packaging_unmatched");
+    expect(u).toBeDefined();
+    const t = text(renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(summary, "brand"), audience: "brand" })));
+    expect(t).toContain("not counting the fees listed below");
+    expect(t).toContain(`${u!.name} : not computed for ${u!.sharePct}% of orders, because no charge on the fee schedule covers this packaging.`);
+  });
+
   it("links Add to the fulfillment section on a saved forecast", () => {
     const html = renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(missing, "brand"), audience: "brand", editHref: "/portal/model/forecast?from=abc" }));
     expect(html).toContain('href="/portal/model/forecast?from=abc#forecast-fulfillment"');
@@ -511,12 +557,12 @@ describe("the result renders", () => {
   it("uses the brand's vocabulary for a brand and the plain classes for staff", () => {
     const brand = text(renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(full, "brand"), audience: "brand" })));
     const staff = text(renderToStaticMarkup(createElement(ForecastResult, { data: forecastResultData(full, "staff"), audience: "staff" })));
-    expect(brand).toContain("From your fee schedule");
+    expect(brand).toContain("From your rate card");
     expect(brand).toContain("Based on assumptions");
     expect(brand).not.toContain("Definite");
     expect(staff).toContain("Definite");
     expect(staff).toContain("Estimated");
-    expect(staff).not.toContain("From your fee schedule");
+    expect(staff).not.toContain("From your rate card");
   });
 
   it("shows only the shipping figure, with the reason, when fulfillment costs were skipped", () => {
