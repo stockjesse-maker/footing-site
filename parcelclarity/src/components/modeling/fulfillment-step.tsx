@@ -69,15 +69,15 @@ function unitSuffix(q: DriverQuestion): string {
 }
 
 export function FulfillmentStep(p: FulfillmentStepProps) {
-  const { id, audience, state, setState, errors } = p;
+  const { id, audience, schedule, period, showPackaging, showContent, state, setState, errors, headingRef } = p;
   const you = audience === "brand";
-  const { sentence, notes, volume } = describePeriodVolume(p.period);
+  const { sentence, notes, volume } = describePeriodVolume(period);
   const patch = (next: Partial<FulfillmentFormState>) => setState((s) => ({ ...s, ...next }));
   const volumeError = errors.monthlyOrders;
-  const when = formatDate(p.schedule.effectiveDate);
+  const when = formatDate(schedule.effectiveDate);
   const intro = you
-    ? `Your fee schedule ${p.schedule.name} (in effect from ${when}) charges for things your orders file does not say. Answer what you know; anything you leave out is shown as not included, never as $0.`
-    : `The customer's fee schedule ${p.schedule.name} (in effect from ${when}) charges for things the orders file does not say. Answer what the customer knows; anything left out is shown as not included, never as $0.`;
+    ? `Your fee schedule ${schedule.name} (in effect from ${when}) charges for things your orders file does not say. Answer what you know; anything you leave out is shown as not included, never as $0.`
+    : `The customer's fee schedule ${schedule.name} (in effect from ${when}) charges for things the orders file does not say. Answer what the customer knows; anything left out is shown as not included, never as $0.`;
 
   const rowsTotal = (() => {
     let total = new D(0);
@@ -93,19 +93,21 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
   return (
     <section aria-labelledby={`${id}-heading`} className="space-y-6">
       <div className="space-y-2">
-        <h3 id={`${id}-heading`} ref={p.headingRef} tabIndex={-1} className="text-base font-semibold tracking-tight outline-none">
+        <h3 id={`${id}-heading`} ref={headingRef} tabIndex={-1} className="text-base font-semibold tracking-tight outline-none">
           Fulfillment costs
         </h3>
         <p className="text-sm text-muted">{intro}</p>
       </div>
 
-      <label className="flex min-h-11 items-start gap-3 text-sm">
-        <input type="checkbox" checked={state.skip} onChange={(e) => patch({ skip: e.target.checked })} className="mt-1 size-5 shrink-0 accent-accent" />
-        <span>
-          <span className="font-medium">Skip fulfillment costs (shipping only)</span>
-          <span className="block text-muted">The run prices shipping only: no order fees, monthly charges or all-in figures.</span>
-        </span>
-      </label>
+      <div className="space-y-0.5">
+        <label className="flex min-h-11 items-center gap-3 text-sm font-medium">
+          <input type="checkbox" checked={state.skip} onChange={(e) => patch({ skip: e.target.checked })} aria-describedby={`${id}-skip-help`} className="size-5 shrink-0 accent-accent" />
+          Skip fulfillment costs (shipping only)
+        </label>
+        <p id={`${id}-skip-help`} className="pl-8 text-sm text-muted">
+          The run prices shipping only: no order fees, monthly charges or all-in figures.
+        </p>
+      </div>
 
       <fieldset disabled={state.skip} className="min-w-0 space-y-6 border-0 p-0 disabled:opacity-60">
         <legend className="sr-only">Fulfillment cost questions</legend>
@@ -149,7 +151,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
         </fieldset>
 
         {/* 2. One question per driver */}
-        {p.schedule.questions.map((q, index) => {
+        {schedule.questions.map((q, index) => {
           const qid = `${id}-q${index}`;
           const key = q.answers === "orderShares" ? `orderShares.${q.key}` : `drivers.${q.key}`;
           const error = errors[key];
@@ -172,7 +174,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
               <ul className="space-y-0.5 text-sm text-muted">
                 {q.rules.map((r) => (
                   <li key={`${r.name}-${r.describe}`}>
-                    <span className="font-medium text-fg">{r.name}</span>: {r.describe}
+                    <span className="font-medium text-fg">{r.name}</span>: {r.describe.endsWith(".") ? r.describe : `${r.describe}.`}
                   </li>
                 ))}
               </ul>
@@ -234,7 +236,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
         })}
 
         {/* 3. Packaging default */}
-        {p.showPackaging && p.schedule.packagingTypes.length > 0 ? (
+        {showPackaging && schedule.packagingTypes.length > 0 ? (
           <Field
             id={`${id}-packaging`}
             label="Packaging for packages the file does not name"
@@ -244,7 +246,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
             {(aria) => (
               <Select {...aria} value={state.packagingDefault} onChange={(e) => patch({ packagingDefault: e.target.value })}>
                 <option value="">Not sure</option>
-                {[...new Set([...p.schedule.packagingTypes, ...(state.packagingDefault && !p.schedule.packagingTypes.includes(state.packagingDefault) ? [state.packagingDefault] : [])])].map((t) => (
+                {[...new Set([...schedule.packagingTypes, ...(state.packagingDefault && !schedule.packagingTypes.includes(state.packagingDefault) ? [state.packagingDefault] : [])])].map((t) => (
                   <option key={t} value={t}>
                     {t.charAt(0).toUpperCase()}
                     {t.slice(1)}
@@ -256,7 +258,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
         ) : null}
 
         {/* 4. Order content */}
-        {p.showContent ? (
+        {showContent ? (
           <fieldset className="min-w-0 space-y-2 border-0 p-0">
             <legend className="text-sm font-semibold">What is in a typical order</legend>
             <p className="text-sm text-muted">
@@ -305,7 +307,6 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
                                     onChange={(e) => set({ [c.field]: e.target.value })}
                                     aria-invalid={err ? true : undefined}
                                     aria-describedby={err ? `${inputId}-err` : undefined}
-                                    className="px-2"
                                   />
                                   <ErrorText id={`${inputId}-err`}>{err}</ErrorText>
                                 </div>
@@ -325,7 +326,7 @@ export function FulfillmentStep(p: FulfillmentStepProps) {
                         Add a row
                       </Button>
                       <p className="text-sm text-muted" aria-live="polite">
-                        {rowsTotal ? `Shares add up to ${rowsTotal.toFixed(2)}%; they must add up to exactly 100.00%.` : "Shares must add up to exactly 100.00%."}
+                        {rowsTotal ? (rowsTotal.eq(100) ? "Shares add up to 100.00%." : `Shares add up to ${rowsTotal.toFixed(2)}%; they must add up to exactly 100.00%.`) : "Shares must add up to exactly 100.00%."}
                       </p>
                     </div>
                     <ErrorText id={`${id}-rows-err`}>{errors["orderContent.rows"]}</ErrorText>

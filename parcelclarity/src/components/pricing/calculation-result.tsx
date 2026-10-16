@@ -3,8 +3,10 @@ import { VerificationBadge } from "@/components/pricing/rule-form";
 import { formatDate } from "@/lib/format/date";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Stat } from "@/components/ui/stat";
+import type { BoxFieldRef, OrderFeeLineView, OrderFeeNotComputedView, OrderFeesView } from "@/lib/pricing/calculator-schema";
 import type { ChargeClass, ChargeLine, LineStatus, Money, PackageWeightResult, RuleReference, ShipmentCalculation, UnavailableReason, WarningCode } from "@/engine/types";
 
 /**
@@ -35,6 +37,21 @@ export function formatDecimal(value: string): string {
 }
 
 const isPositive = (m: Money) => Number(m.amount) > 0;
+
+/** A saved single result carries the order fees that were shown with it (customer-safe: no rule keys). */
+export type StoredShipmentResult = ShipmentCalculation & { orderFees?: OrderFeesView };
+
+const dollars = (amount: string) => formatMoney({ amount, currency: "USD" });
+
+/**
+ * "Shipping + order fees" as one cell: the figure, "At least" figure when some fee was left out, "Not
+ * computed" when none could be; a fee left out is never printed as $0.
+ */
+export function feesTotalText(fees: OrderFeesView | null | undefined): string {
+  if (!fees) return "—";
+  if (fees.combined === null) return "Not computed";
+  return fees.status === "ok" ? dollars(fees.combined) : `At least ${dollars(fees.combined)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Labels
@@ -405,11 +422,135 @@ function References({ references, uid }: { references: ShipmentCalculation["refe
 }
 
 // ---------------------------------------------------------------------------
+// Order fees ("What's in the box")
+// ---------------------------------------------------------------------------
+
+function FeeLineRow({ line, audience }: { line: OrderFeeLineView; audience: ResultAudience }) {
+  const cls = (audience === "brand" ? BRAND_CHARGE_CLASS : CHARGE_CLASS)[line.chargeClass];
+  return (
+    <li className="flex items-start justify-between gap-4 py-3">
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">{line.name}</span>
+          <Badge tone={cls.tone}>{cls.label}</Badge>
+        </div>
+        <p className="text-sm text-muted">{line.explanation}</p>
+        {audience === "staff" && line.ruleKey ? <span className="font-mono text-xs text-muted">{line.ruleKey}</span> : null}
+      </div>
+      <span className="tabular shrink-0 pt-0.5 font-medium">{dollars(line.amount)}</span>
+    </li>
+  );
+}
+
+function NotComputedRow({ item, audience, onAdd }: { item: OrderFeeNotComputedView; audience: ResultAudience; onAdd?: (field: BoxFieldRef) => void }) {
+  const add = item.add;
+  return (
+    <li className="flex flex-col gap-2 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">{item.name}</span>
+          <Badge tone="neutral">Not computed</Badge>
+        </div>
+        <p className="text-sm text-muted">{item.reason}</p>
+        {item.rate ? <p className="text-sm text-muted">Rate: {item.rate}</p> : null}
+        {audience === "staff" && item.ruleKey ? <span className="font-mono text-xs text-muted">{item.ruleKey}</span> : null}
+      </div>
+      {add && onAdd ? (
+        <Button type="button" size="md" variant="secondary" className="self-start" onClick={() => onAdd(add.field)}>
+          {add.label}
+        </Button>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * The order fees of one result: shipping, order fees and their sum for this order under the heading that
+ * says monthly charges are not included, every fee with its explanation, and every fee that could not be
+ * computed with the reason, the rate and what to add. A fee left out is never shown as $0 and a figure that
+ * leaves some out reads "At least". Staff additionally see the rule key of each line.
+ */
+export function OrderFeesSection({ fees, audience, uid, onAdd }: { fees: OrderFeesView; audience: ResultAudience; uid: string; onAdd?: (field: BoxFieldRef) => void }) {
+  const partial = fees.status !== "ok";
+  const left = fees.notComputed.length;
+  const atLeast = partial && fees.orderFees !== null ? " (at least)" : "";
+  return (
+    <section aria-labelledby={`${uid}-fees`} className="space-y-3">
+      <SectionHeading id={`${uid}-fees`}>Shipping + order fees for this order (monthly charges not included)</SectionHeading>
+      <p className="text-sm text-muted">
+        In the box: {fees.box}. Fee schedule <span className="font-medium text-fg">{fees.schedule.name}</span>, in effect from {formatDate(fees.schedule.effectiveDate)}
+        {audience === "staff" && fees.schedule.versionNumber !== undefined ? ` (version ${fees.schedule.versionNumber})` : ""}.
+      </p>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Stat label="Shipping" value={dollars(fees.shipping)} note="Expected shipping cost of this shipment." />
+        <Stat
+          label={`Order fees${atLeast}`}
+          value={fees.orderFees === null ? "Not computed" : dollars(fees.orderFees)}
+          note={fees.orderFees === null ? "Add what is missing to see them." : left ? `${left === 1 ? "1 fee is" : `${left} fees are`} left out below.` : "Charged on this order."}
+        />
+        <Stat
+          label={`Shipping + order fees${atLeast}`}
+          value={fees.combined === null ? "Not computed" : dollars(fees.combined)}
+          note={partial ? "Leaves out the fees listed below; an estimate, not an invoice." : "An estimate, not an invoice."}
+        />
+      </div>
+      {fees.lines.length ? (
+        <Card className="px-5 py-4 sm:px-6">
+          <h4 className="font-medium">Order fees</h4>
+          <ul className="mt-1 divide-y divide-line">
+            {fees.lines.map((line, i) => (
+              <FeeLineRow key={`${i}-${line.name}`} line={line} audience={audience} />
+            ))}
+          </ul>
+        </Card>
+      ) : fees.status === "ok" ? (
+        <p className="text-sm text-muted">No order fees apply to what is in the box.</p>
+      ) : null}
+      {left ? (
+        <Card className="px-5 py-4 sm:px-6">
+          <h4 className="font-medium">Not computed</h4>
+          <p className="text-sm text-muted">These fees are left out of the totals above, not counted as $0.</p>
+          <ul className="mt-1 divide-y divide-line">
+            {fees.notComputed.map((item, i) => (
+              <NotComputedRow key={`${i}-${item.name}`} item={item} audience={audience} onAdd={onAdd} />
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+      {fees.notes.map((note) => (
+        <p key={note} className="text-sm text-muted">
+          {note}
+        </p>
+      ))}
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 
-export function CalculationResult({ result, audience = "staff", cardName, effectiveDate, shipDate }: { result: ShipmentCalculation; audience?: ResultAudience; cardName?: string; effectiveDate?: string | null; shipDate?: string | null }) {
+export function CalculationResult({
+  result,
+  audience = "staff",
+  cardName,
+  effectiveDate,
+  shipDate,
+  fees,
+  onAddFeeInput,
+}: {
+  result: ShipmentCalculation;
+  audience?: ResultAudience;
+  cardName?: string;
+  effectiveDate?: string | null;
+  shipDate?: string | null;
+  /** Order fees of this result; when omitted, the ones stored with a saved result (if any). null = none to show. */
+  fees?: OrderFeesView | null;
+  /** Calculator only: focuses the box field a not-computed fee needs. */
+  onAddFeeInput?: (field: BoxFieldRef) => void;
+}) {
   const unavailable = result.status === "unavailable";
+  const orderFees = fees === undefined ? ((result as StoredShipmentResult).orderFees ?? null) : fees;
   // Section ids are unique per result, so several results on one page (the comparison) stay distinct for assistive technology.
   const uid = useId();
   return (
@@ -435,6 +576,7 @@ export function CalculationResult({ result, audience = "staff", cardName, effect
       ) : null}
       <p className="text-sm text-muted">{ESTIMATE_NOTICE}</p>
 
+      {!unavailable && orderFees ? <OrderFeesSection fees={orderFees} audience={audience} uid={uid} onAdd={onAddFeeInput} /> : null}
       {result.packages.length ? <BillableWeights result={result} uid={uid} /> : null}
       {result.zone ? <ZoneLine zone={result.zone} /> : null}
       {result.lines.length ? <ItemizedCharges result={result} audience={audience} uid={uid} /> : null}

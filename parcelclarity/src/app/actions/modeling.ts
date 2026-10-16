@@ -9,8 +9,9 @@ import { ENGINE_VERSION, type ShipmentInput } from "@/engine/types";
 import type { ActionState } from "@/lib/actions";
 import { getContext, requireUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/permissions";
-import { fieldErrors, uuidSchema } from "@/lib/auth/validation";
+import { fieldErrors, uuidSchema, type FieldErrors } from "@/lib/auth/validation";
 import { ORDER_FILE_LIMITS, ParseError, detectFileKind, parseTables, type Table } from "@/lib/import/parse-table";
+import { canonicaliseAssumptions, fulfillmentProblemFromSql, parseFulfillmentField, type FulfillmentLike } from "@/lib/modeling/assumptions";
 import { BatchRetryError, RpcError, priceBatchCore, createBatchCaches, type ProjectRecord, type RunProgress, type RunRecord } from "@/lib/modeling/run";
 import { decimalText, weightToLb } from "@/lib/orders/cells";
 import { detectOrderFile } from "@/lib/orders/mapping";
@@ -20,7 +21,8 @@ import type { OrderMapping, OrderValidationReport, SkuProfileInput } from "@/lib
 import { applyOrderMapping } from "@/lib/orders/validate";
 import { loadServiceCatalog } from "@/lib/pricing/catalog";
 import { calculatorRequestSchema } from "@/lib/pricing/calculator-schema";
-import { customerSafe } from "@/lib/pricing/customer-safe";
+import { customerSafe, priceOrderFees } from "@/lib/pricing/customer-safe";
+import { loadBrandFeeSchedule } from "@/lib/fees/queries";
 import { loadPricingContext } from "@/lib/pricing/snapshot";
 import { RATE_LIMITED_MESSAGE, withinRateLimit } from "@/lib/rate-limit";
 import { createClient } from "@/lib/supabase/server";
@@ -315,6 +317,8 @@ export async function createBulkScenario(_prev: ActionState, formData: FormData)
   if (!ids.success) return { ok: false, message: "Choose a rate card.", values };
   if (!settings.success) return { ok: false, errors: fieldErrors(settings.error), values };
   if (settings.data.pricingBasis === "fixed_date" && !settings.data.asOfDate) return { ok: false, errors: { asOfDate: "Choose the date whose rates to use." }, values };
+  const fulfillment = parseFulfillmentField(formData.get("fulfillment"));
+  if (!fulfillment.ok) return { ok: false, errors: fulfillment.errors, values };
 
   const supabase = await createClient();
   if (!(await withinRateLimit(supabase, "modeling.run", 60, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE, values };
@@ -329,19 +333,27 @@ export async function createBulkScenario(_prev: ActionState, formData: FormData)
     .single();
   if (error || !project) return { ok: false, message: error?.code === "42501" ? "That rate card is not assigned to this customer." : GENERIC_FAILURE, values };
 
-  const started = await startRun(supabase, project.id, settings.data);
-  if (!started.ok) return { ok: false, message: started.message, values };
+  const started = await startRun(supabase, project.id, settings.data, fulfillment.value);
+  if (!started.ok) {
+    // Nothing was run: the scenario made for this attempt is archived so a corrected resubmit does not leave a trail of empty ones.
+    await supabase.from("simulation_projects").update({ archived_at: new Date().toISOString() }).eq("id", project.id).eq("brand_id", m.brandId).is("archived_at", null);
+    return { ok: false, message: started.message, errors: started.errors, values };
+  }
   redirect(`${m.basePath}/runs/${started.runId}`);
 }
 
-async function startRun(supabase: Awaited<ReturnType<typeof createClient>>, projectId: string, s: z.infer<typeof runSettingsSchema>): Promise<{ ok: true; runId: string } | { ok: false; message: string }> {
+type StartRunResult = { ok: true; runId: string } | { ok: false; message?: string; errors?: FieldErrors };
+
+async function startRun(supabase: Awaited<ReturnType<typeof createClient>>, projectId: string, s: z.infer<typeof runSettingsSchema>, fulfillment: FulfillmentLike | undefined): Promise<StartRunResult> {
+  // Canonical (sorted keys, "12.0" = "12", empty objects dropped) so an identical resubmission attaches to the live run instead of failing with "different settings".
+  const assumptions = canonicaliseAssumptions({ residentialDefault: s.residentialDefault, originZipDefault: s.originZipDefault, overrideAllServices: s.overrideAllServices, fulfillment });
   const { data, error } = await supabase.rpc("start_simulation_run", {
     p_project: projectId,
     p_pricing_basis: s.pricingBasis,
     p_as_of_date: s.asOfDate,
     p_service_override: s.serviceOverrideId,
     p_unmapped_policy: s.unmappedPolicy,
-    p_assumptions: { residentialDefault: s.residentialDefault, originZipDefault: s.originZipDefault, overrideAllServices: s.overrideAllServices },
+    p_assumptions: assumptions,
   });
   if (error) {
     const msg = error.message;
@@ -350,6 +362,10 @@ async function startRun(supabase: Awaited<ReturnType<typeof createClient>>, proj
     if (msg.includes("as-of date")) return { ok: false, message: "Choose the date whose rates to use." };
     if (msg.includes("not ready")) return { ok: false, message: "The orders file is not ready." };
     if (msg.includes("different settings")) return { ok: false, message: "A run with different settings is still in progress; wait for it to finish or cancel it first." };
+    if (error.code === "PC001") {
+      const problem = fulfillmentProblemFromSql(msg);
+      if (problem) return { ok: false, errors: problem };
+    }
     return { ok: false, message: GENERIC_FAILURE };
   }
   return { ok: true, runId: String(data) };
@@ -365,10 +381,12 @@ export async function rerunScenario(_prev: ActionState, formData: FormData): Pro
   if (!uuidSchema.safeParse(projectId).success) return { ok: false, message: GENERIC_FAILURE, values };
   if (!settings.success) return { ok: false, errors: fieldErrors(settings.error), values };
   if (settings.data.pricingBasis === "fixed_date" && !settings.data.asOfDate) return { ok: false, errors: { asOfDate: "Choose the date whose rates to use." }, values };
+  const fulfillment = parseFulfillmentField(formData.get("fulfillment"));
+  if (!fulfillment.ok) return { ok: false, errors: fulfillment.errors, values };
   const supabase = await createClient();
   if (!(await withinRateLimit(supabase, "modeling.run", 60, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE, values };
-  const started = await startRun(supabase, projectId, settings.data);
-  if (!started.ok) return { ok: false, message: started.message, values };
+  const started = await startRun(supabase, projectId, settings.data, fulfillment.value);
+  if (!started.ok) return { ok: false, message: started.message, errors: started.errors, values };
   redirect(`${m.basePath}/runs/${started.runId}`);
 }
 
@@ -500,13 +518,23 @@ export async function saveSingleScenario(request: unknown, name: string, brandId
   };
   // The stored copy is readable by the customer whenever the scenario is theirs or shared, so it is the
   // customer-safe projection; staff re-price the stored input in the calculator for the full references.
-  const result = customerSafe(calculateShipment(input, loaded.snapshot.context));
+  const calculation = calculateShipment(input, loaded.snapshot.context);
+  const result = customerSafe(calculation);
+  // What's in the box: the order fees shown with the result are priced again here from the schedule version in
+  // effect on the ship date and stored beside it (brand-safe projection: no rule keys), so the saved scenario reads
+  // like the calculator did. When the schedule cannot be read the save stops rather than dropping fees the customer saw.
+  let orderFees: unknown;
+  if (req.box && calculation.status === "ok") {
+    const fees = priceOrderFees({ schedule: await loadBrandFeeSchedule(supabase, m.brandId, req.shipDate), box: req.box, calculations: [calculation], audience: "brand" });
+    if (fees.status === "load_failed") return { ok: false, message: "The fee schedule could not be loaded, so the order fees were not saved. Try again in a moment." };
+    if (fees.status === "computed") orderFees = fees.byService[0] ?? undefined;
+  }
   const { data, error } = await supabase.rpc("save_single_simulation", {
     p_brand: m.brandId,
     p_rate_card: req.rateCardId,
     p_name: parsedName.data,
     p_input: input,
-    p_result: result,
+    p_result: orderFees ? { ...result, orderFees } : result,
     p_engine_version: ENGINE_VERSION,
   });
   if (error) return { ok: false, message: error.message.includes("not assigned") ? "That rate card is not assigned to this customer." : GENERIC_FAILURE };

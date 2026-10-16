@@ -12,6 +12,7 @@ export default async function TenantLayout({ children }: { children: ReactNode }
     { href: "/app", label: "Overview", icon: "home", exact: true },
     { href: "/app/customers", label: "Customers", icon: "building" },
     ...(can(role, "ratecard.view") ? [{ href: "/app/rate-cards", label: "Rate cards", icon: "document" } as NavItem] : []),
+    ...(can(role, "ratecard.view") ? [{ href: "/app/fee-schedules", label: "Fee schedules", icon: "list" } as NavItem] : []),
     ...(can(role, "ratecard.view") ? [{ href: "/app/surcharges", label: "Surcharges", icon: "list" } as NavItem] : []),
     ...(can(role, "simulation.run") ? [{ href: "/app/calculator", label: "Calculator", icon: "calculator" } as NavItem] : []),
     ...(can(role, "member.view") ? [{ href: "/app/team", label: "Team", icon: "users" } as NavItem] : []),

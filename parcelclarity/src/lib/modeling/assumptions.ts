@@ -183,6 +183,77 @@ export function fulfillmentFieldErrors(error: z.ZodError): Record<string, string
 }
 
 // ---------------------------------------------------------------------------
+// The server action's half: the posted field, and the database's refusals
+// ---------------------------------------------------------------------------
+const FULFILLMENT_UNREADABLE = "Your fulfillment answers could not be read. Reload the page and try again.";
+/** The serialised answers of step 2 are a few KB at most (the database caps them at 16 KB of jsonb). */
+const MAX_FULFILLMENT_FIELD = 20_000;
+
+/**
+ * The step-2 answers the form posts as one JSON field "fulfillment", parsed with the schema that mirrors
+ * `app.validate_fulfillment`. A form without step 2 posts none (`value` undefined). Field errors are keyed
+ * "fulfillment.<control>" ("fulfillment.drivers.<key>", "fulfillment.monthlyOrders", …); "fulfillment" is the
+ * step-level message.
+ */
+export function parseFulfillmentField(raw: unknown): { ok: true; value: FulfillmentLike | undefined } | { ok: false; errors: Record<string, string> } {
+  if (raw === null || raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== "string" || raw.length > MAX_FULFILLMENT_FIELD) return { ok: false, errors: { fulfillment: FULFILLMENT_UNREADABLE } };
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false, errors: { fulfillment: FULFILLMENT_UNREADABLE } };
+  }
+  if (json === null) return { ok: true, value: undefined };
+  const parsed = fulfillmentAnswersSchema.safeParse(json);
+  if (!parsed.success) {
+    const errors: Record<string, string> = {};
+    for (const [key, message] of Object.entries(fulfillmentFieldErrors(parsed.error))) errors[key === "fulfillment" ? key : `fulfillment.${key}`] = message;
+    return { ok: false, errors };
+  }
+  return { ok: true, value: parsed.data };
+}
+
+/**
+ * `start_simulation_run` raises SQLSTATE PC001 ("invalid input") with messages written for people. Those
+ * about the fulfillment answers become errors on step 2: field-level where the message names the question
+ * (the key stays in the error's key, never on screen), step-level otherwise. null = not about fulfillment.
+ */
+export function fulfillmentProblemFromSql(message: string): Record<string, string> | null {
+  if (/no fee schedule is in effect/.test(message)) {
+    return { fulfillment: "No fee schedule is in effect for this customer on the date you chose, so fulfillment answers cannot be used. Choose another date in step 1, or skip fulfillment costs." };
+  }
+  if (/monthly orders must be between/.test(message)) {
+    const text = "Monthly orders must be between 1 and 5,000,000.";
+    return { "fulfillment.monthlyOrders": text, fulfillment: text };
+  }
+  if (/packaging default must be/.test(message)) {
+    const text = "Packaging must be up to 60 characters.";
+    return { "fulfillment.packagingDefault": text, fulfillment: text };
+  }
+  const answer = /^answer for (\S+) (must be a number|is out of range|needs a share)/.exec(message);
+  if (answer) {
+    const key = answer[1]!;
+    const text = answer[2] === "needs a share" ? "Enter a share of orders (0–100) and a whole count per order (1–1000)." : answer[2] === "is out of range" ? "This number is out of range." : "Enter a number (digits only, up to 4 decimals).";
+    return { [`fulfillment.drivers.${key}`]: text, [`fulfillment.orderShares.${key}`]: text, fulfillment: "Check the answers marked on this step." };
+  }
+  if (/is not a question of this fee schedule/.test(message)) {
+    return { fulfillment: "One of the answers is for a question that is not on the fee schedule used for this run (the schedule may have changed). Reload the page to see the current questions." };
+  }
+  if (/returns rate is a percent/.test(message)) return { fulfillment: "A returns rate is a percent of orders: enter 0 to 100." };
+  const longTerm = /^long-term quantity for "(.+)" exceeds the total stored/.exec(message);
+  if (longTerm) return { fulfillment: `The long-term quantity for ${longTerm[1]} cannot be more than the total stored.` };
+  if (/order content/.test(message)) {
+    return {
+      "fulfillment.orderContent.rows": message.includes("100.00") ? "Order content shares must add up to exactly 100.00%." : "Each order content row needs whole items, order lines (1 up to the items) and a share of orders.",
+      fulfillment: "Check the order content on this step.",
+    };
+  }
+  if (/fulfillment assumptions|skip must be|drivers must be|orderShares must be/.test(message)) return { fulfillment: FULFILLMENT_UNREADABLE };
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Diff
 // ---------------------------------------------------------------------------
 export interface DiffOptions {

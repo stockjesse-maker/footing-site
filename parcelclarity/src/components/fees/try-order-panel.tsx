@@ -4,6 +4,7 @@ import { useId, useState, useTransition } from "react";
 import { tryFeeOrder } from "@/app/actions/fee-schedules";
 import { Check, Text } from "@/components/fees/controls";
 import { UNRESOLVED_REASON_LABELS, WARNING_LABELS, moneyE4 } from "@/components/fees/shared";
+import { MONTHLY_TIER_LABELS, buildTryOrderInput, tryOrderShape } from "@/components/fees/try-order-model";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,8 +17,6 @@ import type { FieldErrors } from "@/lib/auth/validation";
  * listed as not computed with the reason; it is never shown as $0. Priced by the `tryFeeOrder` action,
  * which runs the same engine the customer's models use.
  */
-
-const MONTHLY_TIER_LABELS: Record<string, string> = { order: "Orders a month", unit: "Items a month", package: "Packages a month", shipment: "Shipments a month" };
 
 interface Priced {
   result: OrderFeeResult;
@@ -46,31 +45,29 @@ export function TryOrderPanel({ versionId, rules, packagingTypes }: { versionId:
   const [message, setMessage] = useState<string | null>(null);
 
   // What this version asks for, so the panel only shows fields that can change the answer.
-  const shareDrivers = [...new Map(rules.filter((r) => r.basis === "order_driver" && r.driver).map((r) => [r.driver!.key, r.driver!.label])).entries()];
-  const tierBases = [...new Set(rules.filter((r) => r.scope === "order" && r.method === "tiered" && r.tiers?.on === "monthly_quantity").map((r) => r.basis))].filter((b) => b in MONTHLY_TIER_LABELS);
+  const { shareDrivers, tierBases } = tryOrderShape(rules);
   const namesByKey = new Map(rules.map((r) => [r.key, r.name]));
   const err = (path: string) => errors[path];
 
   const submit = () => {
     setMessage(null);
     setErrors({});
-    const input = {
+    const input = buildTryOrderInput({
       units,
       lines,
-      distinctSkus: products,
-      packages: packages.map((p) => ({ packagingType: p.type })),
-      shipments,
-      shipping: shipTotal.trim() === "" && baseFreight.trim() === "" ? null : { total: shipTotal, baseFreight, estimated },
-      orderShares: Object.fromEntries(
-        shareDrivers.map(([key]) => {
-          const s = shares[key];
-          return [key, !s || (s.sharePct.trim() === "" && s.count.trim() === "") ? null : { sharePct: s.sharePct, countPerOrder: s.count }];
-        }),
-      ),
-      monthlyQuantities: Object.fromEntries(tierBases.map((b) => [b, monthly[b] ?? ""])),
+      products,
+      packages,
       packagingDefault,
+      shipments,
+      shipTotal,
+      baseFreight,
+      estimated,
+      shares,
+      shareKeys: shareDrivers.map(([key]) => key),
+      monthly,
+      tierBases,
       ordinal,
-    };
+    });
     start(async () => {
       const outcome = await tryFeeOrder(versionId, input);
       if (!outcome.ok) {

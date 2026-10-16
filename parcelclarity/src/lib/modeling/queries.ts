@@ -1,9 +1,12 @@
 import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { BulkSummary } from "@/engine/modeling/types";
+import type { ForecastSummary } from "@/engine/forecast/types";
+import type { BulkSummary, FeeStatus } from "@/engine/modeling/types";
+import { D } from "@/engine/money";
 import type { CalculatorCard, CalculatorVersion } from "@/components/pricing/calculator-form";
 import { driverQuestions, loadBrandFeeSchedule, packagingTypes } from "@/lib/fees/queries";
 import { scheduleReadsOrderContent, type RunSetupData, type RunSetupPeriod, type RunSetupSchedule } from "@/lib/modeling/assumptions";
+import type { RunAssumptions } from "@/lib/modeling/run";
 
 /**
  * Read models for the modeling pages. Every query runs under the caller's Row Level Security;
@@ -99,7 +102,7 @@ export interface DatasetListRow {
 
 export interface ProjectListRow {
   id: string;
-  kind: "single" | "bulk";
+  kind: "single" | "bulk" | "forecast";
   name: string;
   created_at: string;
   shared_with_brand: boolean;
@@ -113,7 +116,7 @@ export interface ProjectListRow {
 export interface RunListRow {
   id: string;
   status: string;
-  kind: "single" | "bulk";
+  kind: "single" | "bulk" | "forecast";
   pricing_basis: "ship_date" | "fixed_date";
   as_of_date: string | null;
   created_at: string;
@@ -123,9 +126,11 @@ export interface RunListRow {
   processed_shipments: number;
   modeled_orders: number | null;
   total_expected: string | number | null;
-  summary: BulkSummary | null;
+  /** A file run's `BulkSummary`, or a forecast's `ForecastSummary` (see `fileSummaryOf` / `forecastSummaryOf`); a pre-fee (version 1) summary is possible in an old database. */
+  summary: BulkSummary | ForecastSummary | null;
   service_override_id: string | null;
-  assumptions: { residentialDefault?: boolean | null; originZipDefault?: string | null; overrideAllServices?: boolean } | null;
+  /** The run's assumptions as stored (canonical): shipping assumptions and the fulfillment answers. */
+  assumptions: RunAssumptions | null;
   shipping_services: { name: string } | null;
 }
 
@@ -145,14 +150,64 @@ export async function loadModelingLists(supabase: SupabaseClient, brandId: strin
   return { datasets: datasets ?? [], projects: projects ?? [] };
 }
 
-/** The most recent completed bulk run the viewer may see, for the headline figures. */
-export function latestCompletedBulkRun(projects: ProjectListRow[]): { project: ProjectListRow; run: RunListRow } | null {
+/** A what-if prices every shipment on one chosen service: it is a comparison, never the baseline. */
+export function isWhatIf(run: Pick<RunListRow, "assumptions">): boolean {
+  return run.assumptions?.overrideAllServices === true;
+}
+
+/** The run's summary as a file run's current (version 2) `BulkSummary`; null for forecasts, single runs, older shapes or no summary. */
+export function fileSummaryOf(run: Pick<RunListRow, "kind" | "summary">): BulkSummary | null {
+  const s = run.summary;
+  if (run.kind !== "bulk" || !s || (s as { version?: number }).version !== 2 || (s as ForecastSummary).basis === "assumptions" || !(s as BulkSummary).fees) return null;
+  return s as BulkSummary;
+}
+
+/** The run's summary as a forecast's `ForecastSummary`; null otherwise. */
+export function forecastSummaryOf(run: Pick<RunListRow, "kind" | "summary">): ForecastSummary | null {
+  const s = run.summary;
+  return run.kind === "forecast" && s && (s as ForecastSummary).basis === "assumptions" ? (s as ForecastSummary) : null;
+}
+
+function newest<T extends { run: RunListRow }>(a: T | null, b: T): T {
+  return !a || (b.run.finished_at ?? b.run.created_at) > (a.run.finished_at ?? a.run.created_at) ? b : a;
+}
+
+/**
+ * The most recent completed orders-file run the viewer may see, for the headline figures. A run in which
+ * nothing could be priced has no headline figure to show. `excludeWhatIf` skips runs that price every
+ * shipment on one chosen service (they are shown as their own labelled tile).
+ */
+export function latestCompletedBulkRun(projects: ProjectListRow[], opts: { excludeWhatIf?: boolean } = {}): { project: ProjectListRow; run: RunListRow } | null {
   let best: { project: ProjectListRow; run: RunListRow } | null = null;
   for (const project of projects) {
     for (const run of project.simulation_runs) {
-      // A run in which nothing could be priced has no headline figure to show.
-      if (run.kind !== "bulk" || run.status !== "completed" || !run.summary || !run.summary.modeled.orders) continue;
-      if (!best || (run.finished_at ?? run.created_at) > (best.run.finished_at ?? best.run.created_at)) best = { project, run };
+      if (run.status !== "completed" || !fileSummaryOf(run)?.modeled.orders) continue;
+      if (opts.excludeWhatIf && isWhatIf(run)) continue;
+      best = newest(best, { project, run });
+    }
+  }
+  return best;
+}
+
+/** The latest completed what-if (every shipment priced on one chosen service). */
+export function latestCompletedWhatIf(projects: ProjectListRow[]): { project: ProjectListRow; run: RunListRow } | null {
+  let best: { project: ProjectListRow; run: RunListRow } | null = null;
+  for (const project of projects) {
+    for (const run of project.simulation_runs) {
+      if (run.status !== "completed" || !fileSummaryOf(run)?.modeled.orders || !isWhatIf(run)) continue;
+      best = newest(best, { project, run });
+    }
+  }
+  return best;
+}
+
+/** The latest completed forecast from assumptions. */
+export function latestCompletedForecast(projects: ProjectListRow[]): { project: ProjectListRow; run: RunListRow } | null {
+  let best: { project: ProjectListRow; run: RunListRow } | null = null;
+  for (const project of projects) {
+    for (const run of project.simulation_runs) {
+      if (run.kind !== "forecast" || run.status !== "completed" || !forecastSummaryOf(run)) continue;
+      best = newest(best, { project, run });
     }
   }
   return best;
@@ -241,4 +296,153 @@ export async function loadRunSetupData(supabase: SupabaseClient, brandId: string
     // When the check cannot be made the question is asked: an optional default is harmless, a silently missing one is not.
     untypedPackages: untypedResult.error ? true : (untypedResult.data?.length ?? 0) > 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Results of a fee-aware run: orders, fee contexts, the fee schedule today
+// ---------------------------------------------------------------------------
+/** One order of a run with its fee result (`simulation_order_results`), as stored: amounts in ten-thousandths of a dollar. */
+export interface OrderResultRow {
+  orderId: string;
+  externalOrderId: string;
+  orderDate: string | null;
+  firstRowNo: number;
+  /** null = the file has no such figure (shown as unknown, never 0). */
+  units: number | null;
+  lines: number | null;
+  packages: number;
+  shipments: number;
+  /** Which figures came from the typical order the customer described rather than from the file. */
+  assumed: { units?: boolean; lines?: boolean; skus?: boolean; packaging?: boolean };
+  feeStatus: FeeStatus;
+  definiteE4: number;
+  estimatedE4: number;
+  unresolved: { ruleKey: string; reason: string; replacedBy?: string }[];
+  inTotals: boolean;
+}
+
+interface OrderResultDbRow {
+  order_id: string;
+  first_row_no: number | string;
+  units: number | null;
+  lines: number | null;
+  packages: number;
+  shipments: number;
+  assumed: OrderResultRow["assumed"] | null;
+  fee_status: FeeStatus;
+  processing_definite: number | string;
+  processing_estimated: number | string;
+  unresolved: OrderResultRow["unresolved"] | null;
+  in_totals: boolean;
+  orders: { external_order_id: string; order_date: string | null } | null;
+}
+
+/**
+ * A page of the run's orders in file order, under the caller's Row Level Security. `error` is set when the
+ * read fails: the page then says so rather than showing an empty table.
+ */
+export async function loadOrderResults(supabase: SupabaseClient, runId: string, range: { from: number; to: number }): Promise<{ rows: OrderResultRow[]; count: number | null; error: string | null }> {
+  const { data, error, count } = await supabase
+    .from("simulation_order_results")
+    .select("order_id, first_row_no, units, lines, packages, shipments, assumed, fee_status, processing_definite, processing_estimated, unresolved, in_totals, orders(external_order_id, order_date)", { count: "exact" })
+    .eq("run_id", runId)
+    .order("first_row_no")
+    .range(range.from, range.to)
+    .overrideTypes<OrderResultDbRow[], { merge: false }>();
+  if (error) return { rows: [], count: null, error: error.message };
+  return {
+    count,
+    error: null,
+    rows: (data ?? []).map((r) => ({
+      orderId: r.order_id,
+      externalOrderId: r.orders?.external_order_id ?? "—",
+      orderDate: r.orders?.order_date ?? null,
+      firstRowNo: Number(r.first_row_no),
+      units: r.units,
+      lines: r.lines,
+      packages: r.packages,
+      shipments: r.shipments,
+      assumed: r.assumed ?? {},
+      feeStatus: r.fee_status,
+      definiteE4: Number(r.processing_definite),
+      estimatedE4: Number(r.processing_estimated),
+      unresolved: r.unresolved ?? [],
+      inTotals: r.in_totals,
+    })),
+  };
+}
+
+/** The expected shipping of each order (exact decimal text) when every one of its shipments priced; null when any did not. */
+export type OrderShipping = Map<string, { expected: string | null }>;
+
+interface OrderShipmentDbRow {
+  order_id: string;
+  status: "ok" | "unavailable";
+  expected: string | number;
+}
+
+/**
+ * Shipping per order for a page of orders, summed from the stored shipment results (decimal arithmetic, no
+ * floats). An order with any unpriced shipment has no shipping figure: it is not shown as a partial sum.
+ * Keep `orderIds` small (a page): the ids travel in the request URL.
+ */
+export async function loadOrderShipping(supabase: SupabaseClient, runId: string, orderIds: string[]): Promise<{ shipping: OrderShipping; error: string | null }> {
+  const shipping: OrderShipping = new Map();
+  if (!orderIds.length) return { shipping, error: null };
+  const { data, error } = await supabase.from("simulation_results").select("order_id, status, expected").eq("run_id", runId).in("order_id", orderIds).overrideTypes<OrderShipmentDbRow[], { merge: false }>();
+  if (error) return { shipping, error: error.message };
+  const sums = new Map<string, { total: InstanceType<typeof D>; ok: boolean }>();
+  for (const r of data ?? []) {
+    const entry = sums.get(r.order_id) ?? { total: new D(0), ok: true };
+    if (r.status === "ok") entry.total = entry.total.plus(String(r.expected));
+    else entry.ok = false;
+    sums.set(r.order_id, entry);
+  }
+  for (const [orderId, entry] of sums) shipping.set(orderId, { expected: entry.ok ? entry.total.toFixed(2) : null });
+  return { shipping, error: null };
+}
+
+/** Which fee schedule version priced which dates of a run, and the dates no version covered. */
+export interface RunFeeContexts {
+  /** Versions the run priced orders with, with the dates they were in effect (null when the viewer may no longer read the version). */
+  versions: { versionId: string; effectiveDate: string | null; expirationDate: string | null }[];
+  /** Fee dates on which the brand had no fee schedule or none was in effect, as a range with a count of distinct dates. */
+  uncovered: { from: string; to: string; dates: number } | null;
+}
+
+interface FeeContextDbRow {
+  fee_date: string;
+  fee_schedule_version_id: string | null;
+  unavailable_reason: "no_schedule" | "not_effective" | null;
+}
+
+/** `simulation_run_fee_contexts` of a run plus the effective dates of the versions it names; null when a read fails. */
+export async function loadRunFeeContexts(supabase: SupabaseClient, runId: string): Promise<RunFeeContexts | null> {
+  const { data, error } = await supabase.from("simulation_run_fee_contexts").select("fee_date, fee_schedule_version_id, unavailable_reason").eq("run_id", runId).order("fee_date").overrideTypes<FeeContextDbRow[], { merge: false }>();
+  if (error) return null;
+  const rows = data ?? [];
+  const versionIds = [...new Set(rows.map((r) => r.fee_schedule_version_id).filter((id): id is string => id !== null))];
+  let dates = new Map<string, { effective_date: string | null; expiration_date: string | null }>();
+  if (versionIds.length) {
+    const { data: versions } = await supabase.from("fee_schedule_versions").select("id, effective_date, expiration_date").in("id", versionIds);
+    dates = new Map((versions ?? []).map((v) => [String(v.id), { effective_date: (v.effective_date as string | null) ?? null, expiration_date: (v.expiration_date as string | null) ?? null }] as const));
+  }
+  const missing = rows.filter((r) => r.fee_schedule_version_id === null).map((r) => r.fee_date);
+  return {
+    versions: versionIds
+      .map((versionId) => ({ versionId, effectiveDate: dates.get(versionId)?.effective_date ?? null, expirationDate: dates.get(versionId)?.expiration_date ?? null }))
+      .sort((a, b) => (a.effectiveDate ?? "") .localeCompare(b.effectiveDate ?? "")),
+    uncovered: missing.length ? { from: missing[0]!, to: missing[missing.length - 1]!, dates: missing.length } : null,
+  };
+}
+
+/**
+ * The fee schedule version in effect for the customer today, for the "Fees have changed since this model
+ * was priced" notice. `unknown` when the lookup fails (never reported as a change).
+ */
+export async function loadCurrentFeeVersion(supabase: SupabaseClient, brandId: string): Promise<{ status: "ok"; versionId: string } | { status: "none" | "unknown" }> {
+  const result = await loadBrandFeeSchedule(supabase, brandId);
+  if (result.status === "ok") return { status: "ok", versionId: result.activeVersion.versionId };
+  if (result.status === "no_schedule" || result.status === "not_effective") return { status: "none" };
+  return { status: "unknown" };
 }

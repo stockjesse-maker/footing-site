@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useId, useMemo, useRef, useState, useTransition, type FormEvent, type ReactNode } from "react";
-import { priceShipment, type CalculatorRequest, type CalculatorResponse } from "@/app/actions/calculator";
+import { loadCalculatorBox, priceShipment, type CalculatorRequest, type CalculatorResponse } from "@/app/actions/calculator";
 import { saveSingleScenario } from "@/app/actions/modeling";
 import { useLocalToday } from "@/components/forms/local-today";
 import type { ResultAudience } from "@/components/pricing/calculation-result";
-import { CalculationResult, ESTIMATE_NOTICE, formatDecimal, formatMoney } from "@/components/pricing/calculation-result";
+import { CalculationResult, ESTIMATE_NOTICE, feesTotalText, formatDecimal, formatMoney } from "@/components/pricing/calculation-result";
 import { Alert } from "@/components/ui/alert";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,18 @@ import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/field";
 import type { ShipmentCalculation, SignatureOption, WeightUnit } from "@/engine/types";
 import { formatDate } from "@/lib/format/date";
+import {
+  PACKAGING_OTHER,
+  boxFromDrafts,
+  describeBox,
+  emptyBoxDrafts,
+  type BoxDrafts,
+  type BoxFieldRef,
+  type CalculatorBoxOptions,
+  type CalculatorBoxOptionsOk,
+  type CalculatorFeesResponse,
+  type OrderFeesView,
+} from "@/lib/pricing/calculator-schema";
 
 /**
  * Single-shipment calculator. All state lives in React; the only server round trip is the
@@ -97,11 +109,12 @@ function cleanZip(raw: string): string | null {
 
 
 /** The inputs a result rests on, echoed in plain words so an assumption left at its default is visible. */
-function describeRequest(r: CalculatorRequest): string {
+function describeRequest(r: CalculatorRequest, boxOptions?: CalculatorBoxOptionsOk | null): string {
   const destination = r.destinationZone ? `zone ${r.destinationZone}` : (r.destinationZip ?? "?");
   const packages = r.packages.map((p) => `${formatDecimal(p.weight)} ${p.weightUnit}${p.length && p.width && p.height ? ` (${formatDecimal(p.length)}×${formatDecimal(p.width)}×${formatDecimal(p.height)} in)` : ", no dimensions"}`).join("; ");
   const options = [r.residential ? "home delivery" : "business delivery", r.signature !== "none" ? `${r.signature.replace(/_/g, " ")} signature` : null, r.saturdayDelivery ? "Saturday delivery" : null].filter(Boolean).join(", ");
-  return `From ${r.originZip} to ${destination} · ${options} · ${r.packages.length === 1 ? "1 package" : `${r.packages.length} packages`}: ${packages}.`;
+  const box = r.box ? ` In the box: ${describeBox(r.box, boxOptions)}.` : "";
+  return `From ${r.originZip} to ${destination} · ${options} · ${r.packages.length === 1 ? "1 package" : `${r.packages.length} packages`}: ${packages}.${box}`;
 }
 
 function effectivity(v: { effectiveDate: string | null; expirationDate: string | null }): string {
@@ -240,10 +253,110 @@ function PackageRow({
 }
 
 // ---------------------------------------------------------------------------
+// What's in the box
+// ---------------------------------------------------------------------------
+
+const boxFieldId = (idPrefix: string, field: BoxFieldRef): string => (field.startsWith("count:") ? `${idPrefix}-box-count-${field.slice("count:".length)}` : `${idPrefix}-box-${field}`);
+
+/**
+ * The block that feeds the order fees: items, different products, packaging and the per-order counts the
+ * fee schedule in effect on the ship date asks for. Fields the schedule does not need are not shown.
+ */
+export function BoxBlock({
+  idPrefix,
+  options,
+  drafts,
+  errors,
+  packageCount,
+  onChange,
+}: {
+  idPrefix: string;
+  options: CalculatorBoxOptionsOk;
+  drafts: BoxDrafts;
+  errors: Record<string, string>;
+  packageCount: number;
+  onChange: (patch: Partial<BoxDrafts>) => void;
+}) {
+  const id = (field: BoxFieldRef) => boxFieldId(idPrefix, field);
+  const showPackaging = options.packaging.length > 0 || options.allowOtherPackaging;
+  return (
+    <fieldset className="space-y-4">
+      <legend className="text-sm font-semibold">What&apos;s in the box</legend>
+      <p className="text-sm text-muted">
+        Fee schedule <span className="font-medium text-fg">{options.scheduleName}</span>, in effect from {formatDate(options.effectiveDate)}. Enter the items to see order fees for this order; monthly charges are not included.
+      </p>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field id={`${idPrefix}-box-units`} label="Items (units)" error={errors["box.units"]} hint="Total units in the box, across all products.">
+          {(aria) => <Input {...aria} type="text" inputMode="numeric" autoComplete="off" placeholder="e.g. 3" value={drafts.units} onChange={(e) => onChange({ units: e.target.value })} />}
+        </Field>
+        <Field id={`${idPrefix}-box-products`} label="Different products" error={errors["box.products"]} hint="How many different products (SKUs), however many of each.">
+          {(aria) => <Input {...aria} type="text" inputMode="numeric" autoComplete="off" placeholder="e.g. 2" value={drafts.products} onChange={(e) => onChange({ products: e.target.value })} />}
+        </Field>
+        {options.showLines ? (
+          <Field id={`${idPrefix}-box-lines`} label="Order lines" error={errors["box.lines"]} hint="Lines on the order. A product ordered once is one line.">
+            {(aria) => <Input {...aria} type="text" inputMode="numeric" autoComplete="off" placeholder="e.g. 2" value={drafts.lines} onChange={(e) => onChange({ lines: e.target.value })} />}
+          </Field>
+        ) : null}
+        {showPackaging ? (
+          <Field id={`${idPrefix}-box-packaging`} label="Packaging" hint={packageCount > 1 ? "Used for every package in this shipment." : "The packaging this order ships in."}>
+            {(aria) => (
+              <Select {...aria} value={drafts.packaging} onChange={(e) => onChange({ packaging: e.target.value })}>
+                <option value="">Not sure</option>
+                {options.packaging.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+                {options.allowOtherPackaging ? <option value={PACKAGING_OTHER}>{options.packaging.length ? "Another type (not listed)" : "Packaging used"}</option> : null}
+              </Select>
+            )}
+          </Field>
+        ) : null}
+        {options.counts.map((c) => (
+          <Field
+            key={c.key}
+            id={id(`count:${c.key}`)}
+            label={c.label}
+            error={errors[`box.counts.${c.key}`]}
+            hint={
+              <>
+                {c.rate} {c.helpText ? `${c.helpText} ` : ""}Enter 0 if there are none; leave it blank if you are not sure and the fee is left out.
+              </>
+            }
+          >
+            {(aria) => (
+              <Input
+                {...aria}
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                placeholder="0"
+                value={drafts.counts[c.key] ?? ""}
+                onChange={(e) => onChange({ counts: { ...drafts.counts, [c.key]: e.target.value } })}
+              />
+            )}
+          </Field>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+/** What stands in place of the block when there is no fee schedule to read; never an amount. */
+export function BoxNote({ options }: { options: CalculatorBoxOptions }) {
+  if (options.status === "no_schedule" || options.status === "not_effective") return <p className="text-sm text-muted">No fee schedule in effect on this date. Only shipping is priced.</p>;
+  if (options.status === "load_failed") return <p className="text-sm text-muted">Order fees could not be loaded right now. Shipping can still be priced; change the ship date or reload the page to try again.</p>;
+  if (options.status === "ok" && !options.hasOrderFees) return <p className="text-sm text-muted">Fee schedule {options.scheduleName} has no per-order fees; its charges are monthly, so none are added to one order.</p>;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Comparison of several services
 // ---------------------------------------------------------------------------
 
 const COMPARE_COLUMNS = "sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]";
+/** One more column, "Shipping + order fees", when order fees were computed. */
+const COMPARE_COLUMNS_WITH_FEES = "sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.2fr)]";
 
 function CompareCell({ label, children, emphasis }: { label: string; children: ReactNode; emphasis?: boolean }) {
   return (
@@ -261,19 +374,42 @@ function billableLbCell(result: ShipmentCalculation): string {
   return result.packages.length === 1 ? formatDecimal(first.billableLb) : `${result.packages.length} pkgs`;
 }
 
-function ComparisonList({ results, audience, cardName, effectiveDate }: { results: ShipmentCalculation[]; audience: ResultAudience; cardName: string; effectiveDate: string | null }) {
+function ComparisonList({
+  results,
+  fees,
+  audience,
+  cardName,
+  effectiveDate,
+  onAddFeeInput,
+}: {
+  results: ShipmentCalculation[];
+  /** Order fees per result (same order as `results`); null when none were computed. */
+  fees: (OrderFeesView | null)[] | null;
+  audience: ResultAudience;
+  cardName: string;
+  effectiveDate: string | null;
+  onAddFeeInput: (field: BoxFieldRef) => void;
+}) {
   const labels =
     audience === "brand"
       ? { expected: "Estimated total", definite: "From your rate card", estimated: "Based on assumptions", conditional: "May be added after shipping" }
       : { expected: "Expected", definite: "Definite", estimated: "Estimated", conditional: "Possible adjustments" };
-  const sorted = [...results].sort((a, b) => {
-    if (a.status !== b.status) return a.status === "ok" ? -1 : 1;
-    return Number(a.totals.expected.amount) - Number(b.totals.expected.amount) || (a.service?.serviceName ?? "").localeCompare(b.service?.serviceName ?? "");
-  });
+  const feeLabel = "Shipping + order fees";
+  const showFees = !!fees && fees.some((f) => f !== null);
+  const columns = showFees ? COMPARE_COLUMNS_WITH_FEES : COMPARE_COLUMNS;
+  const sorted = results
+    .map((r, i) => ({ r, fees: fees?.[i] ?? null }))
+    .sort((a, b) => {
+      if (a.r.status !== b.r.status) return a.r.status === "ok" ? -1 : 1;
+      return Number(a.r.totals.expected.amount) - Number(b.r.totals.expected.amount) || (a.r.service?.serviceName ?? "").localeCompare(b.r.service?.serviceName ?? "");
+    });
   return (
     <div className="space-y-2">
-      <p className="text-sm text-muted">{ESTIMATE_NOTICE} Sorted by expected cost; open a service for the full breakdown.</p>
-      <div className={`hidden gap-3 px-5 text-xs font-medium text-muted sm:grid ${COMPARE_COLUMNS}`} aria-hidden="true">
+      <p className="text-sm text-muted">
+        {ESTIMATE_NOTICE} Sorted by expected shipping cost; open a service for the full breakdown.
+        {showFees ? " Order fees are for the box described above; monthly charges are not included." : ""}
+      </p>
+      <div className={`hidden gap-3 px-5 text-xs font-medium text-muted sm:grid ${columns}`} aria-hidden="true">
         <span>Service</span>
         <span>Status</span>
         <span>Billable lb (1 pkg)</span>
@@ -281,14 +417,15 @@ function ComparisonList({ results, audience, cardName, effectiveDate }: { result
         <span>{labels.definite}</span>
         <span>{labels.estimated}</span>
         <span>{labels.conditional}</span>
+        {showFees ? <span>{feeLabel}</span> : null}
       </div>
-      {sorted.map((r) => {
+      {sorted.map(({ r, fees: feeView }) => {
         const ok = r.status === "ok";
         const name = r.service?.serviceName ?? r.input.serviceCode;
         return (
           <details key={`${r.input.carrierCode}/${r.input.serviceCode}`} className="group rounded-card border border-line bg-raised shadow-card">
             <summary className="flex min-h-11 cursor-pointer list-none items-center gap-3 px-5 py-4 [&::-webkit-details-marker]:hidden">
-              <span className={`grid min-w-0 flex-1 gap-1.5 sm:items-center sm:gap-3 ${COMPARE_COLUMNS}`}>
+              <span className={`grid min-w-0 flex-1 gap-1.5 sm:items-center sm:gap-3 ${columns}`}>
                 <span className="min-w-0 font-medium break-words">{name}</span>
                 <span className="flex items-baseline justify-between gap-3 sm:block">
                   <span className="text-xs text-muted sm:sr-only">Status</span>
@@ -301,13 +438,18 @@ function ComparisonList({ results, audience, cardName, effectiveDate }: { result
                 <CompareCell label={labels.definite}>{ok ? formatMoney(r.totals.definite) : "—"}</CompareCell>
                 <CompareCell label={labels.estimated}>{ok ? formatMoney(r.totals.estimated) : "—"}</CompareCell>
                 <CompareCell label={labels.conditional}>{ok ? formatMoney(r.totals.conditionalExposure) : "—"}</CompareCell>
+                {showFees ? (
+                  <CompareCell label={feeLabel} emphasis>
+                    {ok ? feesTotalText(feeView) : "—"}
+                  </CompareCell>
+                ) : null}
               </span>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-5 shrink-0 text-muted transition-transform group-open:rotate-180 motion-reduce:transition-none">
                 <path d="m6 9 6 6 6-6" />
               </svg>
             </summary>
             <div className="border-t border-line px-5 py-5 sm:px-6">
-              <CalculationResult result={r} audience={audience} cardName={cardName} effectiveDate={effectiveDate} />
+              <CalculationResult result={r} audience={audience} cardName={cardName} effectiveDate={effectiveDate} fees={feeView} onAddFeeInput={onAddFeeInput} />
             </div>
           </details>
         );
@@ -328,6 +470,10 @@ interface PricedRun {
   cardName: string;
   shipDate: string;
   request: CalculatorRequest;
+  /** Order fees of each result, or why there are none; null when the request carried no box. */
+  fees: CalculatorFeesResponse | null;
+  /** The box options the request was made with (for the echo), and whether the block was on offer. */
+  boxOptions: CalculatorBoxOptionsOk | null;
 }
 
 export function CalculatorForm({ cards, initialRateCardId, initialVersionId, allowVersionChoice = true, audience = "staff", brandId, canSave = false }: CalculatorFormProps) {
@@ -351,6 +497,9 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
   const nextKey = useRef(1);
   const [packages, setPackages] = useState<PackageDraft[]>(() => [newPackage(0)]);
   const [errors, setErrors] = useState<FieldErrors>({});
+  const [boxDrafts, setBoxDrafts] = useState<BoxDrafts>(emptyBoxDrafts);
+  const [boxSubmitted, setBoxSubmitted] = useState(false);
+  const [boxFetched, setBoxFetched] = useState<{ key: string; options: CalculatorBoxOptions } | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [run, setRun] = useState<PricedRun | null>(null);
   const [pending, startTransition] = useTransition();
@@ -364,6 +513,40 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
     heading.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
     heading.focus({ preventScroll: true });
   }, [run]);
+
+  // The fee schedule in effect on the ship date decides whether "What's in the box" is offered and what it asks.
+  // Only a customer's calculator (the brand portal, or staff pricing on behalf of one) has a schedule to read.
+  const boxKey = (audience === "brand" || brandId) && /^\d{4}-\d{2}-\d{2}$/.test(shipDate) ? `${brandId ?? "self"}|${shipDate}` : null;
+  useEffect(() => {
+    if (!boxKey) return;
+    let cancelled = false;
+    loadCalculatorBox({ ...(brandId ? { brandId } : {}), shipDate }).then(
+      (options) => {
+        if (!cancelled) setBoxFetched({ key: boxKey, options });
+      },
+      () => {
+        if (!cancelled) setBoxFetched({ key: boxKey, options: { status: "load_failed" } });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [boxKey, brandId, shipDate]);
+  const boxOptions: CalculatorBoxOptions | null = boxKey && boxFetched?.key === boxKey ? boxFetched.options : null;
+  const boxOk = boxOptions?.status === "ok" && boxOptions.hasOrderFees ? boxOptions : null;
+  const boxLive = useMemo(() => boxFromDrafts(boxDrafts, boxOk), [boxDrafts, boxOk]);
+  // Errors show as the customer types, except "enter the items", which waits for a calculate attempt.
+  const boxErrors = useMemo(() => {
+    const out = { ...boxLive.errors };
+    if (!boxSubmitted && boxDrafts.units.trim() === "") delete out["box.units"];
+    return out;
+  }, [boxLive.errors, boxSubmitted, boxDrafts.units]);
+  const patchBox = (patch: Partial<BoxDrafts>) => setBoxDrafts((d) => ({ ...d, ...patch }));
+  const focusBoxField = (field: BoxFieldRef) => {
+    const el = document.getElementById(boxFieldId(idPrefix, field));
+    el?.scrollIntoView({ block: "center" });
+    el?.focus();
+  };
 
   const card = cards.find((c) => c.id === rateCardId);
   const versions = useMemo(() => card?.versions ?? [], [card]);
@@ -429,6 +612,8 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
         declaredValue: declared || undefined,
       };
     });
+    const box = boxFromDrafts(boxDrafts, boxOk);
+    Object.assign(errs, box.errors);
     if (Object.keys(errs).length) return { ok: false, errors: errs };
     return {
       ok: true,
@@ -445,6 +630,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
         signature,
         saturdayDelivery,
         packages: reqPackages,
+        ...(box.box ? { box: box.box } : {}),
       },
     };
   };
@@ -452,6 +638,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setMessage(null);
+    setBoxSubmitted(true);
     const built = buildRequest();
     if (!built.ok) {
       setErrors(built.errors);
@@ -468,6 +655,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
     setErrors({});
     const cardName = card?.name ?? "Rate card";
     const requestShipDate = built.request.shipDate;
+    const requestBoxOptions = boxOk;
     startTransition(async () => {
       let response: CalculatorResponse;
       try {
@@ -479,7 +667,17 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
         setMessage(response.message ?? "Something went wrong. Please try again.");
         return;
       }
-      setRun({ results: response.results, version: response.version ?? null, effectiveDate: response.effectiveDate ?? null, cardName, shipDate: requestShipDate, issues: response.issues ?? [], request: built.request });
+      setRun({
+        results: response.results,
+        version: response.version ?? null,
+        effectiveDate: response.effectiveDate ?? null,
+        cardName,
+        shipDate: requestShipDate,
+        issues: response.issues ?? [],
+        request: built.request,
+        fees: response.fees ?? null,
+        boxOptions: requestBoxOptions,
+      });
     });
   };
 
@@ -492,6 +690,8 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
       : versions.length
         ? "No active version covers this ship date. Pick a version to test it anyway."
         : "This rate card has no versions yet.";
+
+  const feesByService = run?.fees?.status === "computed" ? run.fees.byService : null;
 
   return (
     <div className="space-y-8">
@@ -606,6 +806,8 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
             </Button>
           </fieldset>
 
+          {boxOk ? <BoxBlock idPrefix={idPrefix} options={boxOk} drafts={boxDrafts} errors={boxErrors} packageCount={packages.length} onChange={patchBox} /> : boxOptions ? <BoxNote options={boxOptions} /> : null}
+
           {message ? <Alert tone="danger">{message}</Alert> : null}
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <Button type="submit" size="lg" loading={pending} disabled={!cards.length}>
@@ -640,8 +842,14 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
               <span aria-hidden="true">·</span>
               <span>Ship date {formatDate(run.shipDate)}</span>
             </p>
-            <p className="mt-1 text-sm text-muted">{describeRequest(run.request)}</p>
+            <p className="mt-1 text-sm text-muted">{describeRequest(run.request, run.boxOptions)}</p>
           </div>
+          {run.boxOptions && !run.request.box ? <Alert tone="info">Add what&apos;s in the box to see order fees.</Alert> : null}
+          {run.fees && run.fees.status !== "computed" ? (
+            <Alert tone={run.fees.status === "load_failed" ? "warning" : "info"}>
+              {run.fees.status === "load_failed" ? "Order fees could not be calculated right now. The shipping price is unaffected; try again in a moment." : "No fee schedule in effect on this date, so no order fees are included."}
+            </Alert>
+          ) : null}
           {run.issues.length ? (
             <Alert tone="warning">
               <p className="font-medium">Some surcharge rules could not be applied</p>
@@ -654,9 +862,9 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
             </Alert>
           ) : null}
           {run.results.length === 1 && run.results[0] ? (
-            <CalculationResult result={run.results[0]} audience={audience} cardName={run.cardName} effectiveDate={run.effectiveDate} />
+            <CalculationResult result={run.results[0]} audience={audience} cardName={run.cardName} effectiveDate={run.effectiveDate} fees={feesByService?.[0] ?? null} onAddFeeInput={focusBoxField} />
           ) : (
-            <ComparisonList results={run.results} audience={audience} cardName={run.cardName} effectiveDate={run.effectiveDate} />
+            <ComparisonList results={run.results} fees={feesByService} audience={audience} cardName={run.cardName} effectiveDate={run.effectiveDate} onAddFeeInput={focusBoxField} />
           )}
           {canSave && run.results.length === 1 && run.results[0]?.status === "ok" ? <SaveScenarioForm request={run.request} brandId={brandId} /> : null}
           {canSave && run.results.length > 1 ? <p className="text-sm text-muted">To save a result as a scenario, choose one service above and calculate again.</p> : null}
@@ -690,7 +898,10 @@ function SaveScenarioForm({ request, brandId }: { request: CalculatorRequest; br
   return (
     <Card>
       <CardTitle>Save this result as a scenario</CardTitle>
-      <CardDescription>Keep it to compare later. It is priced for the ship date you entered ({formatDate(request.shipDate)}) and does not change afterwards.</CardDescription>
+      <CardDescription>
+        Keep it to compare later. It is priced for the ship date you entered ({formatDate(request.shipDate)}) and does not change afterwards.
+        {request.box ? " The order fees shown for what's in the box are saved with it; monthly charges are not part of it." : ""}
+      </CardDescription>
       <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end" noValidate>
         <div className="flex-1">
           <Field id={`${id}-name`} label="Scenario name">
