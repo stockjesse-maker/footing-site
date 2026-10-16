@@ -2,6 +2,8 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { BulkSummary } from "@/engine/modeling/types";
 import type { CalculatorCard, CalculatorVersion } from "@/components/pricing/calculator-form";
+import { driverQuestions, loadBrandFeeSchedule, packagingTypes } from "@/lib/fees/queries";
+import { scheduleReadsOrderContent, type RunSetupData, type RunSetupPeriod, type RunSetupSchedule } from "@/lib/modeling/assumptions";
 
 /**
  * Read models for the modeling pages. Every query runs under the caller's Row Level Security;
@@ -154,4 +156,89 @@ export function latestCompletedBulkRun(projects: ProjectListRow[]): { project: P
     }
   }
   return best;
+}
+
+// ---------------------------------------------------------------------------
+// Run setup, step 2 "Fulfillment costs": what the form needs to ask
+// ---------------------------------------------------------------------------
+interface PeriodPayload {
+  population?: number | null;
+  dated?: number | null;
+  undated?: number | null;
+  from?: string | null;
+  to?: string | null;
+  days?: number | null;
+  months?: number | string | null;
+  inPeriod?: number | null;
+  trimmed?: number | null;
+}
+
+function toPeriod(data: unknown): RunSetupPeriod | null {
+  if (!data || typeof data !== "object") return null;
+  const p = data as PeriodPayload;
+  return {
+    population: Number(p.population ?? 0),
+    dated: Number(p.dated ?? 0),
+    undated: Number(p.undated ?? 0),
+    from: p.from ?? null,
+    to: p.to ?? null,
+    days: p.days === null || p.days === undefined ? null : Number(p.days),
+    months: p.months === null || p.months === undefined ? null : String(p.months),
+    inPeriod: Number(p.inPeriod ?? 0),
+    trimmed: Number(p.trimmed ?? 0),
+  };
+}
+
+interface DatasetSetupRow {
+  line_count: number | null;
+  validation: { counts?: { lines?: number; units?: number } } | null;
+}
+
+/**
+ * Everything run setup step 2 asks and explains, read under the caller's Row Level Security:
+ * the file's forecast period (`dataset_forecast_period`, computed in SQL and never recomputed here), the
+ * fee schedule in effect today for the brand (`brand_fee_schedule_on`) as customer-safe questions and
+ * packaging types (no rule keys, ids, version numbers, notes or sources), and what the file does and
+ * does not say about item counts, line data and packaging. A query that fails is reported as such (a
+ * null period, an `unavailable` schedule), never as "no fees" or "no data".
+ */
+export async function loadRunSetupData(supabase: SupabaseClient, brandId: string, datasetId: string): Promise<RunSetupData> {
+  const [periodResult, schedule, datasetResult, untypedResult] = await Promise.all([
+    supabase.rpc("dataset_forecast_period", { p_dataset: datasetId }),
+    loadBrandFeeSchedule(supabase, brandId),
+    supabase.from("order_datasets").select("line_count, validation").eq("id", datasetId).eq("brand_id", brandId).maybeSingle().overrideTypes<DatasetSetupRow, { merge: false }>(),
+    supabase.from("packages").select("id").eq("dataset_id", datasetId).is("packaging_type", null).limit(1),
+  ]);
+
+  let setupSchedule: RunSetupSchedule;
+  switch (schedule.status) {
+    case "no_schedule":
+      setupSchedule = { status: "none" };
+      break;
+    case "not_effective":
+      setupSchedule = { status: "not_effective", name: schedule.schedule.name };
+      break;
+    case "ok":
+      setupSchedule = {
+        status: "ok",
+        name: schedule.schedule.name,
+        effectiveDate: schedule.activeVersion.effectiveDate,
+        questions: driverQuestions(schedule.activeVersion),
+        packagingTypes: packagingTypes(schedule.activeVersion),
+        readsOrderContent: scheduleReadsOrderContent(schedule.activeVersion),
+      };
+      break;
+    default:
+      setupSchedule = { status: "unavailable" };
+  }
+
+  const counts = datasetResult.data?.validation?.counts;
+  return {
+    period: periodResult.error ? null : toPeriod(periodResult.data),
+    schedule: setupSchedule,
+    hasUnits: Number(counts?.units ?? 0) > 0,
+    hasLines: Number(counts?.lines ?? datasetResult.data?.line_count ?? 0) > 0,
+    // When the check cannot be made the question is asked: an optional default is harmless, a silently missing one is not.
+    untypedPackages: untypedResult.error ? true : (untypedResult.data?.length ?? 0) > 0,
+  };
 }
