@@ -29,7 +29,10 @@ export function describeFeeRule(rule: FeeRule): string {
     const axis = rule.tiers.on === "monthly_quantity" ? `, read against your monthly ${noun.plural}` : "";
     return `${parts.join("; ")} (${how}${axis})${minimum}${conditions}.`;
   }
-  const allowance = rule.includedQuantity && dec(rule.includedQuantity).gt(0) ? ` after the first ${dec(rule.includedQuantity).eq(1) ? "" : `${dec(rule.includedQuantity).toFixed()} `}${rule.includedPer === "line" ? "per line" : rule.includedPer === "sku" ? "per product" : rule.includedPer === "shipment" ? "per shipment" : "per order"} (included)` : "";
+  // "after the first item in each order", "after the first 3 items of each line".
+  const allowanceCount = rule.includedQuantity && dec(rule.includedQuantity).gt(0) ? dec(rule.includedQuantity) : null;
+  const allowanceScope = rule.includedPer === "line" ? "of each line" : rule.includedPer === "sku" ? "of each product" : rule.includedPer === "shipment" ? "in each shipment" : "in each order";
+  const allowance = allowanceCount ? ` after the first ${allowanceCount.eq(1) ? noun.singular : `${allowanceCount.toFixed()} ${noun.plural}`} ${allowanceScope}` : "";
   if (rule.basis === "order_driver") return `${money(rule.amount)} per ${noun.singular}${allowance}, on the share of orders you say get them${minimum}${conditions}.`;
   if (rule.driver?.longTerm) return `${money(rule.amount)} per ${noun.singular}${period} for ${noun.plural} held longer than ${rule.driver.longTerm.thresholdDays} days${rule.driver.longTerm.mode === "replace" ? " (instead of the standard rate)" : " (in addition to the standard rate)"}${minimum}.`;
   return `${money(rule.amount)} per ${noun.singular}${period}${allowance}${minimum}${conditions}.`;
