@@ -147,11 +147,14 @@ function Headline({ headline, summary, audience, onAdd, editHref }: { headline: 
     </h2>
   );
   if (headline.kind === "partial" || headline.kind === "shipping_only") {
+    // Only the priced share of the volume is in the monthly figure: "at N orders a month" would put it on all of them.
+    const partialVolume = summary.unpriceable.length > 0;
+    const monthlyNote = partialVolume ? `about ${usd(headline.monthly)} a month over the ${summary.pricedSharePct}% of orders that could be priced` : `about ${usd(headline.monthly)} a month at ${orders} orders a month`;
     return (
       <section aria-labelledby="forecast-headline-heading" className="space-y-4">
         {heading}
         <div className="grid gap-4 sm:grid-cols-2">
-          <Stat label={headline.kind === "partial" ? "Shipping per order (priced orders only)" : headline.label} value={usd(headline.parts.shipping)} note={headline.kind === "shipping_only" ? `about ${usd(headline.monthly)} a month at ${orders} orders a month` : undefined} />
+          <Stat label={headline.kind === "partial" ? "Shipping per order (priced orders only)" : headline.label} value={usd(headline.parts.shipping)} note={headline.kind === "shipping_only" ? monthlyNote : undefined} />
           {headline.parts.orderFees !== null ? <Stat label="Order fees per order (priced orders only)" value={usd(headline.parts.orderFees)} /> : null}
         </div>
         {headline.note ? <Alert tone="info">{headline.note}</Alert> : null}
@@ -180,6 +183,7 @@ function Headline({ headline, summary, audience, onAdd, editHref }: { headline: 
           {atLeast ? "Counted so far: shipping" : "Shipping"} {usd(headline.parts.shipping)} + order fees {notComputed(headline.parts.orderFees)} + monthly charges {notComputed(headline.parts.monthlyCharges)}
           {headline.parts.monthlyCharges !== null ? ` (spread over ${orders} orders a month, the volume you gave)` : ""}.
         </p>
+        <p className="text-xs text-muted">Each figure is rounded to cents once, so the parts can differ from the total by a cent.</p>
         <p className="text-sm text-muted">{CLASS_LABEL[audience].estimated}: every figure rests on the mix you described.</p>
         {headline.minimumUpTo ? <Alert tone="warning">The account minimum could add up to {usd(headline.minimumUpTo)} a month on top of this; it is not included.</Alert> : null}
         <NotIncluded items={headline.notIncluded} onAdd={onAdd} editHref={editHref} />
@@ -301,23 +305,35 @@ function MonthlyCharges({ summary, audience }: { summary: ForecastSummary; audie
 
 const MEMBER_STATE: Record<string, string> = { priced: "Priced", not_modeled: "Not computed", not_in_schedule: "Not on your fee schedule" };
 
+/** The engine's reason a minimum is only an upper bound, in this screen's words ("not computed", never the internal "not modeled"). */
+function minimumReason(reason: string): string {
+  const notModeled = /^(.+) not modeled$/.exec(reason);
+  if (notModeled) return `${notModeled[1]} is not computed`;
+  const priced = /^shipping priced for ([0-9.]+)% of orders$/.exec(reason);
+  if (priced) return `only ${priced[1]}% of orders could be priced`;
+  return "something it counts could not be worked out";
+}
+
 function MinimumCard({ m }: { m: ForecastMinimum }) {
   const dollars = (e4: number) => usd(e4ToCents(e4));
+  // `countedE4` holds the expected shipping too when shipping counts toward the minimum: "fees counted" would understate what is in it.
+  const counted = m.includesShipping ? "Fees and shipping counted" : "Fees counted";
+  const because = m.reasons.length ? ` (${[...new Set(m.reasons.map(minimumReason))].join("; ")})` : "";
   return (
     <div className="space-y-2 rounded-control border border-line p-3">
       <p className="font-medium">{m.name}</p>
       {m.status === "exact" ? (
         <p className="text-sm">
-          Fees counted toward the minimum: {dollars(m.countedE4)} · Minimum: {dollars(m.minimumE4)} · Added: {dollars(m.topUpE4)}
+          {counted} toward the minimum: {dollars(m.countedE4)} · Minimum: {dollars(m.minimumE4)} · Added: {dollars(m.topUpE4)}
         </p>
       ) : m.status === "upper_bound" ? (
         m.topUpE4 > 0 ? (
           <p className="text-sm">
-            Minimum: {dollars(m.minimumE4)} · Fees counted so far: {dollars(m.countedE4)}. The minimum could add up to {dollars(m.topUpE4)} a month; that is not included in the all-in figure{m.reasons.length ? ` (${m.reasons.join("; ")})` : ""}.
+            Minimum: {dollars(m.minimumE4)} · {counted} so far: {dollars(m.countedE4)}. The minimum could add up to {dollars(m.topUpE4)} a month; that is not included in the all-in figure{because}.
           </p>
         ) : (
           <p className="text-sm">
-            Minimum: {dollars(m.minimumE4)} · Fees counted so far: {dollars(m.countedE4)}. They already meet the minimum, so it adds nothing, whatever the fees that could not be computed come to{m.reasons.length ? ` (${m.reasons.join("; ")})` : ""}.
+            Minimum: {dollars(m.minimumE4)} · {counted} so far: {dollars(m.countedE4)}. They already meet the minimum, so it adds nothing, whatever the fees that could not be computed come to{because}.
           </p>
         )
       ) : (
@@ -361,6 +377,11 @@ function Sensitivity({ points, atLeast, orderFeesNotComputed, monthlyNotComputed
           { label: "Monthly charges spread", cell: (p) => (monthlyNotComputed ? "not computed" : usd(p.perOrder.allocated)), numeric: true },
           { label: atLeast ? "All-in, at least" : "All-in", cell: (p) => usd(p.perOrder.allIn), numeric: true },
         ]}
+        note={
+          <p className="text-xs text-muted">
+            Shipping and order fees per order are held the same; only monthly charges that follow volume (such as returns) change with it. The account minimum is worked out again at each volume. Price breaks that depend on your monthly volume are not read again, so a fee with one can cost more or less per order than shown at the other volumes; run a new forecast at that volume to see it.
+          </p>
+        }
       />
     </Card>
   );
@@ -473,7 +494,7 @@ export function ForecastResult({ data, audience, onAdd, editHref }: ForecastResu
       <Card className="space-y-2">
         <CardTitle>Shipping</CardTitle>
         <CardDescription>
-          {usd(summary.shipping.expected)} a month, {usd(summary.shipping.perOrder)} per order on average, from your rate card. {CLASS_LABEL[audience].estimated} on the mix you described, never an invoice.
+          {usd(summary.shipping.expected)} a month, {usd(summary.shipping.perOrder)} per order on average{summary.unpriceable.length ? ` (over the ${summary.pricedSharePct}% of orders that could be priced)` : ""}, from your rate card. {CLASS_LABEL[audience].estimated} on the mix you described, never an invoice.
         </CardDescription>
         {shippingWarnings.length ? (
           <ul className="list-disc space-y-1 pl-5 text-sm text-muted">

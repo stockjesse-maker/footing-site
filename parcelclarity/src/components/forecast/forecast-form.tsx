@@ -53,6 +53,8 @@ export interface ForecastFormProps {
   /** A saved forecast to start from ("Edit as new forecast"). */
   initial?: ForecastAssumptions | null;
   editedFrom?: { name: string; asOfDate: string } | null;
+  /** The date to read rates and fees on when the page was opened for one (`?date=`); today (the browser's) when absent. */
+  startDate?: string | null;
 }
 
 const numberProps = { type: "text", inputMode: "decimal", autoComplete: "off", spellCheck: false } as const;
@@ -120,12 +122,15 @@ function isoDate(value: string): boolean {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
-export function ForecastForm({ audience, brandId, tenantName, context, initial = null, editedFrom = null }: ForecastFormProps) {
+export function ForecastForm({ audience, brandId, tenantName, context, initial = null, editedFrom = null, startDate = null }: ForecastFormProps) {
   const id = useId();
   const router = useRouter();
   const today = useLocalToday();
   const you = audience === "brand";
-  const [state, setState] = useState<ForecastFormState>(() => initialFormState(context, initial));
+  const [state, setState] = useState<ForecastFormState>(() => {
+    const opening = initialFormState(context, initial);
+    return startDate !== null && isoDate(startDate) ? { ...opening, asOfDate: startDate } : opening;
+  });
   const [ctx, setCtx] = useState<ForecastContext>(context);
   const [hadDefaultOrigin] = useState(context.originZip !== "");
   const asOfDate = state.asOfDate ?? today;
@@ -161,7 +166,9 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
   const pre = useMemo(() => preflight(state, ctx), [state, ctx]);
   const key = useMemo(() => JSON.stringify([built.assumptions, state.priceOnlyCovered, ctx.rateCard.id]), [built.assumptions, state.priceOnlyCovered, ctx.rateCard.id]);
   const [attempted, setAttempted] = useState(false);
-  const [outcome, setOutcome] = useState<{ key: string; response: ForecastPreviewResponse } | null>(null);
+  // The same inputs without the "price only what the rate card covers" choice: ticking it must not hide the table it is ticked in.
+  const inputsKey = useMemo(() => JSON.stringify([built.assumptions, ctx.rateCard.id]), [built.assumptions, ctx.rateCard.id]);
+  const [outcome, setOutcome] = useState<{ key: string; inputs: string; response: ForecastPreviewResponse } | null>(null);
   const [previewing, startPreview] = useTransition();
   const [saving, startSave] = useTransition();
   const [name, setName] = useState("");
@@ -171,6 +178,7 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
   const resultRef = useRef<HTMLHeadingElement>(null);
 
   const fresh = outcome !== null && outcome.key === key;
+  const sameInputs = outcome !== null && outcome.inputs === inputsKey;
   const serverProblems = useMemo(() => (fresh && outcome.response.status === "invalid" ? fieldErrorsFromProblems(outcome.response.problems) : null), [fresh, outcome]);
   const errors: Record<string, string> = attempted ? { ...(serverProblems?.fields ?? {}), ...built.errors } : {};
   const general = attempted ? [...built.general, ...(serverProblems?.general ?? [])] : [];
@@ -190,9 +198,10 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
     }
     const assumptions = built.assumptions;
     const at = key;
+    const inputs = inputsKey;
     startPreview(async () => {
       const response = await previewForecast(assumptions, brandId, { priceOnlyCovered: state.priceOnlyCovered, rateCardId: ctx.rateCard.id });
-      setOutcome({ key: at, response });
+      setOutcome({ key: at, inputs, response });
     });
   };
 
@@ -210,7 +219,8 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
       if (response.status === "invalid") {
         const found = fieldErrorsFromProblems(response.problems);
         setSaveErrors(found.fields);
-        setSaveMessage(found.general[0] ?? null);
+        // The name's problem is shown on its field; any other one (a date that lost its rates since the preview) has no field here and must still be said.
+        setSaveMessage(found.general[0] ?? Object.entries(found.fields).find(([field]) => field !== "name")?.[1] ?? null);
       } else if (response.status === "error") setSaveMessage(response.message);
       else setSaveMessage("Some orders cannot be priced; preview again before saving.");
     });
@@ -256,7 +266,7 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
     }
   }, [state.contentMode, state.averageUnits, state.averageLines]);
 
-  const apply = latestOutcome(outcome, fresh);
+  const apply = latestOutcome(outcome, fresh, sameInputs);
   const originHint = hadDefaultOrigin ? `${you ? "Your" : "The customer's"} default is ${context.originZip}. Change it if these orders ship from elsewhere.` : undefined;
 
   return (
@@ -270,7 +280,7 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
     >
       {editedFrom ? (
         <Alert tone="info">
-          Starting from {editedFrom.name} (priced on {formatDate(editedFrom.asOfDate)}). Saving creates a new forecast; the original stays as it is. The date starts from today.
+          Starting from {editedFrom.name} (priced on {formatDate(editedFrom.asOfDate)}). Saving creates a new forecast; the original stays as it is.{startDate ? "" : " The date starts from today."}
         </Alert>
       ) : null}
 
@@ -638,7 +648,7 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
 }
 
 /** The latest outcome as a discriminated union the render reads once (null while there is none). */
-function latestOutcome(outcome: { key: string; response: ForecastPreviewResponse } | null, fresh: boolean):
+function latestOutcome(outcome: { key: string; response: ForecastPreviewResponse } | null, fresh: boolean, sameInputs: boolean):
   | { kind: "none" }
   | { kind: "ok"; response: Extract<ForecastPreviewResponse, { status: "ok" }> }
   | { kind: "blocked"; response: Extract<ForecastPreviewResponse, { status: "blocked" }> }
@@ -647,7 +657,8 @@ function latestOutcome(outcome: { key: string; response: ForecastPreviewResponse
   if (!outcome) return { kind: "none" };
   const r = outcome.response;
   // A stale blocked or invalid outcome says nothing about the current inputs; a stale result stays on screen, dimmed, until the next preview.
-  if (!fresh && r.status !== "ok") return { kind: "none" };
+  // The one exception is a blocked table whose inputs have not changed: only the choice below it was ticked, and it has to stay to be seen and undone.
+  if (!fresh && r.status !== "ok" && !(r.status === "blocked" && sameInputs)) return { kind: "none" };
   switch (r.status) {
     case "ok":
       return { kind: "ok", response: r };

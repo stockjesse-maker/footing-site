@@ -5,8 +5,9 @@ import { ForecastManage } from "@/components/forecast/forecast-manage";
 import { ForecastResult } from "@/components/forecast/forecast-result";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { ButtonLink } from "@/components/ui/button";
+import { Button, ButtonLink } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Field, Input } from "@/components/ui/field";
 import { PageHeader } from "@/components/ui/page-header";
 import { uuidSchema } from "@/lib/auth/validation";
 import { forecastResultData, loadForecastContext, loadSavedForecast } from "@/lib/forecast/queries";
@@ -31,12 +32,23 @@ function BackLink({ href, label }: { href: string; label: string }) {
 
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
-/** The form: describe the orders you expect, preview the expected cost per order, save it. `?from=` starts from a saved forecast. */
-export async function ForecastNewView(v: ModelingView, searchParams: { from?: string }) {
+/** A real calendar date as YYYY-MM-DD ("2026-02-30" is not one). */
+function isoDateOrNull(value: string | undefined): string | null {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value ? value : null;
+}
+
+/**
+ * The form: describe the orders you expect, preview the expected cost per order, save it. `?from=` starts from a
+ * saved forecast; `?date=` opens it on a date other than today (the only way in when the rate card has no rates today).
+ */
+export async function ForecastNewView(v: ModelingView, searchParams: { from?: string; date?: string }) {
   const fromId = searchParams.from && uuidSchema.safeParse(searchParams.from).success ? searchParams.from : null;
+  const startDate = isoDateOrNull(searchParams.date);
   const saved = fromId ? await loadSavedForecast(v.supabase, v.brandId, fromId) : null;
   // An edit starts on the rate card the saved forecast used, while the customer still has it (the loader falls back to the first card otherwise).
-  const context = await loadForecastContext(v.supabase, { brandId: v.brandId, tenantDefaultOriginZip: v.tenantDefaultOriginZip, asOfDate: todayUtc(), rateCardId: saved?.rateCardId ?? null });
+  const context = await loadForecastContext(v.supabase, { brandId: v.brandId, tenantDefaultOriginZip: v.tenantDefaultOriginZip, asOfDate: startDate ?? todayUtc(), rateCardId: saved?.rateCardId ?? null });
   const whose = v.staff ? "the customer's" : "your";
   return (
     <>
@@ -50,7 +62,19 @@ export async function ForecastNewView(v: ModelingView, searchParams: { from?: st
       {context.status === "no_card" ? (
         <EmptyState title="Nothing to price against yet">{v.staff ? "Assign an active rate card to this customer first." : `${v.tenantName} has not assigned a rate card to your account yet.`}</EmptyState>
       ) : context.status === "no_rates" ? (
-        <Alert tone="warning">{context.message}</Alert>
+        <div className="space-y-4">
+          <Alert tone="warning">{context.message}</Alert>
+          {/* A plain GET form: there is no forecast form to change the date in until a date with rates is chosen. */}
+          <form method="get" className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            {fromId ? <input type="hidden" name="from" value={fromId} /> : null}
+            <Field id="forecast-retry-date" label="Rates and fees as of" hint="The rate card and fee schedule in effect on this date.">
+              {(aria) => <Input {...aria} type="date" name="date" required defaultValue={startDate ?? undefined} className="max-w-48" />}
+            </Field>
+            <Button type="submit" variant="secondary">
+              Use this date
+            </Button>
+          </form>
+        </div>
       ) : context.status === "failed" ? (
         <Alert tone="danger">{context.message}</Alert>
       ) : (
@@ -61,6 +85,7 @@ export async function ForecastNewView(v: ModelingView, searchParams: { from?: st
           context={context}
           initial={saved?.assumptions ?? null}
           editedFrom={saved?.assumptions ? { name: saved.name, asOfDate: saved.asOfDate } : null}
+          startDate={startDate}
         />
       )}
     </>

@@ -4,6 +4,6 @@ import { brandModelingView } from "@/lib/modeling/page-context";
 
 export const metadata: Metadata = { title: "Forecast from assumptions" };
 
-export default async function BrandForecastPage({ searchParams }: { searchParams: Promise<{ from?: string }> }) {
+export default async function BrandForecastPage({ searchParams }: { searchParams: Promise<{ from?: string; date?: string }> }) {
   return ForecastNewView(await brandModelingView(), await searchParams);
 }

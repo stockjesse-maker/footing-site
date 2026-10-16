@@ -115,6 +115,8 @@ function targetFor(reason: string | null, driverKey: string | null): AddTarget {
 export function notIncludedItems(summary: ForecastSummary): NotIncludedItem[] {
   if (summary.feeMode !== "modeled") return [];
   const driverByRule = new Map((summary.monthly?.notModeled ?? []).map((n) => [n.ruleKey, n.driverKey] as const));
+  // The orders a fee could not be computed for are the fee's own: a category's figure is the largest of its fees, which is not this fee's.
+  const ordersByRule = new Map((summary.processing?.unresolved ?? []).map((u) => [u.key, u.orders] as const));
   const items: NotIncludedItem[] = [];
   for (const category of summary.completeness) {
     if (category.state !== "not_modeled") continue;
@@ -127,7 +129,7 @@ export function notIncludedItems(summary: ForecastSummary): NotIncludedItem[] {
         name: rule.name,
         rate: rule.describe,
         reason: notComputedReason(rule.reason),
-        orders: rule.scope === "order" ? category.notModeledOrders : 0,
+        orders: rule.scope === "order" ? (ordersByRule.get(rule.key) ?? category.notModeledOrders) : 0,
         target: targetFor(rule.reason, driverByRule.get(rule.key) ?? null),
       });
     }
