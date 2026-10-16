@@ -304,7 +304,7 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
   const collect = (rule: SurchargeRule) => {
     const configured = overrideFor(rule);
     const override = configured && overrideApplies(rule, configured) ? configured : null;
-    if (configured && !override) warn({ code: "override_not_applicable", ruleKey: rule.key, message: `The customer exception for ${rule.name} (${configured.reference}, ${configured.mode.replace(/_/g, " ")}) does not fit a ${rule.method.replace("_", "-")} rule and was not applied; the published figure was used.` });
+    if (configured && !override) warn({ code: "override_not_applicable", ruleKey: rule.key, message: `The customer exception for ${rule.name} (${configured.mode.replace(/_/g, " ")}) does not fit a ${rule.method.replace("_", "-")} rule and was not applied; the published figure was used.` });
     const scopes: (PackageContext | null)[] = rule.perPackage ? packages : [null];
     for (const scope of scopes) {
       const outcome = evaluateRule(rule, evalCtx, scope);
@@ -406,12 +406,12 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
     const assumption = counted ? assumptionBehind(rule, assumed) : null;
     if (assumption && classification === "definite") classification = "estimated";
     const markup = markupOf(c);
-    const overrideNote = c.override && !waived ? ` Customer-specific rate applied (${c.override.reference}).` : markup && !markup.isZero() ? ` Includes the ${fmt(markup, 2)}% markup agreed in the rate card terms.` : "";
+    const overrideNote = c.override && !waived ? " Customer-specific rate applied under your agreement." : markup && !markup.isZero() ? ` Includes the ${fmt(markup, 2)}% markup agreed in the rate card terms.` : "";
 
     const emit = (amount: Dec, basis: string, packageIndex: number | null, baseNote: string, forceClass?: ChargeClass) => {
       let explanation = baseNote;
       if (status === "unknown") explanation = `Could not confirm whether ${rule.name} applies: ${unknownReason(rule, evalCtx, packageIndex === null ? null : packages[packageIndex]!)}. Shown as an estimate and not included in the total.`;
-      else if (status === "waived") explanation = `${baseNote} Waived for this customer (${c.override!.reference}); not charged.`;
+      else if (status === "waived") explanation = `${baseNote} Waived for this customer under your agreement; not charged.`;
       else if (status === "included") explanation = `${baseNote} Included in the base rate under the rate card terms; not charged separately.`;
       else if (status === "conditional") explanation = `${baseNote} Charged only if the carrier applies it after shipping; shown as potential exposure, not included in the total.`;
       explanation += overrideNote;
@@ -507,8 +507,8 @@ export function calculateShipment(rawInput: ShipmentInput, ctx: PricingContext):
   for (const c of candidates) {
     if (!c.override || suppressed(c) || overrideSeen.has(c.rule.key)) continue;
     overrideSeen.add(c.rule.key);
-    references.overrides.push({ ruleKey: c.rule.key, mode: c.override.mode, reference: c.override.reference });
-    if (c.override.mode === "exclude") warn({ code: "rule_overridden", ruleKey: c.rule.key, message: `${c.rule.name} is waived for this customer (${c.override.reference}).` });
+    references.overrides.push({ ruleKey: c.rule.key, mode: c.override.mode });
+    if (c.override.mode === "exclude") warn({ code: "rule_overridden", ruleKey: c.rule.key, message: `${c.rule.name} is waived for this customer under your agreement.` });
   }
   for (const c of candidates) {
     if (c.outcome !== "unknown" || suppressed(c)) continue;

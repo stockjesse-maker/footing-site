@@ -7,6 +7,7 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/field";
+import { isAdjustmentFeeCategory } from "@/engine/types";
 import type { CalculationBase, CalculationMethod, ChargeClass, PackageType, RuleCondition, SignatureOption, SurchargeCategory, VerificationStatus } from "@/engine/types";
 import type { ServiceCatalogEntry } from "@/lib/import/rate-card-mapping";
 import { formatDate, formatDateTime } from "@/lib/format/date";
@@ -53,6 +54,12 @@ const CHARGE_CLASS_HINTS: Record<ChargeClass, string> = {
   conditional: "A post-shipment adjustment that may or may not occur (reweight, address correction). Shown as exposure, never counted.",
 };
 const CHARGE_CLASS_OPTIONS = (Object.keys(CHARGE_CLASS_LABELS) as ChargeClass[]).map((value) => ({ value, label: CHARGE_CLASS_LABELS[value] }));
+/** A reweigh, remeasure or shipping charge correction is something the carrier may apply after shipping: the only class it can have. */
+const ADJUSTMENT_FEE_CLASS_OPTIONS = CHARGE_CLASS_OPTIONS.filter((o) => o.value === "conditional");
+const ADJUSTMENT_FEE_CLASS_HINT = "Always a conditional adjustment for this category: it is charged only if the carrier applies it after shipping, so it is shown as possible exposure and never counted in a total.";
+
+/** Rule keys come out of the name and reach customers (they are readable through the API), so what goes in the name must be fit for them to read. */
+const RULE_KEY_HINT = "Rule keys can be read by your customers through the API, so do not put customer names or margins in them.";
 
 const METHOD_LABELS: Record<CalculationMethod, string> = { flat: "Flat amount", percent: "Percentage", per_unit: "Per unit of declared value" };
 const METHOD_OPTIONS = (Object.keys(METHOD_LABELS) as CalculationMethod[]).map((value) => ({ value, label: METHOD_LABELS[value] }));
@@ -895,7 +902,8 @@ function initialValues(initial: RuleFormInitial | undefined, carriers: CarrierOp
     name: initial.name,
     carrierCode: initial.carrierCode,
     category: initial.category,
-    chargeClass: initial.chargeClass,
+    // An earlier version of a reweigh, remeasure or correction rule may carry another class; a new version is always conditional.
+    chargeClass: isAdjustmentFeeCategory(initial.category) ? "conditional" : initial.chargeClass,
     method: initial.method,
     amount: tidy(initial.amount),
     percent: tidy(initial.percent),
@@ -950,6 +958,8 @@ export function RuleForm({ mode, ruleId, catalog, carriers, brands = [], knownGr
   const id = (name: string) => `${uid}-${name}`;
 
   const changeCarrier = (code: string) => setV((prev) => ({ ...prev, carrierCode: code, appliesToServiceIds: [] }));
+  const changeCategory = (category: SurchargeCategory) => setV((prev) => ({ ...prev, category, chargeClass: isAdjustmentFeeCategory(category) ? "conditional" : prev.chargeClass }));
+  const adjustmentFee = isAdjustmentFeeCategory(v.category);
   const addTop = () => setCond((s) => ({ drafts: [...s.drafts, emptyDraft(s.nextId)], nextId: s.nextId + 1 }));
   const addChild = (index: number) =>
     setCond((s) => ({ drafts: s.drafts.map((d, i) => (i === index ? { ...d, children: [...d.children, emptyDraft(s.nextId)] } : d)), nextId: s.nextId + 1 }));
@@ -986,10 +996,10 @@ export function RuleForm({ mode, ruleId, catalog, carriers, brands = [], knownGr
       <fieldset className="space-y-4">
         <legend className={legend}>Rule</legend>
         <div className="grid gap-4 sm:grid-cols-2">
-          <TextInput id={id("name")} name="name" label="Name" value={v.name} onChange={(name) => set("name", name)} required placeholder="e.g. Residential surcharge" hint={create ? <>Key: <span className="tabular">{previewKey(v.carrierCode, v.name)}</span>. Keys are permanent and referenced by other rules and service terms.</> : "Renames the rule for every version."} />
+          <TextInput id={id("name")} name="name" label="Name" value={v.name} onChange={(name) => set("name", name)} required placeholder="e.g. Residential surcharge" hint={create ? <>Key: <span className="tabular">{previewKey(v.carrierCode, v.name)}</span>. Keys are permanent and referenced by other rules and service terms. {RULE_KEY_HINT}</> : "Renames the rule for every version. The key it was created with does not change."} />
           <SelectInput id={id("carrierCode")} name="carrierCode" label="Carrier" value={v.carrierCode} onChange={changeCarrier} options={carriers.map((c) => ({ value: c.code, label: c.name }))} disabled={!create} hint={create ? undefined : "The carrier is fixed once a rule exists."} />
-          <SelectInput<SurchargeCategory> id={id("category")} name="category" label="Category" value={v.category} onChange={(category) => set("category", category)} options={CATEGORY_OPTIONS} hint="Decides the evaluation order and what a fuel percentage can be applied to." />
-          <SelectInput<ChargeClass> id={id("chargeClass")} name="chargeClass" label="Charge class" value={v.chargeClass} onChange={(chargeClass) => set("chargeClass", chargeClass)} options={CHARGE_CLASS_OPTIONS} hint={CHARGE_CLASS_HINTS[v.chargeClass]} />
+          <SelectInput<SurchargeCategory> id={id("category")} name="category" label="Category" value={v.category} onChange={changeCategory} options={CATEGORY_OPTIONS} disabled={!create} hint={create ? "Decides the evaluation order and what a fuel percentage can be applied to." : "The category is fixed once a rule exists."} />
+          <SelectInput<ChargeClass> id={id("chargeClass")} name="chargeClass" label="Charge class" value={v.chargeClass} onChange={(chargeClass) => set("chargeClass", chargeClass)} options={adjustmentFee ? ADJUSTMENT_FEE_CLASS_OPTIONS : CHARGE_CLASS_OPTIONS} hint={adjustmentFee ? ADJUSTMENT_FEE_CLASS_HINT : CHARGE_CLASS_HINTS[v.chargeClass]} />
           {create ? (
             <SelectInput id={id("brandId")} name="brandId" label="Applies to one customer only" value={v.brandId} onChange={(brandId) => set("brandId", brandId)} options={[{ value: "", label: "Every customer" }, ...brands.map((b) => ({ value: b.id, label: b.name }))]} hint="Choose a customer only for a bespoke accessorial that exists in their agreement alone." />
           ) : null}

@@ -36,7 +36,8 @@ interface OverrideRow {
   percent: string | number | null;
   effective_date: string;
   expiration_date: string | null;
-  reference: string;
+  /** The 3PL's note about the agreement, from the staff-only `customer_surcharge_override_notes` (the exception row itself no longer carries it). */
+  note?: string | null;
   surcharge_rules: { name: string; rule_key: string; carrier_code: string } | null;
 }
 
@@ -116,7 +117,7 @@ export async function CustomerPricing({ brandId, brandName, brandStatus, tenantI
       .overrideTypes<AssignmentRow[], { merge: false }>(),
     supabase
       .from("customer_surcharge_overrides")
-      .select("id, mode, amount, percent, effective_date, expiration_date, reference, surcharge_rules(name, rule_key, carrier_code)")
+      .select("id, mode, amount, percent, effective_date, expiration_date, surcharge_rules(name, rule_key, carrier_code)")
       .eq("brand_id", brandId)
       .eq("tenant_id", tenantId)
       .is("ended_at", null)
@@ -145,6 +146,14 @@ export async function CustomerPricing({ brandId, brandName, brandStatus, tenantI
   for (const s of catalog) if (!carrierName.has(s.carrierCode)) carrierName.set(s.carrierCode, s.carrierName);
   const carrierLabel = (code: string) => carrierName.get(code) ?? code.toUpperCase();
 
+  // The reference notes are staff-only (a customer can read its own exceptions, never the 3PL's notes about them), so they are read here, on a 3PL page, and nowhere a customer reaches.
+  const overrideList: OverrideRow[] = overrides.data ?? [];
+  if (overrideList.length) {
+    const { data: notes } = await supabase.from("customer_surcharge_override_notes").select("override_id, reference").in("override_id", overrideList.map((o) => o.id)).overrideTypes<{ override_id: string; reference: string }[], { merge: false }>();
+    const byOverride = new Map((notes ?? []).map((n) => [n.override_id, n.reference]));
+    for (const o of overrideList) o.note = byOverride.get(o.id) ?? null;
+  }
+
   const assigned = assignments.data ?? [];
   const assignedCardIds = new Set(assigned.map((a) => a.rate_card_id));
   const offeredCards = (cards.data ?? []).filter((c) => !assignedCardIds.has(c.id));
@@ -172,7 +181,7 @@ export async function CustomerPricing({ brandId, brandName, brandStatus, tenantI
         <p className="text-sm text-muted">
           An exception changes how a published surcharge is charged to {brandName} only; the rule itself and every other customer stay as they are. Each one is recorded in the activity log.
         </p>
-        <OverridesList overrides={overrides.data ?? []} carrierLabel={carrierLabel} canManage={canManage} />
+        <OverridesList overrides={overrideList} carrierLabel={carrierLabel} canManage={canManage} />
       </div>
 
       {showForms ? <CreateOverrideForm brandId={brandId} brandName={brandName} rules={rules.data ?? []} carrierLabel={carrierLabel} /> : null}
@@ -321,7 +330,7 @@ function OverridesList({ overrides, carrierLabel, canManage }: { overrides: Over
                 {rule ? <span className="ml-2 text-sm font-normal text-muted">{rule.rule_key}</span> : null}
               </p>
               <p className="tabular text-sm text-muted">
-                {dates} · Ref: {o.reference}
+                {dates} · Ref: {o.note ?? "not on file"}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -369,7 +378,7 @@ function CreateOverrideForm({ brandId, brandName, rules, carrierLabel }: { brand
             <DateField id="override-effectiveDate" name="effectiveDate" label="Effective from" required defaultValue={today} />
             <DateField id="override-expirationDate" name="expirationDate" label="Expires on" hint="Leave empty if the exception is open-ended." />
           </div>
-          <TextField name="reference" label="Reference" required placeholder="e.g. Pricing addendum, 1 Sep 2026" hint="The agreement or correspondence that grants this exception, with its date." />
+          <TextField name="reference" label="Reference" required placeholder="e.g. Pricing addendum, 1 Sep 2026" hint="The agreement or correspondence that grants this exception, with its date. Only your team can read this; the customer never sees it." />
           <SubmitButton pendingLabel="Saving…">Save exception</SubmitButton>
         </ActionForm>
       ) : (

@@ -86,6 +86,10 @@ describe("rule editor renders", () => {
     }
     expect(t).toContain("Fill in the fields above to see the wording your customer will read.");
     expect(html).not.toContain('role="alert"');
+    // Keys of fee rules reach customers through the run's fee dictionary and the API, so the editor must not call them private
+    // (it used to say "Customers never see it").
+    expect(t).toContain("Rule keys can be read by your customers through the API, so do not put customer names or margins in them.");
+    expect(t).not.toContain("Customers never see it. It cannot change");
     // Labelled controls the e2e suite relies on.
     for (const label of ["Name", "Category", "Key (staff only)", "Charged", "Charged per", "Pricing", "Description (optional)", "Where this number comes from (optional)"]) expect(t, label).toContain(label);
     expect(html).toContain(">Save rule<");

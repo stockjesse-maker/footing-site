@@ -140,8 +140,12 @@ export interface ServiceTerms {
   zoneIndependent: boolean;
   /** Customer-facing markup on every surcharge that is not included, excluded or individually overridden ("published + X%"). */
   surchargeMarkupPercent: DecimalString | null;
-  /** Where these terms come from (activation is the 3PL's approval of them). */
-  sourceReference: string;
+  /**
+   * Where these terms come from (activation is the 3PL's approval of them). Staff-only text: the database keeps it in
+   * `rate_card_service_term_sources`, which brand members cannot read, so `loadServiceTerms` (which brand-reachable code
+   * calls) never loads it and the engine never puts it in a result. Absent unless a staff-only caller supplies it.
+   */
+  sourceReference?: string;
   /** Explicit reference recorded in results so a number can be traced to its published terms. */
   termsVersion: string;
 }
@@ -195,6 +199,18 @@ export const SURCHARGE_CATEGORIES = [
   "fuel", "residential", "das", "das_extended", "remote_area", "additional_handling", "oversize", "peak", "address_correction",
   "signature", "declared_value", "saturday_delivery", "reweight", "remeasure", "shipping_charge_correction", "other",
 ] as const;
+
+/**
+ * Categories whose rules are post-shipment corrections the carrier may apply (a reweigh, a remeasure, a corrected shipping
+ * charge). They are always conditional charges, never counted in a total. The surcharge-rule form and action enforce it, and the
+ * database trigger `app.guard_adjustment_fee_class` refuses any other charge class (SQLSTATE 23514).
+ */
+export const ADJUSTMENT_FEE_CATEGORIES = ["reweight", "remeasure", "shipping_charge_correction"] as const;
+export type AdjustmentFeeCategory = (typeof ADJUSTMENT_FEE_CATEGORIES)[number];
+export const isAdjustmentFeeCategory = (category: string): category is AdjustmentFeeCategory => (ADJUSTMENT_FEE_CATEGORIES as readonly string[]).includes(category);
+/** What the rule form and action tell a 3PL who gives one of those categories another charge class (the database refuses it with 23514). */
+export const ADJUSTMENT_FEE_CLASS_MESSAGE =
+  "A reweigh, remeasure or shipping charge correction fee is charged only if the carrier applies it after shipping, so it must be a conditional adjustment. It is shown as possible exposure and never counted in a total.";
 
 export type SurchargeCategory =
   | "fuel"
@@ -320,6 +336,12 @@ export interface SurchargeOverride {
   percent: DecimalString | null;
   effectiveDate: string;
   expirationDate: string | null;
+  /**
+   * A label for the exception, never the 3PL's own note about the agreement behind it: that note lives in
+   * `customer_surcharge_override_notes` (staff only) and `pricing_rules_for_card` returns a fixed label here. The engine uses it
+   * only to order two overrides that start on the same day, and never copies it into an explanation, a warning or a reference
+   * (customers read all three).
+   */
   reference: string;
 }
 
@@ -450,7 +472,7 @@ export interface ShipmentCalculation {
     termsVersion: string | null;
     rules: RuleReference[];
     zipLists: { key: string; version: number; sourceReference: string }[];
-    overrides: { ruleKey: string; mode: SurchargeOverride["mode"]; reference: string }[];
+    overrides: { ruleKey: string; mode: SurchargeOverride["mode"] }[];
   };
   warnings: CalculationWarning[];
 }

@@ -259,8 +259,12 @@ export interface PartialSummary {
   unresolvedBy: Record<"dimensions_missing" | "zip_list_missing" | "other", { shipments: number; amount: DecimalString }>;
   /** Modeled shipments carrying a non-zero conditional / unresolved amount: the N in "up to X across N shipments". */
   exposureShipments: { conditional: number; unresolved: number };
-  /** Distinct pricing-configuration problems met while loading (rule names, never keys); merged by the run loop, untouched by the fold. */
-  loadIssues: string[];
+  /**
+   * Ids of the distinct rule versions that could not be applied while loading pricing (a problem is counted once per rule version);
+   * merged by the run loop, untouched by the fold. Ids, never the problem text: this document is stored on the run, which the
+   * customer can read, while the text names the 3PL's rules and lives in the staff-only `simulation_run_contexts.load_issues`.
+   */
+  loadIssueKeys: string[];
 }
 
 export interface DatasetCounts {
@@ -348,8 +352,11 @@ export interface BulkSummary {
   shipmentLevel: PartialSummary["shipmentLevel"];
   bySurcharge: SurchargeBucket[];
   warnings: Array<{ code: string; ruleKey: string | null; shipments: number }>;
-  /** Configuration problems found while loading pricing contexts (rule versions that could not be applied). */
-  loadIssues: string[];
+  /**
+   * How many distinct rule versions could not be applied while loading pricing contexts. A count only: what each problem says names
+   * the 3PL's rules, so staff read the text from `simulation_run_contexts.load_issues` and a customer never receives it.
+   */
+  loadIssueCount: number;
   assumptions: PartialSummary["assumptions"];
   dictionary: LineDictionaryEntry[];
   // --- Milestone 4: fees, monthly charges, minimums, period and allocation ---

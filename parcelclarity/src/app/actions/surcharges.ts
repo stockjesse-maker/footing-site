@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { SURCHARGE_CATEGORIES } from "@/engine/types";
+import { ADJUSTMENT_FEE_CLASS_MESSAGE, SURCHARGE_CATEGORIES, isAdjustmentFeeCategory } from "@/engine/types";
 import { calculationBaseSchema, ruleConditionSchema } from "@/engine/validate";
 import type { ActionState } from "@/lib/actions";
 import { fieldErrors, nameSchema, uuidSchema } from "@/lib/auth/validation";
@@ -50,6 +50,8 @@ const ruleVersionFields = z
     if (v.method === "percent" && v.percent === null) ctx.addIssue({ code: "custom", path: ["percent"], message: "Enter the percentage." });
     if (v.method === "per_unit" && (v.amount === null || v.perUnitSize === null)) ctx.addIssue({ code: "custom", path: ["amount"], message: "Enter the amount per unit and the unit size." });
     if (v.expirationDate && v.expirationDate < v.effectiveDate) ctx.addIssue({ code: "custom", path: ["expirationDate"], message: "Expiration must not precede the effective date." });
+    // A correction the carrier applies after shipping can never be a counted charge (the database trigger refuses it too, with 23514).
+    if (isAdjustmentFeeCategory(v.category) && v.chargeClass !== "conditional") ctx.addIssue({ code: "custom", path: ["chargeClass"], message: ADJUSTMENT_FEE_CLASS_MESSAGE });
   });
 
 function parseJsonField(formData: FormData, name: string, fallback: unknown): unknown {
@@ -145,6 +147,7 @@ export async function createSurchargeRule(_prev: ActionState, formData: FormData
   if (!ruleId) return { ok: false, message: "Could not create a unique key for this rule. Try a different name." };
 
   const { data: version, error } = await supabase.from("surcharge_rule_versions").insert(versionRow(v, ctx.active.tenantId, ruleId, 1)).select("id").single();
+  if (error?.code === "23514") return { ok: false, errors: { chargeClass: ADJUSTMENT_FEE_CLASS_MESSAGE } };
   if (error || !version) return { ok: false, message: GENERIC_FAILURE };
   revalidatePath("/app/surcharges");
   redirect(`/app/surcharges/${ruleId}`);
@@ -156,14 +159,17 @@ export async function addSurchargeRuleVersion(_prev: ActionState, formData: Form
   const ruleId = String(formData.get("ruleId") ?? "");
   if (!uuidSchema.safeParse(ruleId).success) return { ok: false, message: GENERIC_FAILURE };
   const supabase = await createClient();
-  const { data: rule } = await supabase.from("surcharge_rules").select("id, tenant_id, scope, carrier_code").eq("id", ruleId).maybeSingle();
+  const { data: rule } = await supabase.from("surcharge_rules").select("id, tenant_id, scope, carrier_code, category").eq("id", ruleId).maybeSingle();
   if (!rule || rule.tenant_id !== ctx.active.tenantId || rule.scope !== "tenant") return { ok: false, message: "Rule not found." };
   formData.set("carrierCode", rule.carrier_code);
+  // The category belongs to the rule and never changes with a version: the charge class is checked against the stored one.
+  formData.set("category", rule.category);
   const parsed = readRuleFields(formData);
   if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
   if (parsed.data.name) await supabase.from("surcharge_rules").update({ name: parsed.data.name }).eq("id", ruleId);
   const { data: latest } = await supabase.from("surcharge_rule_versions").select("version_number").eq("rule_id", ruleId).order("version_number", { ascending: false }).limit(1).maybeSingle();
   const { error } = await supabase.from("surcharge_rule_versions").insert(versionRow({ ...parsed.data, carrierCode: rule.carrier_code }, ctx.active.tenantId, ruleId, (latest?.version_number ?? 0) + 1));
+  if (error?.code === "23514") return { ok: false, errors: { chargeClass: ADJUSTMENT_FEE_CLASS_MESSAGE } };
   if (error) return { ok: false, message: GENERIC_FAILURE };
   revalidatePath(`/app/surcharges/${ruleId}`);
   return { ok: true, message: "Draft version added." };
@@ -262,20 +268,31 @@ export async function createOverride(_prev: ActionState, formData: FormData): Pr
     const fits = v.mode === "exclude" || v.mode === "markup_percent" || (v.mode === "override_amount" ? method !== "percent" : method === "percent");
     if (!fits) return { ok: false, errors: { mode: method === "percent" ? "This rule is a percentage: use override percent, add percentage points, markup or waive." : "This rule is a fixed amount: use override amount, markup or waive." } };
   }
-  const { error } = await supabase.from("customer_surcharge_overrides").insert({
-    tenant_id: ctx.active.tenantId,
-    brand_id: v.brandId,
-    rule_id: v.ruleId,
-    mode: v.mode,
-    amount: v.mode === "override_amount" ? v.amount : null,
-    percent: v.mode === "override_percent" || v.mode === "markup_percent" || v.mode === "add_percent_points" ? v.percent : null,
-    effective_date: v.effectiveDate,
-    expiration_date: v.expirationDate,
-    reference: v.reference,
-  });
-  if (error) {
-    if (error.code === "42501") return { ok: false, message: "That rule cannot be overridden for this customer." };
-    if (error.code === "23P01") return { ok: false, errors: { effectiveDate: "Another exception for this surcharge already covers these dates. End it first." } };
+  // The exception first, then the 3PL's note about the agreement behind it. The note is its own staff-only row
+  // (`customer_surcharge_override_notes`): the exception itself is readable by the customer it applies to, the note never is.
+  const { data: created, error } = await supabase
+    .from("customer_surcharge_overrides")
+    .insert({
+      tenant_id: ctx.active.tenantId,
+      brand_id: v.brandId,
+      rule_id: v.ruleId,
+      mode: v.mode,
+      amount: v.mode === "override_amount" ? v.amount : null,
+      percent: v.mode === "override_percent" || v.mode === "markup_percent" || v.mode === "add_percent_points" ? v.percent : null,
+      effective_date: v.effectiveDate,
+      expiration_date: v.expirationDate,
+    })
+    .select("id")
+    .single();
+  if (error || !created) {
+    if (error?.code === "42501") return { ok: false, message: "That rule cannot be overridden for this customer." };
+    if (error?.code === "23P01") return { ok: false, errors: { effectiveDate: "Another exception for this surcharge already covers these dates. End it first." } };
+    return { ok: false, message: GENERIC_FAILURE };
+  }
+  const { error: noteError } = await supabase.from("customer_surcharge_override_notes").insert({ override_id: created.id, tenant_id: ctx.active.tenantId, reference: v.reference });
+  if (noteError) {
+    // An exception without the reference the form requires must not stay in force: end it again and let the person retry.
+    await supabase.from("customer_surcharge_overrides").update({ ended_at: new Date().toISOString() }).eq("id", created.id).eq("tenant_id", ctx.active.tenantId);
     return { ok: false, message: GENERIC_FAILURE };
   }
   revalidatePath(`/app/customers/${v.brandId}`);

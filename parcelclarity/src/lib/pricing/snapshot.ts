@@ -45,7 +45,6 @@ interface TermsRow {
   zone_chart_key: string;
   zone_independent: boolean;
   surcharge_markup_percent: string | number | null;
-  source_reference: string;
   shipping_services: { id: string; carrier_code: string; code: string; name: string } | null;
 }
 
@@ -82,7 +81,10 @@ interface RulesPayload {
   }>;
   /** `entries` is null for lists the caller said it already holds (`p_known_lists`). */
   zipLists: Array<{ id: string; key: string; version: number; sourceReference: string; effectiveDate: string; expirationDate: string | null; entries: string[] | null }>;
-  /** The priced brand's live exceptions, already joined to rule keys inside the authorizing function. */
+  /**
+   * The priced brand's live exceptions, already joined to rule keys inside the authorizing function. `reference` is a fixed
+   * label: the 3PL's note lives in the staff-only `customer_surcharge_override_notes` and is never part of this payload.
+   */
   overrides: Array<{ id: string; ruleKey: string; mode: SurchargeOverride["mode"]; amount: string | null; percent: string | null; effectiveDate: string; expirationDate: string | null; reference: string }>;
   brandId: string | null;
 }
@@ -130,11 +132,15 @@ export async function resolveVersion(
   };
 }
 
+/**
+ * The service terms of a version. Brand-reachable (the calculator, runs and forecasts all load through here), so it never
+ * reads `rate_card_service_term_sources`, the staff-only table holding each term's source note; `sourceReference` stays unset.
+ */
 export async function loadServiceTerms(supabase: SupabaseClient, versionId: string): Promise<ServiceTerms[]> {
   const { data, error } = await supabase
     .from("rate_card_service_terms")
     .select(
-      "service_id, dim_divisor, dim_threshold_cubic_in, dimension_rounding, weight_rounding, min_billable_lb, dim_exempt, min_charge, included_surcharge_keys, excluded_surcharge_keys, zone_chart_key, zone_independent, surcharge_markup_percent, source_reference, shipping_services(id, carrier_code, code, name)",
+      "service_id, dim_divisor, dim_threshold_cubic_in, dimension_rounding, weight_rounding, min_billable_lb, dim_exempt, min_charge, included_surcharge_keys, excluded_surcharge_keys, zone_chart_key, zone_independent, surcharge_markup_percent, shipping_services(id, carrier_code, code, name)",
     )
     .eq("version_id", versionId)
     .overrideTypes<TermsRow[], { merge: false }>();
@@ -160,7 +166,6 @@ export async function loadServiceTerms(supabase: SupabaseClient, versionId: stri
       zoneChartKey: t.zone_chart_key ?? "default",
       zoneIndependent: t.zone_independent ?? false,
       surchargeMarkupPercent: num(t.surcharge_markup_percent),
-      sourceReference: t.source_reference,
       termsVersion: `${versionId}:${t.service_id}`,
     }))
     .sort((a, b) => a.carrierCode.localeCompare(b.carrierCode) || a.serviceName.localeCompare(b.serviceName));
@@ -177,6 +182,13 @@ export interface LoadOptions {
   serviceIds?: string[];
   /** Shared across loads by bulk runs; never shared between users. */
   cache?: PricingLoadCache;
+  /**
+   * Staff only: ask for the unfiltered context. A reweigh, remeasure or correction fee rule leaves a customer's pricing context when the
+   * 3PL's decision for that customer says the fee is not billed to them; the adjustment screens need that rule to price it. The database
+   * grants this only to staff who may view adjustments (anyone else gets the filtered context whatever they pass), and it is sent only
+   * when true, so every other caller's request is exactly what it was.
+   */
+  adjustmentView?: boolean;
 }
 
 export interface LoadedSnapshot {
@@ -186,6 +198,11 @@ export interface LoadedSnapshot {
   tenantId: string;
   /** Rule versions that could not be used (malformed conditions or base); surfaced as warnings by callers. */
   issues: string[];
+  /**
+   * The rule version ids behind `issues`, one per issue and in the same order. Runs keep these (never the text, which names the
+   * 3PL's rules) to count distinct problems without storing words a customer could read; the text goes to the staff-only run context.
+   */
+  issueVersionIds: string[];
   pins: PricingPins;
 }
 
@@ -233,7 +250,7 @@ async function loadPricingContextInner(supabase: SupabaseClient, opts: LoadOptio
   const [rowsResult, zonesResult, rulesResult] = await Promise.all([
     cached && !opts.serviceIds ? Promise.resolve({ data: cached.rows, error: null }) : supabase.rpc("rate_card_rows_json", { p_version: version.id, p_service_ids: opts.serviceIds ?? null }),
     cached ? Promise.resolve({ data: cached.zones, error: null }) : supabase.rpc("rate_card_zones_json", { p_version: version.id }),
-    supabase.rpc("pricing_rules_for_card", { p_rate_card: card.id, p_ship_date: opts.shipDate, p_brand: opts.brandId ?? null, p_known_lists: knownLists }),
+    supabase.rpc("pricing_rules_for_card", { p_rate_card: card.id, p_ship_date: opts.shipDate, p_brand: opts.brandId ?? null, p_known_lists: knownLists, ...(opts.adjustmentView ? { p_adjustment_view: true } : {}) }),
   ]);
   // A failed load is never priced as "no rules": the database refuses the call (P0003) when the caller
   // or the brand being priced has no right to this card; anything else is an outage, not a quote.
@@ -244,9 +261,10 @@ async function loadPricingContextInner(supabase: SupabaseClient, opts: LoadOptio
   if (opts.cache && !cached && !opts.serviceIds) opts.cache.versions.set(version.id, { terms: await loadServiceTerms(supabase, version.id), rows, zones });
 
   const issues: string[] = [];
+  const issueVersionIds: string[] = [];
   const payload = rulesResult.data as RulesPayload;
   const serviceCodeById = new Map(terms.map((t) => [t.serviceId, t.serviceCode]));
-  const rules = mapRules(payload, serviceCodeById, issues);
+  const rules = mapRules(payload, serviceCodeById, issues, issueVersionIds);
   const zipLists: ZipList[] = [];
   for (const l of payload.zipLists ?? []) {
     const known = opts.cache?.zipLists.get(l.id);
@@ -294,12 +312,13 @@ async function loadPricingContextInner(supabase: SupabaseClient, opts: LoadOptio
       services: terms.map((t) => ({ serviceId: t.serviceId, carrierCode: t.carrierCode, serviceCode: t.serviceCode, serviceName: t.serviceName })),
       tenantId: card.tenant_id,
       issues,
+      issueVersionIds,
       pins,
     },
   };
 }
 
-function mapRules(payload: RulesPayload, serviceCodeById: Map<string, string>, issues: string[]): SurchargeRule[] {
+function mapRules(payload: RulesPayload, serviceCodeById: Map<string, string>, issues: string[], issueVersionIds: string[]): SurchargeRule[] {
   const rules: SurchargeRule[] = [];
   for (const v of payload.rules ?? []) {
     const conditions: RuleCondition[] = [];
@@ -313,6 +332,7 @@ function mapRules(payload: RulesPayload, serviceCodeById: Map<string, string>, i
     if (bad || !base.success) {
       // Rules are named, never keyed, in anything a customer may read.
       issues.push(`The surcharge rule "${v.name}" has an invalid condition or base and was not applied.`);
+      issueVersionIds.push(v.versionId);
       continue;
     }
     const serviceCodes = v.appliesToServiceIds ? v.appliesToServiceIds.map((id) => serviceCodeById.get(id)).filter((c): c is string => !!c) : null;

@@ -3,7 +3,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { calculateShipment } from "@/engine/calculate";
 import { FEE_ENGINE_VERSION, calculateOrderFees, normalisePackaging } from "@/engine/fees";
 import type { FeeRule, FeeScheduleSnapshot, OrderFeeContext } from "@/engine/fees/types";
-import { createDictionary, emptyPartial, encodeOrderFees, encodeResult, finalizeSummary, foldBatch } from "@/engine/modeling";
+import { createDictionary, encodeOrderFees, encodeResult, finalizeSummary, foldBatch, readStoredPartial } from "@/engine/modeling";
 import type { CompactResult, DatasetCounts, ExclusionReason, FeeDictionaryEntry, FeeStatus, FinalizeFeeInput, FoldOrder, FoldOrderFees, FoldShipment, PartialSummary, RunPeriod } from "@/engine/modeling/types";
 import { ENGINE_VERSION, type AssumedInputs, type DecimalString, type PackageInput, type ShipmentInput } from "@/engine/types";
 import type { ServiceCatalogEntry } from "@/lib/import/rate-card-mapping";
@@ -304,7 +304,7 @@ export async function priceBatchCore(
   let nextRow = run.next_row_no;
   let processed = run.processed_shipments;
   const total = run.total_shipments;
-  let partial: PartialSummary = run.partial_summary ?? emptyPartial();
+  let partial: PartialSummary = readStoredPartial(run.partial_summary);
   let applied = true;
 
   const loadContext = async (shipDate: string): Promise<ContextLoad> => {
@@ -368,7 +368,7 @@ export async function priceBatchCore(
     if (!input.shipments.length) break;
     // The partial that belongs to this cursor position: another caller (a second tab, a retry whose
     // first request was still pricing) may have advanced the run since this call read the row.
-    partial = input.partialSummary ?? emptyPartial();
+    partial = readStoredPartial(input.partialSummary);
     nextRow = input.fromRow;
     if (partial.version !== 2) throw new RangeError("this run was started by an older release of the modeling engine; start it again");
 
@@ -419,7 +419,9 @@ export async function priceBatchCore(
       let compact: CompactResult | null = null;
       if (!excludedReason) {
         const ctx = await loadContext(shipDate!);
-        if (ctx.ok) for (const issue of ctx.snapshot.issues) if (!partial.loadIssues.includes(issue)) partial = { ...partial, loadIssues: [...partial.loadIssues, issue] };
+        // The run keeps the id of each rule version that could not be applied (to count it once), never the text: the text names the
+        // 3PL's rules, the run row is readable by the customer, and staff read the text from the run's contexts (load_issues, staff only).
+        if (ctx.ok) for (const id of ctx.snapshot.issueVersionIds) if (!partial.loadIssueKeys.includes(id)) partial = { ...partial, loadIssueKeys: [...partial.loadIssueKeys, id] };
         if (!contextRows.has(shipDate!)) {
           contextRows.set(shipDate!, ctx.ok
             ? { ship_date: shipDate!, rate_card_version_id: ctx.snapshot.pins.rateCardVersionId, rule_version_ids: ctx.snapshot.pins.ruleVersionIds, zip_list_ids: ctx.snapshot.pins.zipListIds, override_ids: ctx.snapshot.pins.overrideIds, load_issues: ctx.snapshot.issues, unavailable_reason: null }

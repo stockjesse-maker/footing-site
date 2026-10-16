@@ -297,7 +297,7 @@ export function RuleForm({ versionId, rule, source, otherRules: siblingRules, on
             error={err("key")}
             readOnly={!creating}
             maxLength={61}
-            hint={creating ? "An internal identifier other rules refer to: lower-case letters, digits and underscores. Customers never see it. It cannot change once saved." : "The key is fixed once the rule exists; other rules may refer to it."}
+            hint={creating ? "An identifier other rules refer to: lower-case letters, digits and underscores. It cannot change once saved. Rule keys can be read by your customers through the API, so do not put customer names or margins in them." : "The key is fixed once the rule exists; other rules may refer to it. Rule keys can be read by your customers through the API, so do not put customer names or margins in them."}
           />
         </div>
       </fieldset>

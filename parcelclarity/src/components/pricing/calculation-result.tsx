@@ -410,7 +410,7 @@ function References({ references, uid }: { references: ShipmentCalculation["refe
             <ul className="mt-1 space-y-1 text-xs text-muted">
               {references.overrides.map((o) => (
                 <li key={`${o.ruleKey}-${o.mode}`}>
-                  <span className="font-mono">{o.ruleKey}</span> · {o.mode.replace(/_/g, " ")} · {o.reference}
+                  <span className="font-mono">{o.ruleKey}</span> · {o.mode.replace(/_/g, " ")}
                 </li>
               ))}
             </ul>

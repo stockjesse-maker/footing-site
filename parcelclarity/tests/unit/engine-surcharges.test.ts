@@ -593,27 +593,33 @@ describe("customer overrides", () => {
     expect(l.amount.amount).toBe("5.00");
     expect(l.counted).toBe(false);
     expect(l.chargeClass).toBe("definite");
-    expect(l.explanation).toContain("Waived for this customer (AGREEMENT-1); not charged");
+    // Customers read explanations and warnings, so they say the exception exists, never what the 3PL noted about the agreement behind it
+    // (was "Waived for this customer (AGREEMENT-1); not charged" and "... is waived for this customer (AGREEMENT-1).").
+    expect(l.explanation).toContain("Waived for this customer under your agreement; not charged");
     expect(totals(r).expected).toBe("10.00");
-    expect(r.warnings).toEqual([{ code: "rule_overridden", ruleKey: "res", message: "Residential surcharge is waived for this customer (AGREEMENT-1)." }]);
+    expect(r.warnings).toEqual([{ code: "rule_overridden", ruleKey: "res", message: "Residential surcharge is waived for this customer under your agreement." }]);
+    expect(JSON.stringify(r)).not.toContain("AGREEMENT-1");
 
     const commercial = calc(shipment([ONE_LB], { residential: false }), ctx);
     expect(linesFor(commercial, "res")).toHaveLength(0);
     expect(warningCodes(commercial)).toEqual([]);
   });
 
-  it("override_amount and override_percent replace the rule's figures, name the agreement, and add no warning", () => {
+  it("override_amount and override_percent replace the rule's figures, say a customer-specific rate applied without quoting the reference, and add no warning", () => {
     const rules = [residential(), fuel("20", { kind: "base_rate" })];
     const overrides = [override("res", "override_amount", { amount: "7.25", reference: "AGREEMENT-RES" }), override("fuel", "override_percent", { percent: "10", reference: "AGREEMENT-FUEL" })];
     const r = calc(shipment([ONE_LB], { residential: true }), context({ rules, overrides }));
     const res = lineFor(r, "res");
     expect(res.amount.amount).toBe("7.25"); // 5.00 replaced by 7.25
     expect(res.counted).toBe(true);
-    expect(res.explanation).toContain("Customer-specific rate applied (AGREEMENT-RES)");
+    expect(res.explanation).toContain("Customer-specific rate applied under your agreement."); // was "... applied (AGREEMENT-RES)."
+    expect(res.explanation).not.toContain("AGREEMENT-RES");
     const f = lineFor(r, "fuel");
     expect(f.amount.amount).toBe("1.00"); // 10% of the 10.00 base (not the rule's 20%)
     expect(f.basis).toBe("10.0% of 10.0"); // basis strings use fmt(): trailing zeros trimmed, one decimal kept
-    expect(f.explanation).toContain("Customer-specific rate applied (AGREEMENT-FUEL)");
+    expect(f.explanation).toContain("Customer-specific rate applied under your agreement."); // was "... applied (AGREEMENT-FUEL)."
+    expect(f.explanation).not.toContain("AGREEMENT-FUEL");
+    expect(JSON.stringify(r)).not.toMatch(/AGREEMENT-(RES|FUEL)/);
     // 10.00 + 7.25 + 1.00 = 18.25
     expect(totals(r)).toEqual({ definite: "18.25", estimated: "0.00", expected: "18.25", conditionalExposure: "0.00" });
     expect(warningCodes(r)).toEqual([]);
@@ -973,12 +979,14 @@ describe("totals", () => {
 
 describe("customer exceptions that cannot change the figure", () => {
   it("a percentage exception on a flat rule is ignored with a warning, and is not claimed as applied", () => {
-    const r = calc(shipment([ONE_LB]), context({ rules: [rule("res", { amount: "5.55" })], overrides: [override("res", "add_percent_points", { percent: "2" })] }));
+    const r = calc(shipment([ONE_LB]), context({ rules: [rule("res", { amount: "5.55" })], overrides: [override("res", "add_percent_points", { percent: "2", reference: "AGREEMENT-NOFIT" })] }));
     const line = lineFor(r, "res");
     expect(line.amount.amount).toBe("5.55");
     expect(line.explanation).not.toContain("Customer-specific rate applied");
     expect(r.references.overrides).toEqual([]);
     expect(r.warnings).toContainEqual(expect.objectContaining({ code: "override_not_applicable", ruleKey: "res" }));
+    // The warning names the exception's mode, not the 3PL's reference (customers read warnings).
+    expect(JSON.stringify(r.warnings)).not.toContain("AGREEMENT-NOFIT");
   });
 
   it("an amount exception on a percent rule is ignored; a markup or waiver fits any method", () => {
@@ -987,7 +995,7 @@ describe("customer exceptions that cannot change the figure", () => {
     expect(pct.warnings.map((w) => w.code)).toContain("override_not_applicable");
     const marked = calc(shipment([ONE_LB]), context({ rules: [fuel("20", { kind: "base_rate" })], overrides: [override("fuel", "markup_percent", { percent: "50" })] }));
     expect(lineFor(marked, "fuel").amount.amount).toBe("3.00"); // 30% × 10.00
-    expect(marked.references.overrides).toEqual([expect.objectContaining({ ruleKey: "fuel", mode: "markup_percent" })]);
+    expect(marked.references.overrides).toEqual([{ ruleKey: "fuel", mode: "markup_percent" }]); // no reference: it is the 3PL's private note
     expect(marked.warnings.map((w) => w.code)).not.toContain("override_not_applicable");
   });
 });

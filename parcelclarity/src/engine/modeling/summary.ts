@@ -23,7 +23,11 @@ import type { BulkSummary, CategoryCompleteness, CompletenessState, DatasetCount
  */
 export type FinalizedSummary = BulkSummary & { processing: FeeSummary["processing"] };
 
-export function finalizeSummary(partial: PartialSummary, datasetCounts: DatasetCounts, loadIssues: string[], engineVersion: string, fees: FinalizeFeeInput): FinalizedSummary {
+/**
+ * `loadIssueKeys` are rule-version ids of problems found at finalize time, on top of those the partial carries; the summary keeps
+ * their distinct count only (never what the problems say: that names the 3PL's rules and is staff-only).
+ */
+export function finalizeSummary(partial: PartialSummary, datasetCounts: DatasetCounts, loadIssueKeys: string[], engineVersion: string, fees: FinalizeFeeInput): FinalizedSummary {
   if (partial.version !== 2) throw new RangeError(`partial summary version ${String((partial as { version: unknown }).version)} is not supported; the run must be started again`);
   const modeled = { orders: partial.orders.modeled, shipments: partial.shipments.modeled, packages: partial.packages.modeled };
   const expected = dec(partial.totals.expected);
@@ -78,7 +82,7 @@ export function finalizeSummary(partial: PartialSummary, datasetCounts: DatasetC
     warnings: Object.entries(partial.warnings)
       .map(([stored, w]) => ({ ...splitWarningCode(stored), shipments: w.shipments }))
       .sort((a, b) => b.shipments - a.shipments || compareKeys(a.code, b.code) || compareKeys(a.ruleKey ?? "", b.ruleKey ?? "")),
-    loadIssues: [...new Set([...partial.loadIssues, ...loadIssues])].sort(compareKeys),
+    loadIssueCount: new Set([...partial.loadIssueKeys, ...loadIssueKeys]).size,
     assumptions: { ...partial.assumptions },
     dictionary: partial.dictionary.map((e) => ({ ...e })),
     // --- Milestone 4 ---

@@ -76,8 +76,23 @@ export function emptyPartial(): PartialSummary {
     assumptions: { residential: 0, originZip: 0, weight: 0, dimensions: 0, packagesWithoutDimensions: 0 },
     unresolvedBy: { dimensions_missing: { shipments: 0, amount: ZERO }, zip_list_missing: { shipments: 0, amount: ZERO }, other: { shipments: 0, amount: ZERO } },
     exposureShipments: { conditional: 0, unresolved: 0 },
-    loadIssues: [],
+    loadIssueKeys: [],
   };
+}
+
+/**
+ * A stored partial summary as this release reads it (null when the run has none yet). A partial written by an earlier release
+ * carries the text of its load issues (`loadIssues`) where this release carries rule-version ids (`loadIssueKeys`). The text names
+ * the 3PL's rules and the run row is readable by the customer, so it is dropped here and never written back; each distinct problem
+ * stays as an opaque key so the count survives. Such a run may count a rule it meets again once more (the key cannot be matched to an id).
+ */
+export function readStoredPartial(stored: PartialSummary | null): PartialSummary {
+  if (!stored) return emptyPartial();
+  const earlierText = (stored as { loadIssues?: unknown }).loadIssues;
+  if (earlierText === undefined && Array.isArray(stored.loadIssueKeys)) return stored;
+  const { loadIssues: _text, ...rest } = stored as PartialSummary & { loadIssues?: unknown };
+  const earlier = Array.isArray(earlierText) ? [...new Set(earlierText.filter((x): x is string => typeof x === "string"))].map((_, i) => `earlier-release:${i}`) : [];
+  return { ...rest, loadIssueKeys: [...new Set([...(Array.isArray(rest.loadIssueKeys) ? rest.loadIssueKeys : []), ...earlier])] };
 }
 
 /** The lowest bracket whose upper edge is at or above the billable weight; beyond the last edge, the open-ended top bracket. */

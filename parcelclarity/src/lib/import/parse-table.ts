@@ -99,6 +99,12 @@ export type ParseLimits = { maxBytes: number; maxRowsPerSheet: number; maxCellsP
 /** Order files are wider and longer than rate cards (a Shopify export has ~75 columns, one row per line item). */
 export const ORDER_FILE_LIMITS: ParseLimits = { maxBytes: 15 * 1024 * 1024, maxRowsPerSheet: 100_000, maxCellsPerSheet: 4_000_000, maxSheets: 5, maxColumns: 200 };
 
+/**
+ * Adjustment history files (Milestone 5): 20,000 data rows and 5 MB. `maxRowsPerSheet` counts the header row too, so it is
+ * 20,001 (a header plus 20,000 rows); the importer re-checks the data-row count once it knows which row is the header.
+ */
+export const ADJUSTMENT_FILE_LIMITS: ParseLimits = { maxBytes: 5 * 1024 * 1024, maxRowsPerSheet: 20_001, maxCellsPerSheet: 4_000_000, maxSheets: 5, maxColumns: 200 };
+
 export async function parseTables(bytes: Uint8Array, kind: FileKind, limits: ParseLimits = LIMITS): Promise<Table[]> {
   if (bytes.length > limits.maxBytes) throw new ParseError(`The file is larger than ${Math.round(limits.maxBytes / 1024 / 1024)} MB.`, "too_large");
   if (bytes.length === 0) throw new ParseError("The file is empty.", "empty");

@@ -253,7 +253,6 @@ function runRow(summary: unknown, over: Record<string, unknown> = {}, project: R
     monthly_fee_schedule_version_id: "v-1",
     single_input: null,
     single_result: null,
-    error: null,
     simulation_projects: { id: PROJECT, name: "March plan", dataset_id: "d-1", shared_with_brand: true, rate_cards: { name: "Fixture card" }, order_datasets: { name: "March orders", mapping: null, validation: null }, ...project },
     shipping_services: null,
     ...over,
@@ -532,6 +531,78 @@ describe("RunView for 3PL staff", () => {
     expect(h).toContain(`href="/api/runs/${RUN}/monthly.csv?brandId=${BRAND}"`);
     expect(h).toContain(`href="/app/customers/${BRAND}/model/runs/${RUN}?view=shipping"`);
     expect(t).toContain("All-in cost per order");
+  });
+});
+
+/** The view, with every table a screen reads recorded: a customer's page must never ask for a staff-only table, whatever the database would answer. */
+function recordedView(staff: boolean, tables: Record<string, unknown[]>): { v: ModelingView; asked: string[] } {
+  const v = modelingView(staff, tables);
+  const asked: string[] = [];
+  const from = v.supabase.from.bind(v.supabase);
+  v.supabase.from = ((table: string) => {
+    asked.push(table);
+    return from(table);
+  }) as typeof v.supabase.from;
+  return { v, asked };
+}
+
+const PROBLEM_TEXT = 'The surcharge rule "Acme secret peak fee" has an invalid condition or base and was not applied.';
+const STAFF_ONLY_TABLES = ["simulation_run_contexts", "simulation_run_failures"];
+
+describe("what a run page shows about pricing problems and failures", () => {
+  const withIssues = { ...complete, loadIssueCount: 2 } as BulkSummary;
+
+  it("tells a customer how many surcharge rules could not be applied, and never what they were or asks a staff-only table", async () => {
+    const { v, asked } = recordedView(false, { simulation_runs: [runRow(withIssues)], simulation_run_contexts: [{ load_issues: [PROBLEM_TEXT] }] });
+    const node = await views.RunView(v, RUN, {});
+    const t = text(node);
+    expect(t).toContain("2 surcharge rules could not be applied; totals omit them.");
+    expect(t).toContain("2 surcharge rules could not be applied, so these prices may be low");
+    expect(t).toContain("Ask your 3PL to confirm before relying on these figures.");
+    expect(html(node)).not.toContain("Acme secret peak fee");
+    for (const table of STAFF_ONLY_TABLES) expect(asked, table).not.toContain(table);
+  });
+
+  it("shows staff the text of each problem once, read from the run's staff-only contexts (the summary only holds the count)", async () => {
+    signInAs("tenant_admin", STAFF);
+    const other = 'The surcharge rule "Zone fee" has an invalid condition or base and was not applied.';
+    const { v, asked } = recordedView(true, { simulation_runs: [runRow(withIssues)], simulation_run_contexts: [{ load_issues: [PROBLEM_TEXT] }, { load_issues: [PROBLEM_TEXT, other] }, { load_issues: [] }] });
+    const t = text(await views.RunView(v, RUN, {}));
+    expect(t).toContain("2 surcharge rules could not be applied, so these prices may be low");
+    expect(t.split("Acme secret peak fee")).toHaveLength(2);
+    expect(t).toContain("Zone fee");
+    expect(asked).toContain("simulation_run_contexts");
+    // Nothing to read: the page says so instead of listing nothing.
+    const none = recordedView(true, { simulation_runs: [runRow(withIssues)], simulation_run_contexts: [] });
+    expect(text(await views.RunView(none.v, RUN, {}))).toContain("What each problem says could not be read for this run.");
+  });
+
+  it("does not read the contexts when the run met no problem", async () => {
+    signInAs("tenant_admin", STAFF);
+    const { v, asked } = recordedView(true, { simulation_runs: [runRow(complete)], simulation_run_contexts: [{ load_issues: [PROBLEM_TEXT] }] });
+    const t = text(await views.RunView(v, RUN, {}));
+    expect(t).not.toContain("could not be applied");
+    expect(asked).not.toContain("simulation_run_contexts");
+  });
+
+  it("gives a customer a generic sentence for a failed run, and staff the detail from the staff-only failures table", async () => {
+    const failed = runRow(null, { status: "failed" });
+    const customer = recordedView(false, { simulation_runs: [failed], simulation_run_failures: [{ detail: "window 5-9 needs 5 results, got 4" }] });
+    const ct = text(await views.RunView(customer.v, RUN, {}));
+    expect(ct).toContain("This run could not finish. Nothing from it is shown as a result.");
+    expect(ct).toContain("contact Acme 3PL.");
+    expect(ct).not.toContain("needs 5 results");
+    expect(ct).not.toContain("run_failed");
+    for (const table of STAFF_ONLY_TABLES) expect(customer.asked, table).not.toContain(table);
+
+    signInAs("tenant_admin", STAFF);
+    const staff = recordedView(true, { simulation_runs: [failed], simulation_run_failures: [{ detail: "window 5-9 needs 5 results, got 4" }] });
+    const st = text(await views.RunView(staff.v, RUN, {}));
+    expect(st).toContain("contact support. (window 5-9 needs 5 results, got 4)");
+    expect(staff.asked).toContain("simulation_run_failures");
+    // A failure with no stored detail reads like the customer's sentence, with no empty brackets.
+    const bare = recordedView(true, { simulation_runs: [failed], simulation_run_failures: [] });
+    expect(text(await views.RunView(bare.v, RUN, {}))).toContain("contact support. Run again");
   });
 });
 

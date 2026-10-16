@@ -278,7 +278,6 @@ interface RunRow extends Omit<RunListRow, "summary" | "assumptions"> {
   monthly_fee_schedule_version_id: string | null;
   single_input: ShipmentInput | null;
   single_result: ShipmentCalculation | null;
-  error: string | null;
   simulation_projects: { id: string; name: string; dataset_id: string | null; shared_with_brand: boolean; rate_cards: { name: string } | null; order_datasets: { name: string; mapping: OrderMapping | null; validation: DatasetValidation | null } | null } | null;
   shipping_services: { name: string } | null;
 }
@@ -320,12 +319,26 @@ function hasFulfillmentAnswers(f: NonNullable<RunRow["assumptions"]>["fulfillmen
   return Object.keys(f.drivers ?? {}).length > 0 || Object.keys(f.orderShares ?? {}).length > 0 || !!f.monthlyOrders || !!f.packagingDefault || (f.orderContent?.rows.length ?? 0) > 0;
 }
 
+/** Why a run failed, for staff: `simulation_run_failures` has no policy a customer can pass, and brand screens never ask. */
+async function loadRunFailureDetail(supabase: ModelingView["supabase"], runId: string): Promise<string | null> {
+  const { data } = await supabase.from("simulation_run_failures").select("detail").eq("run_id", runId).maybeSingle();
+  return typeof data?.detail === "string" && data.detail ? data.detail : null;
+}
+
+/** The distinct pricing problems a run met, for staff: `simulation_run_contexts` is staff-only, and brand screens never ask. */
+async function loadRunLoadIssues(supabase: ModelingView["supabase"], runId: string): Promise<string[]> {
+  const { data } = await supabase.from("simulation_run_contexts").select("load_issues").eq("run_id", runId);
+  const issues = new Set<string>();
+  for (const row of (data ?? []) as { load_issues: string[] | null }[]) for (const issue of row.load_issues ?? []) issues.add(issue);
+  return [...issues].sort();
+}
+
 export async function RunView(v: ModelingView, runId: string, searchParams: RunSearchParams) {
   if (!uuidSchema.safeParse(runId).success) notFound();
   const { data } = await v.supabase
     .from("simulation_runs")
     .select(
-      "id, project_id, brand_id, status, kind, pricing_basis, as_of_date, service_override_id, assumptions, created_at, created_by, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, monthly_fee_schedule_version_id, single_input, single_result, error, simulation_projects(id, name, dataset_id, shared_with_brand, rate_cards(name), order_datasets(name, mapping, validation)), shipping_services(name)",
+      "id, project_id, brand_id, status, kind, pricing_basis, as_of_date, service_override_id, assumptions, created_at, created_by, finished_at, last_progress_at, total_shipments, processed_shipments, modeled_orders, total_expected, summary, monthly_fee_schedule_version_id, single_input, single_result, simulation_projects(id, name, dataset_id, shared_with_brand, rate_cards(name), order_datasets(name, mapping, validation)), shipping_services(name)",
     )
     .eq("id", runId)
     .maybeSingle();
@@ -422,13 +435,15 @@ export async function RunView(v: ModelingView, runId: string, searchParams: RunS
     );
   }
   if (run.status !== "completed" || !run.summary) {
+    // What went wrong can name server internals: only staff read it (from a staff-only table), a customer reads the sentence alone.
+    const failureDetail = run.status === "failed" && v.staff ? await loadRunFailureDetail(v.supabase, run.id) : null;
     return (
       <>
         <BackLink href={v.basePath} label="Model Costs" />
         <PageHeader title={project.name} description={<Badge tone={state.tone}>{state.label}</Badge>} />
         <Alert tone={run.status === "failed" ? "danger" : "info"} className="mb-6">
           {run.status === "failed"
-            ? `This run could not finish. Nothing from it is shown as a result. You can run it again below; if it keeps failing, contact ${v.staff ? "support" : v.tenantName}.${v.staff && run.error ? ` (${run.error})` : ""}`
+            ? `This run could not finish. Nothing from it is shown as a result. You can run it again below; if it keeps failing, contact ${v.staff ? "support" : v.tenantName}.${failureDetail ? ` (${failureDetail})` : ""}`
             : "This run was cancelled before it finished; nothing from it is shown as a result."}
         </Alert>
         {setup}
@@ -459,6 +474,8 @@ export async function RunView(v: ModelingView, runId: string, searchParams: RunS
   const modeled = summary.fees.mode === "modeled";
   const answered = hasFulfillmentAnswers(assumptions.fulfillment);
   const ctx = await getContext();
+  // What each pricing problem says names the 3PL's rules; the summary holds only a count, so staff read the text from the run's contexts (staff only).
+  const staffLoadIssues = v.staff && summary.loadIssueCount > 0 ? await loadRunLoadIssues(v.supabase, run.id) : [];
 
   let query = v.supabase
     .from("simulation_results")
@@ -566,7 +583,7 @@ export async function RunView(v: ModelingView, runId: string, searchParams: RunS
       {v.staff ? <p className="mb-6 text-sm text-muted">Modeled on behalf of {v.brandName}. The wording and figures below are the ones the customer sees once this scenario is shared.</p> : null}
       <div className="space-y-8">
         <RunHeadline summary={summary} provenance={provenance} view={view} viewHref={(next) => link({ view: next })} />
-        <RunExclusions summary={summary} fixHref={project.dataset_id ? `${v.basePath}/orders/${project.dataset_id}` : null} staff={v.staff} />
+        <RunExclusions summary={summary} fixHref={project.dataset_id ? `${v.basePath}/orders/${project.dataset_id}` : null} staff={v.staff} staffLoadIssues={staffLoadIssues} />
         <OrderFeesCard summary={summary} addHref={RUN_AGAIN_HREF} />
         <MonthlyChargesCard summary={summary} addHref={RUN_AGAIN_HREF} />
         <MinimumCard summary={summary} />

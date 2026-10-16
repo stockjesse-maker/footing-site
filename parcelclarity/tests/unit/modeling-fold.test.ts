@@ -10,6 +10,7 @@ import {
   finalizeSummary,
   foldBatch,
   moneyToCents,
+  readStoredPartial,
   weightBracket,
   PACKAGING_OTHER_KEY,
   WEIGHT_BRACKET_EDGES,
@@ -495,6 +496,7 @@ describe("finalizeSummary", () => {
     expect(s.byWeightBracket).toEqual([]);
     expect(s.bySurcharge).toEqual([]);
     expect(s.warnings).toEqual([]);
+    expect(s.loadIssueCount).toBe(0);
     expect(s.dictionary).toEqual(createDictionary());
     expect(s.feeDictionary).toEqual([]);
     expect(s.fees.mode).toBe("no_schedule");
@@ -510,7 +512,8 @@ describe("finalizeSummary", () => {
 
   it("rounds averages HALF_UP to cents and coverage and shares to one decimal, and sorts every table deterministically", () => {
     const p = foldBatch(start(), ALL);
-    const s = finalizeSummary(p, { rows: 12, orders: 6, shipments: 8, packages: 11 }, ["rule ups.peak@2: unreadable condition"], "2.2.0", noFees());
+    // A problem found at finalize time is named by its rule version id, never by what it says.
+    const s = finalizeSummary(p, { rows: 12, orders: 6, shipments: 8, packages: 11 }, ["00000000-0000-4000-8000-0000000000a2"], "2.2.0", noFees());
     expect(s.imported).toEqual({ rows: 12, orders: 6, shipments: 8, packages: 11 });
     expect(s.modeled).toEqual({ orders: 3, shipments: 4, packages: 6 });
     expect(s.coverage).toEqual({ ordersPct: "50.0", shipmentsPct: "50.0" });
@@ -550,7 +553,9 @@ describe("finalizeSummary", () => {
       { code: "dimensions_missing", ruleKey: null, shipments: 1 },
       { code: "zip_list_missing", ruleKey: "ups.das", shipments: 1 },
     ]);
-    expect(s.loadIssues).toEqual(["rule ups.peak@2: unreadable condition"]);
+    // Was `s.loadIssues` (the problem text, which names the 3PL's rules and reached the customer in the stored summary): now a count and nothing else.
+    expect(s.loadIssueCount).toBe(1);
+    expect("loadIssues" in s).toBe(false);
     expect(s.assumptions).toEqual(p.assumptions);
     expect(s.dictionary).toEqual(dictionary);
     expect(s.dictionary).not.toBe(dictionary);
@@ -657,5 +662,40 @@ describe("encodeResult and decodeLines", () => {
     expect(centsToMoney(1234)).toBe("12.34");
     expect(centsToMoney(-250)).toBe("-2.50");
     expect(() => centsToMoney(1.5)).toThrow(/integer/);
+  });
+});
+
+describe("load issues in a run summary", () => {
+  const counts = { rows: 0, orders: 0, shipments: 0, packages: 0 };
+  const withKeys = (keys: string[]): PartialSummary => ({ ...emptyPartial(), loadIssueKeys: keys });
+
+  it("counts each rule version once, across the partial and the finalize call, and keeps no text", () => {
+    const s = finalizeSummary(withKeys(["v-a", "v-b"]), counts, ["v-b", "v-c"], "2.2.0", noFees());
+    expect(s.loadIssueCount).toBe(3);
+    expect(JSON.stringify(s)).not.toContain("v-a");
+    expect(s.loadIssueCount).toBe(finalizeSummary(withKeys(["v-b", "v-a", "v-c", "v-a"]), counts, [], "2.2.0", noFees()).loadIssueCount);
+  });
+
+  it("the fold leaves the partial's keys alone and starts from none", () => {
+    expect(emptyPartial().loadIssueKeys).toEqual([]);
+    expect(foldBatch(withKeys(["v-a"]), []).loadIssueKeys).toEqual(["v-a"]);
+  });
+
+  it("reads a stored partial: none is an empty one, a current one is returned as it is", () => {
+    expect(readStoredPartial(null)).toEqual(emptyPartial());
+    const current = withKeys(["v-a"]);
+    expect(readStoredPartial(current)).toBe(current);
+  });
+
+  it("drops the text of a partial written by an earlier release (the run is customer-readable) and keeps one key per distinct problem", () => {
+    const earlier = { ...emptyPartial(), loadIssues: ['The surcharge rule "Acme secret fee" has an invalid condition or base and was not applied.', "again", "again"] } as unknown as PartialSummary;
+    const read = readStoredPartial(earlier);
+    expect("loadIssues" in read).toBe(false);
+    expect(read.loadIssueKeys).toHaveLength(2);
+    expect(JSON.stringify(read)).not.toContain("Acme");
+    // Reading it again (every window re-reads the stored partial until it is rewritten) changes nothing.
+    expect(readStoredPartial(read)).toBe(read);
+    expect(readStoredPartial(earlier).loadIssueKeys).toEqual(read.loadIssueKeys);
+    expect(finalizeSummary(read, counts, [], "2.2.0", noFees()).loadIssueCount).toBe(2);
   });
 });

@@ -458,6 +458,9 @@ export async function advanceRun(runId: string, brandId?: string): Promise<Advan
       err instanceof RangeError ||
       (code !== null && code.startsWith("PC")) ||
       /does not start at the cursor|needs \d+ results|does not belong to this run|does not cover the window|does not reconcile|run not found|fee schedule version not found|customer not found/.test(message);
+    // `fail_simulation_run` takes one text and splits it itself: the run row (customer-readable) gets the code `run_failed` (or this
+    // text when it is already a plain code), and the text goes to `simulation_run_failures.detail`, which only staff can read.
+    // So the exception message is passed whole, here and nowhere a customer could see it.
     if (permanent) await supabase.rpc("fail_simulation_run", { p_run: runId, p_error: message.slice(0, 500) });
     return {
       ok: false,

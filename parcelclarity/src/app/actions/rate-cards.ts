@@ -155,6 +155,9 @@ export async function saveMappingAndValidate(importId: string, mappingJson: unkn
 // ---------------------------------------------------------------------------
 // Import step 3: create a draft version from a validated import
 // ---------------------------------------------------------------------------
+/** The note a term carries when no earlier version of the service had one (the label its column defaulted to before the note became staff-only). */
+const DEFAULT_TERMS_SOURCE = "Carrier structural defaults (verify against the carrier service guide)";
+
 export async function createDraftFromImport(importId: string): Promise<{ ok: boolean; message?: string; versionId?: string; carriedFromVersion?: number | null }> {
   const ctx = await requireTenantContext("ratecard.manage");
   if (!uuidSchema.safeParse(importId).success) return { ok: false, message: GENERIC_FAILURE };
@@ -203,12 +206,24 @@ export async function createDraftFromImport(importId: string): Promise<{ ok: boo
     .limit(1)
     .maybeSingle();
   const previousTerms = new Map<string, Record<string, unknown>>();
+  // Each term's source note lives in the staff-only `rate_card_service_term_sources` (not a column of the term any more), so it is
+  // carried separately: previous term id by service, then the notes by previous term id.
+  const previousTermIds = new Map<string, string>();
+  const previousSources = new Map<string, string>();
   if (previous) {
     const { data: prevTerms } = await supabase
       .from("rate_card_service_terms")
-      .select("service_id, dim_divisor, dim_threshold_cubic_in, dimension_rounding, weight_rounding, min_billable_lb, dim_exempt, min_charge, included_surcharge_keys, excluded_surcharge_keys, zone_chart_key, zone_independent, surcharge_markup_percent, source_reference")
+      .select("id, service_id, dim_divisor, dim_threshold_cubic_in, dimension_rounding, weight_rounding, min_billable_lb, dim_exempt, min_charge, included_surcharge_keys, excluded_surcharge_keys, zone_chart_key, zone_independent, surcharge_markup_percent")
       .eq("version_id", previous.id);
-    for (const t of prevTerms ?? []) previousTerms.set(t.service_id as string, t as Record<string, unknown>);
+    for (const t of prevTerms ?? []) {
+      const { id: termId, ...columns } = t as Record<string, unknown>;
+      previousTerms.set(t.service_id as string, columns);
+      previousTermIds.set(t.service_id as string, termId as string);
+    }
+    if (previousTermIds.size) {
+      const { data: sources } = await supabase.from("rate_card_service_term_sources").select("term_id, source_reference").in("term_id", [...previousTermIds.values()]);
+      for (const row of sources ?? []) previousSources.set(row.term_id as string, row.source_reference as string);
+    }
   }
 
   const catalogById = new Map(catalog.map((c) => [c.id, c]));
@@ -234,8 +249,20 @@ export async function createDraftFromImport(importId: string): Promise<{ ok: boo
       min_charge: t?.minCharge ?? (fileStatesMinimum ? null : ((prevMin as string | null | undefined) ?? null)),
     };
   });
-  const { error: tError } = await supabase.from("rate_card_service_terms").insert(termsRows);
-  if (tError) {
+  const { data: insertedTerms, error: tError } = await supabase.from("rate_card_service_terms").insert(termsRows).select("id, service_id");
+  if (tError || !insertedTerms) {
+    await discard();
+    return { ok: false, message: GENERIC_FAILURE };
+  }
+  // Every new term gets its staff-only source note: the one carried from the same service's previous term, else the standing label
+  // for structural defaults the form could not state (what the term's own column defaulted to before the note moved).
+  const sourceRows = insertedTerms.map((t) => ({
+    term_id: t.id as string,
+    tenant_id: ctx.active.tenantId,
+    source_reference: previousSources.get(previousTermIds.get(t.service_id as string) ?? "") ?? DEFAULT_TERMS_SOURCE,
+  }));
+  const { error: sError } = await supabase.from("rate_card_service_term_sources").insert(sourceRows);
+  if (sError) {
     await discard();
     return { ok: false, message: GENERIC_FAILURE };
   }

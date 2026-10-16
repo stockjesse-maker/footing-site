@@ -79,6 +79,11 @@ interface Pins {
   ruleVersionIds: string[];
   zipListIds: string[];
   overrideIds: string[];
+  /**
+   * What each pricing problem says (it names the 3PL's rules). `save_forecast_run` moves this text to the staff-only
+   * `simulation_run_contexts.load_issues` and stores only `loadIssueCount` in the pins the customer can read, so sending it is
+   * how staff get the text; it is never part of anything returned to the browser.
+   */
   loadIssues: string[];
   feeScheduleVersionId: string | null;
 }

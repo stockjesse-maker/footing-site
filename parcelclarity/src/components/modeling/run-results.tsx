@@ -217,7 +217,7 @@ export function RunHeadline({ summary, provenance, view, viewHref }: { summary: 
   if (summary.assumptions.residential > 0) caveats.push(`${plural(summary.assumptions.residential, "shipment")} ${summary.assumptions.residential === 1 ? "was" : "were"} priced assuming ${provenance.residentialDefault === false ? "business" : "home"} deliveries (the file does not say).`);
   if (summary.assumptions.weight > 0) caveats.push(`${plural(summary.assumptions.weight, "shipment")} ${summary.assumptions.weight === 1 ? "was" : "were"} priced on weights derived from product weights.`);
   if (summary.assumptions.originZip > 0) caveats.push(`${plural(summary.assumptions.originZip, "shipment")} ${summary.assumptions.originZip === 1 ? "was" : "were"} priced assuming ${provenance.originZipDefault ? `they ship from ZIP ${provenance.originZipDefault}` : "an origin ZIP"} (the file does not say).`);
-  if (summary.loadIssues.length) caveats.push(`${plural(summary.loadIssues.length, "surcharge rule")} could not be applied; totals omit ${summary.loadIssues.length === 1 ? "it" : "them"}.`);
+  if (summary.loadIssueCount > 0) caveats.push(`${plural(summary.loadIssueCount, "surcharge rule")} could not be applied; totals omit ${summary.loadIssueCount === 1 ? "it" : "them"}.`);
   if (view !== "shipping") caveats.push(...h.caveats);
   // Shipping only because fees were skipped or no fee schedule applied: say so next to the figure, not only further down.
   const feesNote = summary.fees.mode !== "modeled" ? headlineFigures(summary, "fees", {}, provenance.audience).unavailable : null;
@@ -369,8 +369,12 @@ export function RunBreakdowns({ summary }: { summary: BulkSummary }) {
   );
 }
 
-export function RunExclusions({ summary, fixHref, staff }: { summary: BulkSummary; fixHref: string | null; staff: boolean }) {
-  if (!summary.exclusions.length && !summary.warnings.length && !summary.loadIssues.length) return null;
+/**
+ * `staffLoadIssues` is what each problem says (it names the 3PL's rules). Only a staff page may pass it, read from
+ * `simulation_run_contexts.load_issues` (staff only); the summary a customer can read holds the count and nothing else.
+ */
+export function RunExclusions({ summary, fixHref, staff, staffLoadIssues = [] }: { summary: BulkSummary; fixHref: string | null; staff: boolean; staffLoadIssues?: string[] }) {
+  if (!summary.exclusions.length && !summary.warnings.length && !summary.loadIssueCount) return null;
   return (
     <Card className="space-y-4">
       <div>
@@ -412,15 +416,19 @@ export function RunExclusions({ summary, fixHref, staff }: { summary: BulkSummar
           </ul>
         </div>
       ) : null}
-      {summary.loadIssues.length ? (
+      {summary.loadIssueCount > 0 ? (
         <Alert tone="warning">
-          <p className="font-medium">{plural(summary.loadIssues.length, "surcharge rule")} could not be applied, so these prices may be low</p>
+          <p className="font-medium">{plural(summary.loadIssueCount, "surcharge rule")} could not be applied, so these prices may be low</p>
           {staff ? (
-            <ul className="mt-1 list-disc pl-5">
-              {summary.loadIssues.map((i) => (
-                <li key={i}>{i}</li>
-              ))}
-            </ul>
+            staffLoadIssues.length ? (
+              <ul className="mt-1 list-disc pl-5">
+                {staffLoadIssues.map((i) => (
+                  <li key={i}>{i}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1">What each problem says could not be read for this run.</p>
+            )
           ) : (
             <p className="mt-1">Ask your 3PL to confirm before relying on these figures.</p>
           )}
