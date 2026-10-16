@@ -47,6 +47,7 @@ const assumptions: ForecastAssumptions = {
 };
 const evaluated = evaluateForecast(assumptions, { pricing, schedule: standard, pinnedRates: {}, feeEngineVersion: FEE_ENGINE_VERSION, engineVersion: ENGINE_VERSION, hash: sha256Hex });
 if (evaluated.status !== "ok") throw new Error("fixture forecast must price");
+const summary = evaluated.summary;
 
 const termRows = pricing.rateCard.services.map((t) => ({
   service_id: t.serviceId,
@@ -81,7 +82,7 @@ function view(staff: boolean, tables: Record<string, unknown[]> = {}): ModelingV
           shared_with_brand: true,
           archived_at: null,
           rate_cards: { name: "Fixture rate card" },
-          simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary: evaluated.summary, assumptions }],
+          simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary, assumptions }],
         },
       ],
       ...tables,
@@ -165,7 +166,7 @@ describe("ForecastSavedView", () => {
   });
 
   it("gives staff the share switch and a private-to-the-team badge until it is shared", async () => {
-    const t = text(await ForecastSavedView(view(true, { simulation_projects: [{ id: PROJECT, name: "Prep", created_at: "2026-03-16T10:00:00Z", shared_with_brand: false, archived_at: null, rate_cards: { name: "Fixture rate card" }, simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary: evaluated.summary, assumptions }] }] }), PROJECT));
+    const t = text(await ForecastSavedView(view(true, { simulation_projects: [{ id: PROJECT, name: "Prep", created_at: "2026-03-16T10:00:00Z", shared_with_brand: false, archived_at: null, rate_cards: { name: "Fixture rate card" }, simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary, assumptions }] }] }), PROJECT));
     expect(t).toContain("Private to your team");
     expect(t).toContain("Share with customer");
     expect(t).toContain("Definite");
@@ -175,7 +176,7 @@ describe("ForecastSavedView", () => {
   });
 
   it("marks an archived forecast and offers no second archive", async () => {
-    const archived = view(false, { simulation_projects: [{ id: PROJECT, name: "Old", created_at: "2026-03-16T10:00:00Z", shared_with_brand: true, archived_at: "2026-04-01T00:00:00Z", rate_cards: { name: "Fixture rate card" }, simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary: evaluated.summary, assumptions }] }] });
+    const archived = view(false, { simulation_projects: [{ id: PROJECT, name: "Old", created_at: "2026-03-16T10:00:00Z", shared_with_brand: true, archived_at: "2026-04-01T00:00:00Z", rate_cards: { name: "Fixture rate card" }, simulation_runs: [{ id: "r1", kind: "forecast", status: "completed", as_of_date: "2026-03-15", created_at: "2026-03-16T10:00:00Z", summary, assumptions }] }] });
     const t = text(await ForecastSavedView(archived, PROJECT));
     expect(t).toContain("Archived");
     expect(t).not.toMatch(/Rename\s+Archive/);

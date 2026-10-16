@@ -16,6 +16,7 @@ import {
   feeStatusSentences,
   feesChangedSince,
   headlineFigures,
+  headlineReason,
   headlineText,
   isForecastSummary,
   joinWords,
@@ -369,6 +370,13 @@ describe("headlineFigures: a category left out because no numbers were given", (
       perOrder: "248.06",
       sentence: "The account minimum could add up to $496.13 a month (about $248.06 per order) on top of this. It could not be worked out exactly: Pallet storage is not modeled.",
     });
+  });
+
+  it("gives one sentence on why a tile is not the plain figure", () => {
+    expect(headlineReason(h)).toBe("Not included yet: Pallet storage. Add your numbers for the full figure. The account minimum could add up to $496.13 a month (about $248.06 per order) on top of this. It could not be worked out exactly: Pallet storage is not modeled.");
+    expect(headlineReason(headlineFigures(complete, "allin"))).toBeNull();
+    expect(headlineReason(headlineFigures(skipped, "allin"))).toBe("Fulfillment costs were skipped for this model, so only shipping is shown.");
+    expect(headlineReason(headlineFigures(undated, "allin"))).toBe("The account minimum could add up to $316.13 a month (about $158.06 per order) on top of this. It could not be worked out exactly: 1 order has no date.");
   });
 
   it("leaves the add link off when the viewer cannot rerun", () => {

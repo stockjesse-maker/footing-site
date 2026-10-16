@@ -256,7 +256,7 @@ export function ForecastForm({ audience, brandId, tenantName, context, initial =
   }, [state.contentMode, state.averageUnits, state.averageLines]);
 
   const apply = latestOutcome(outcome, fresh);
-  const originHint = hadDefaultOrigin ? `Your default is ${context.originZip}. Change it if these orders ship from elsewhere.` : undefined;
+  const originHint = hadDefaultOrigin ? `${you ? "Your" : "The customer's"} default is ${context.originZip}. Change it if these orders ship from elsewhere.` : undefined;
 
   return (
     <form

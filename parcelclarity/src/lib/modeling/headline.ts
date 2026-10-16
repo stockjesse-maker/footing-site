@@ -496,6 +496,19 @@ export function headlineFigures(summary: HeadlineSummary, view: HeadlineView, pr
   return allInHeadline(b, addHref);
 }
 
+/**
+ * One sentence on why a headline is not the plain all-in figure: what is missing and what could be added,
+ * or why no figure exists. null when the figure is complete. Used under tiles where the full card does not fit.
+ */
+export function headlineReason(h: HeadlineFigures): string | null {
+  if (h.unavailable) return h.unavailable;
+  const parts: string[] = [];
+  if (h.notIncluded.length) parts.push(`Not included yet: ${joinWords(h.notIncluded.map((i) => i.name))}. Add your numbers for the full figure.`);
+  if (h.minimumCouldAdd) parts.push(h.minimumCouldAdd.sentence);
+  if (!parts.length && h.qualifier) parts.push("Some charges are left out of this figure; the results say which and why.");
+  return parts.length ? parts.join(" ") : null;
+}
+
 /** All-in when its figure is complete and exact, else Shipping. */
 export function defaultView(summary: HeadlineSummary): HeadlineView {
   return headlineFigures(summary, "allin").complete ? "allin" : "shipping";

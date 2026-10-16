@@ -2,11 +2,14 @@ import Link from "next/link";
 import { archiveScenario, shareDataset, shareScenario } from "@/app/actions/modeling";
 import { ConfirmAction } from "@/components/forms/confirm-action";
 import { formatMoney } from "@/components/pricing/calculation-result";
+import type { BulkSummary } from "@/engine/modeling/types";
 import { Badge, statusTone } from "@/components/ui/badge";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Stat } from "@/components/ui/stat";
 import { formatDate } from "@/lib/format/date";
-import type { DatasetListRow, ProjectListRow, RunListRow } from "@/lib/modeling/queries";
+import { defaultView, headlineFigures, headlineReason, headlineText, monthlyCharges, usd, type HeadlineAudience, type HeadlineSummary } from "@/lib/modeling/headline";
+import { fileSummaryOf, forecastSummaryOf, latestCompletedBulkRun, latestCompletedForecast, latestCompletedWhatIf, type DatasetListRow, type ProjectListRow, type RunListRow } from "@/lib/modeling/queries";
 
 /** Lists shared by the customer portal and the 3PL's on-behalf view. */
 
@@ -61,14 +64,40 @@ export function DatasetList({ datasets, basePath, brandId, staff }: { datasets: 
   );
 }
 
+const KIND_BADGE: Record<ProjectListRow["kind"], { label: string; tone: "neutral" | "accent" | "success" }> = {
+  single: { label: "Single shipment", tone: "neutral" },
+  bulk: { label: "Orders file", tone: "accent" },
+  forecast: { label: "Forecast", tone: "success" },
+};
+
+/** What the headline says for a run, in one line: "All-in cost per order, without storage: At least $26.94". */
+export function headlineLine(summary: HeadlineSummary, audience: HeadlineAudience = "brand"): string {
+  const h = headlineFigures(summary, defaultView(summary), {}, audience);
+  return `${h.label}: ${headlineText(h)}`;
+}
+
+function runSummaryLine(project: ProjectListRow, run: RunListRow, audience: HeadlineAudience): string {
+  if (run.status !== "completed") return "";
+  const forecast = forecastSummaryOf(run);
+  if (forecast) return ` · Forecast at ${Number(forecast.monthlyOrders).toLocaleString("en-US")} orders a month · ${headlineLine(forecast, audience)}`;
+  if (run.kind !== "bulk" || run.modeled_orders === null || !run.summary) return "";
+  if (run.modeled_orders === 0) return " · no orders could be priced";
+  const file = fileSummaryOf(run);
+  // A model priced before fulfillment fees existed keeps its shipping line and says so.
+  if (!file) return ` · estimated ${formatMoney({ amount: String(run.total_expected ?? "0.00"), currency: "USD" })} shipping for ${run.modeled_orders.toLocaleString("en-US")} orders (priced before fulfillment fees; run it again to add them)`;
+  return ` · ${headlineLine(file, audience)} · ${run.modeled_orders.toLocaleString("en-US")} of ${file.imported.orders.toLocaleString("en-US")} orders`;
+}
+
 export function ScenarioList({ projects, basePath, brandId, staff, compareHref }: { projects: ProjectListRow[]; basePath: string; brandId?: string; staff: boolean; compareHref?: string }) {
-  if (!projects.length) return <EmptyState title="No saved scenarios yet">Price a shipment and save it, or run a model on an orders file.</EmptyState>;
+  if (!projects.length) return <EmptyState title="No saved scenarios yet">Price a shipment and save it, run a model on an orders file, or forecast from your assumptions.</EmptyState>;
+  const audience: HeadlineAudience = staff ? "staff" : "brand";
   return (
     <ul className="divide-y divide-line rounded-card border border-line bg-raised">
       {projects.map((p) => {
         const run = p.simulation_runs[0];
         const state = run ? runStateLabel(run) : null;
-        const href = run ? `${basePath}/runs/${run.id}` : `${basePath}`;
+        const href = p.kind === "forecast" ? `${basePath}/forecast/${p.id}` : run ? `${basePath}/runs/${run.id}` : `${basePath}`;
+        const badge = KIND_BADGE[p.kind];
         return (
           <li key={p.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0">
@@ -76,18 +105,17 @@ export function ScenarioList({ projects, basePath, brandId, staff, compareHref }
                 {p.name}
               </Link>
               <p className="text-sm text-muted">
-                {p.kind === "single" ? "Single shipment" : "Orders file"} · {p.rate_cards?.name ?? "rate card"} · {formatDate(p.created_at)}
-                {run?.status === "completed" && run.kind === "bulk" && run.modeled_orders !== null && run.summary
-                  ? run.modeled_orders > 0
-                    ? ` · estimated ${formatMoney({ amount: String(run.total_expected ?? "0.00"), currency: "USD" })} for ${run.modeled_orders.toLocaleString("en-US")} of ${run.summary.imported.orders.toLocaleString("en-US")} orders`
-                    : " · no orders could be priced"
-                  : ""}
+                <Badge tone={badge.tone} className="mr-2 align-middle">
+                  {badge.label}
+                </Badge>
+                {p.rate_cards?.name ?? "rate card"} · {formatDate(p.created_at)}
+                {run ? runSummaryLine(p, run, audience) : ""}
                 {staff && !p.shared_with_brand ? " · private to your team" : ""}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {state ? <Badge tone={state.tone}>{state.label}</Badge> : null}
-              {compareHref && run?.status === "completed" && run.kind === "bulk" ? (
+              {compareHref && run?.status === "completed" && (run.kind === "bulk" || run.kind === "forecast") ? (
                 <Link href={`${compareHref}?a=${run.id}`} className="inline-flex min-h-11 items-center text-sm font-medium text-accent-text hover:underline sm:min-h-9">
                   Compare
                 </Link>
@@ -101,6 +129,120 @@ export function ScenarioList({ projects, basePath, brandId, staff, compareHref }
         );
       })}
     </ul>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tiles for the hub, the overview and the customer page
+// ---------------------------------------------------------------------------
+/**
+ * The figures of one file run: the headline with its completeness label and the reason it is not the plain
+ * all-in figure, then shipping, order fees and monthly charges. Every figure is from the stored summary, so
+ * all tiles describe the same run and the same orders.
+ */
+export function ModelTiles({ summary, audience = "brand" }: { summary: BulkSummary; audience?: HeadlineAudience }) {
+  const allIn = headlineFigures(summary, "allin", {}, audience);
+  const shipping = headlineFigures(summary, "shipping", {}, audience);
+  const fees = headlineFigures(summary, "fees", {}, audience);
+  const monthly = monthlyCharges(summary);
+  const reason = headlineReason(allIn);
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <Stat label={allIn.label} value={headlineText(allIn)} note={allIn.complete ? allIn.basisSentence : (reason ?? allIn.basisSentence)} />
+      <Stat label={shipping.label} value={headlineText(shipping)} note={shipping.basisSentence} />
+      <Stat label={fees.label} value={headlineText(fees)} note={fees.amount === null ? fees.unavailable : fees.basisSentence} />
+      <Stat
+        label="Monthly charges"
+        value={monthly && monthly.totalPerMonth !== null ? `${usd(monthly.totalPerMonth)} a month` : "Not computed"}
+        note={monthly ? (monthly.perOrder !== null ? `about ${usd(monthly.perOrder)} per order, spread over your orders (${monthly.basisSentence})` : monthly.basisSentence) : "Fulfillment costs were not modeled for this run."}
+      />
+    </div>
+  );
+}
+
+function ForecastTile({ project, run, basePath, audience }: { project: ProjectListRow; run: RunListRow; basePath: string; audience: HeadlineAudience }) {
+  const summary = forecastSummaryOf(run);
+  if (!summary) return null;
+  const view = defaultView(summary);
+  const h = headlineFigures(summary, view, {}, audience);
+  return (
+    <Stat
+      label={`Forecast from assumptions: ${h.label}`}
+      value={headlineText(h)}
+      note={
+        <>
+          {h.basisSentence}.{" "}
+          <Link href={`${basePath}/forecast/${project.id}`} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+            {project.name}
+          </Link>
+          <span className="block">Expected values over the mix you described, never an invoice.</span>
+        </>
+      }
+    />
+  );
+}
+
+function WhatIfTile({ project, run, basePath, audience }: { project: ProjectListRow; run: RunListRow; basePath: string; audience: HeadlineAudience }) {
+  const summary = fileSummaryOf(run);
+  if (!summary) return null;
+  const h = headlineFigures(summary, defaultView(summary), {}, audience);
+  return (
+    <Stat
+      label={`What-if${run.shipping_services?.name ? ` on ${run.shipping_services.name}` : ""}: ${h.label}`}
+      value={headlineText(h)}
+      note={
+        <>
+          Every shipment priced on {run.shipping_services?.name ?? "the chosen service"}.{" "}
+          <Link href={`${basePath}/runs/${run.id}`} className="inline-flex min-h-11 items-center font-medium text-accent-text hover:underline">
+            {project.name}
+          </Link>
+        </>
+      }
+    />
+  );
+}
+
+/** The models an overview draws on: the latest baseline file run, and the latest forecast and what-if as their own tiles. */
+export function overviewModels(projects: ProjectListRow[]) {
+  return { latest: latestCompletedBulkRun(projects, { excludeWhatIf: true }), forecast: latestCompletedForecast(projects), whatIf: latestCompletedWhatIf(projects) };
+}
+
+/**
+ * Overview figures: all of them from one run (the latest completed orders-file run that is not a what-if),
+ * with its completeness label and reason; forecasts and what-ifs are separate, labelled tiles and are never
+ * mixed into those figures.
+ */
+export function OverviewFigures({ projects, basePath, tenantName, audience }: { projects: ProjectListRow[]; basePath: string; tenantName: string; audience: HeadlineAudience }) {
+  const { latest, forecast, whatIf } = overviewModels(projects);
+  const summary = latest ? fileSummaryOf(latest.run) : null;
+  return (
+    <>
+      {latest && summary ? (
+        <section className="space-y-3" aria-labelledby="overview-latest">
+          <h2 id="overview-latest" className="text-xl font-semibold tracking-tight">
+            From your latest model
+          </h2>
+          <ModelTiles summary={summary} audience={audience} />
+          <p className="text-sm text-muted">
+            <Link href={`${basePath}/runs/${latest.run.id}`} className="font-medium text-accent-text hover:underline">
+              {latest.project.name}
+            </Link>
+            {latest.run.finished_at ? ` · priced ${formatDate(latest.run.finished_at)}` : ""} · estimates {audience === "brand" ? `from the rates and fee schedule ${tenantName} assigned to you` : "from the rates and fee schedule assigned to this customer"}, never an invoice.
+          </p>
+        </section>
+      ) : null}
+      {forecast || whatIf ? (
+        <section className="mt-8 space-y-3" aria-labelledby="overview-other">
+          <h2 id="overview-other" className="text-xl font-semibold tracking-tight">
+            Forecasts and what-ifs
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {forecast ? <ForecastTile project={forecast.project} run={forecast.run} basePath={basePath} audience={audience} /> : null}
+            {whatIf ? <WhatIfTile project={whatIf.project} run={whatIf.run} basePath={basePath} audience={audience} /> : null}
+          </div>
+        </section>
+      ) : null}
+    </>
   );
 }
 

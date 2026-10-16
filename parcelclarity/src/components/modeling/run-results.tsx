@@ -676,7 +676,7 @@ export function MonthlyChargesCard({ summary, addHref }: { summary: BulkSummary;
             {m.notModeled.map((x) => (
               <li key={`${x.category}:${x.name}`} className="flex flex-wrap items-center gap-x-3">
                 <span>
-                  {x.name}: <span className="text-muted">{x.rate}. Not computed, not $0.</span>
+                  {x.name}: <span className="text-muted">{x.rate}. Not included in the totals.</span>
                 </span>
                 {x.addable && addHref ? <AddLink href={addHref} name={x.name} /> : null}
               </li>
