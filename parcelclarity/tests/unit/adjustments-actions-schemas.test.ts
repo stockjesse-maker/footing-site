@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   BASIS_REQUIRED_MESSAGE,
+  OUNCE_PRECISION_MESSAGE,
   PUBLISH_REFUSALS,
   RATE_LIMITS,
   ROW_PROBLEMS,
@@ -136,7 +137,7 @@ describe("plain text a customer may read", () => {
   const ch = (code: number) => String.fromCodePoint(code);
 
   it("refuses control, bidirectional and zero-width characters and angle brackets (the database's own list)", () => {
-    const refused = [0x01, 0x08, 0x0b, 0x0c, 0x0e, 0x1f, 0x7f, 0x80, 0x9f, 0x2028, 0x2029, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202d, 0x202e, 0x2066, 0x2067, 0x2069, 0xfeff];
+    const refused = [0x00, 0x01, 0x08, 0x0b, 0x0c, 0x0e, 0x1f, 0x7f, 0x80, 0x9f, 0x2028, 0x2029, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202d, 0x202e, 0x2066, 0x2067, 0x2069, 0xfeff];
     for (const code of refused) expect(hasForbiddenText(`a${ch(code)}b`), code.toString(16)).toBe(true);
     expect(hasForbiddenText("a<b")).toBe(true);
     expect(hasForbiddenText("a>b")).toBe(true);
@@ -187,6 +188,24 @@ describe("scenario and risk schemas", () => {
     expect(bad({ brandId: null, rateCardId: UUID }).success).toBe(true);
     expect(bad({ shipDate: "2026-13-01" }).success).toBe(false);
     expect(bad({ extra: 1 }).success).toBe(false);
+  });
+
+  it("refuses an ounce weight with more than 2 decimals, on the declared and the corrected side, so a saved example always reprices to the amount shown (engine review F10)", () => {
+    const withWeights = (declared: Record<string, string>, correction: Record<string, string>) => scenarioInputSchema.safeParse({ ...form(), packages: [{ declared, correction }] });
+    // 16.001 oz is 1.0000625 lb: stored at six decimals it would be 1.000063 lb, and a rounded weight can cross a billable-weight boundary.
+    for (const weight of ["16.001", "16.000001", "0.001", "8.125"]) {
+      const declared = withWeights({ weight, weightUnit: "oz" }, { weight: "20", weightUnit: "lb" });
+      expect(declared.success, `declared ${weight} oz`).toBe(false);
+      if (!declared.success) expect(zodProblems(declared.error)[0]).toContain(OUNCE_PRECISION_MESSAGE);
+      expect(withWeights({ weight: "3", weightUnit: "lb" }, { weight, weightUnit: "oz" }).success, `corrected ${weight} oz`).toBe(false);
+    }
+    // Two decimals of an ounce are exact at six decimals of a pound; pounds are exact up to six decimals; a weight with no unit is pounds.
+    for (const [weight, unit] of [["16.01", "oz"], ["8", "oz"], ["0.5", "oz"], ["1.000001", "lb"], ["3", "lb"]] as const) {
+      expect(withWeights({ weight, weightUnit: unit }, {}).success, `${weight} ${unit}`).toBe(true);
+    }
+    expect(withWeights({ weight: "1.0000001", weightUnit: "lb" }, {}).success).toBe(false);
+    // The weight with no unit in a correction is checked as pounds, the unit the engine reads it in.
+    expect(withWeights({ weight: "3", weightUnit: "lb" }, { weight: "1.0000001" }).success).toBe(false);
   });
 
   const risk = (over: Record<string, unknown> = {}) => ({

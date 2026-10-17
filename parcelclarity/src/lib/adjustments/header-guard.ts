@@ -2,7 +2,7 @@ import type { Table } from "../import/parse-table";
 import { cleanText } from "./cells";
 import { NOTHING_SAVED, REFUSAL_TITLE } from "./copy";
 import { FOLD_WINDOW, MAX_HEADER_CHARS, codePointCountAtMost, foldHeader, hasUnreadableCharacters, isBlankHeader, normalizeFolded, normalizeGuardHeader } from "./header-text";
-import { detectHeaderRow, headerCandidateRows, scannedRows } from "./sheet";
+import { detectHeaderRow, headerCandidateRows, isHeaderLikeRow, scannedRows } from "./sheet";
 import type { MoneyField } from "./types";
 
 export { normalizeGuardHeader } from "./header-text";
@@ -31,9 +31,10 @@ export { normalizeGuardHeader } from "./header-text";
  * It is a best-effort filter. No guard can prove that a number is customer-facing: the mapping step, the stored attestation and the
  * documentation say so.
  *
- * Which cells are tested: every cell of every row, among the first fifty non-blank rows of a sheet, that could be a header (sheet.ts). The
- * first row and the row the importer will read as the header get every step above; the other candidates (a title row, a second header block)
- * get the word rules (step 5 and 6), exactly as the database reads the first lines of a stored CSV file.
+ * Which cells are tested: every cell of every row, among the first fifty non-blank rows of a sheet, that could be a header (sheet.ts: the first
+ * row, every header-like row, and every row above the header row that reads like column names; a row under the header row is data). The
+ * first row and every header-like row (the row the importer will read as the header, a second header block) get every step above; a title or
+ * preamble row gets the word rules (step 5 and 6) only, as the database does for the first lines of a stored CSV file.
  *
  * Money columns are mapped automatically only by an exact template header or a header that says the customer was
  * charged (it contains "charged to" or "billed to" together with a money word or the word "customer", or the word "customer" beside
@@ -275,12 +276,9 @@ export function guardTables(tables: readonly Table[]): HeaderGuardResult {
   const found: { header: string; sheet: string | null; reason: RefusalReason; word: string | null }[] = [];
   for (const t of tables) {
     const first = scannedRows(t.rows)[0];
-    const header = detectHeaderRow(t.rows);
-    const rows = new Set(headerCandidateRows(t.rows));
-    if (header !== null) rows.add(header);
     const seen = new Map<string, HeaderVerdict>();
-    for (const r of [...rows].sort((a, b) => a - b)) {
-      const full = r === first || r === header;
+    for (const r of headerCandidateRows(t.rows)) {
+      const full = r === first || isHeaderLikeRow(t.rows[r]!);
       for (const cell of t.rows[r]!) {
         if (cell === "") continue;
         const memo = cell.length <= MAX_HEADER_CHARS ? `${full ? "f" : "c"}\u0000${cell}` : null;

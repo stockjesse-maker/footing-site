@@ -90,49 +90,68 @@ export function PolicyMatrix({ scope, policies, today, canManage }: { scope: Pol
 
   return (
     <div className="space-y-4" data-testid={`policy-matrix-${scope.kind}`}>
-      <table className="block w-full sm:table">
-        <caption className="sr-only">{`Who pays, ${label}`}</caption>
-        <thead className="hidden sm:table-header-group">
-          <tr className="text-left text-sm text-muted">
-            <th scope="col" className="px-4 py-2 font-medium">
-              Kind of adjustment
-            </th>
-            <th scope="col" className="px-4 py-2 font-medium">
-              {MATRIX_ROWS[0]!.cells[0]!.label}
-            </th>
-            <th scope="col" className="px-4 py-2 font-medium">
-              {MATRIX_ROWS[0]!.cells[1]!.label}
-            </th>
-          </tr>
-        </thead>
-        <tbody className="block space-y-3 sm:table-row-group sm:space-y-0 sm:divide-y sm:divide-line sm:border-y sm:border-line">
-          {MATRIX_ROWS.map((row) => (
-            <tr key={row.type} className="block rounded-card border border-line bg-raised p-4 shadow-card sm:table-row sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0 sm:shadow-none">
-              <th scope="row" className="block text-left font-normal sm:table-cell sm:w-64 sm:px-4 sm:py-4 sm:align-top">
-                <span className="block font-semibold">{row.label}</span>
-                <span className="mt-0.5 block text-sm text-muted">{POLICY_TYPE_HELP[row.type]}</span>
-                {row.type === "combined" && canManage ? (
-                  <span className="mt-2 flex flex-wrap gap-2">
-                    <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-9" onClick={() => copyFrom("reweight")}>
-                      Use the same decisions as Reweigh
-                    </Button>
-                    <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-9" onClick={() => copyFrom("remeasure")}>
-                      Use the same decisions as Remeasure
-                    </Button>
-                  </span>
-                ) : null}
-              </th>
-              {row.cells.map((c) => {
-                const key = cellKey(row.type, c.component);
-                const cell = cells.find((x) => x.type === row.type && x.component === c.component);
-                const fieldId = `${id}-${key.replace(":", "-")}`;
-                const effective = effectiveDecision(cell, scope);
-                const value: DraftChoice = draft[key] ?? "";
-                const dirty = c.applicable && value !== (effective.source === "own" ? (effective.handling as DraftChoice) : "");
-                return (
-                  <td key={c.component} className="mt-3 block sm:mt-0 sm:table-cell sm:px-4 sm:py-4 sm:align-top">
-                    {c.applicable ? (
-                      <div className="space-y-2">
+      {/* One group per kind of adjustment. From 640px the groups line up as a table of three columns; below it each is a card.
+          Plain groups and labelled controls, not display:block table parts, so a screen reader reads the same thing at every width. */}
+      <div role="group" aria-label={`Who pays, ${label}`}>
+        <div aria-hidden="true" className="hidden gap-x-4 px-4 pb-2 text-sm font-medium text-muted sm:grid sm:grid-cols-[minmax(0,16rem)_minmax(0,1fr)_minmax(0,1fr)]">
+          <span>Kind of adjustment</span>
+          <span>{MATRIX_ROWS[0]!.cells[0]!.label}</span>
+          <span>{MATRIX_ROWS[0]!.cells[1]!.label}</span>
+        </div>
+        <ul className="space-y-3 sm:space-y-0 sm:divide-y sm:divide-line sm:border-y sm:border-line">
+          {MATRIX_ROWS.map((row) => {
+            const rowId = `${id}-row-${row.type}`;
+            return (
+              <li key={row.type}>
+                <div
+                  role="group"
+                  aria-labelledby={rowId}
+                  className="grid gap-3 rounded-card border border-line bg-raised p-4 shadow-card sm:grid-cols-[minmax(0,16rem)_minmax(0,1fr)_minmax(0,1fr)] sm:gap-x-4 sm:rounded-none sm:border-0 sm:bg-transparent sm:shadow-none"
+                >
+                  <div className="min-w-0">
+                    <p id={rowId} className="font-semibold">
+                      {row.label}
+                    </p>
+                    <p className="mt-0.5 text-sm text-muted">{POLICY_TYPE_HELP[row.type]}</p>
+                    {row.type === "combined" && canManage ? (
+                      <span className="mt-2 flex flex-wrap gap-2">
+                        <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-9" onClick={() => copyFrom("reweight")}>
+                          Use the same decisions as Reweigh
+                        </Button>
+                        <Button size="sm" variant="secondary" className="min-h-11 sm:min-h-9" onClick={() => copyFrom("remeasure")}>
+                          Use the same decisions as Remeasure
+                        </Button>
+                      </span>
+                    ) : null}
+                  </div>
+                  {row.cells.map((c) => {
+                    const key = cellKey(row.type, c.component);
+                    const cell = cells.find((x) => x.type === row.type && x.component === c.component);
+                    const fieldId = `${id}-${key.replace(":", "-")}`;
+                    const effective = effectiveDecision(cell, scope);
+                    const value: DraftChoice = draft[key] ?? "";
+                    const dirty = c.applicable && value !== (effective.source === "own" ? (effective.handling as DraftChoice) : "");
+                    // Where the decision in force comes from, in words ("" when it is simply not decided for all customers).
+                    const origin =
+                      effective.source === "own"
+                        ? inherit
+                          ? `Set for ${label}, from ${formatIsoDate(effective.validFrom ?? today)}`
+                          : `From ${formatIsoDate(effective.validFrom ?? today)}`
+                        : effective.source === "all"
+                          ? "Same as all customers"
+                          : inherit
+                            ? "All customers: Not decided"
+                            : "";
+                    if (!c.applicable) {
+                      return (
+                        <div key={c.component} className="min-w-0">
+                          <span className="block text-sm font-medium sm:sr-only">{c.label}</span>
+                          <p className="text-sm text-muted">{NOT_APPLICABLE_FEE_ONLY}</p>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div key={c.component} className="min-w-0 space-y-2">
                         {canManage ? (
                           <label htmlFor={fieldId} className="block text-sm font-medium sm:sr-only">
                             {c.label}
@@ -150,42 +169,25 @@ export function PolicyMatrix({ scope, policies, today, canManage }: { scope: Pol
                             ))}
                           </Select>
                         ) : (
-                          <p className="text-[15px]">
-                            {effective.handling === "unconfigured" ? UNDECIDED_TEXT : HANDLING_LABELS[effective.handling]}
-                          </p>
+                          <p className="text-[15px]">{effective.handling === "unconfigured" ? UNDECIDED_TEXT : HANDLING_LABELS[effective.handling]}</p>
                         )}
                         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                           <Badge tone={toneOf(effective.handling)}>{badgeText(effective.handling)}</Badge>
-                          <span className="text-muted">
-                            {effective.source === "own"
-                              ? inherit
-                                ? `Set for ${label}, from ${formatIsoDate(effective.validFrom ?? today)}`
-                                : `From ${formatIsoDate(effective.validFrom ?? today)}`
-                              : effective.source === "all"
-                                ? "Same as all customers"
-                                : inherit
-                                  ? "All customers: Not decided"
-                                  : null}
-                          </span>
+                          {origin ? <span className="text-muted">{origin}</span> : null}
                           {dirty ? <span className="font-medium">Changed, not saved</span> : null}
                         </p>
                         {effective.handling === "unconfigured" && value === "" ? <p className="text-sm text-muted">{UNDECIDED_HELP}</p> : null}
                         {canManage && value !== "" ? <p className="text-sm text-muted">{HANDLING_HELP[value]}</p> : null}
                         {!canManage && effective.handling !== "unconfigured" ? <p className="text-sm text-muted">{HANDLING_HELP[effective.handling]}</p> : null}
                       </div>
-                    ) : (
-                      <div>
-                        <span className="block text-sm font-medium sm:sr-only">{c.label}</span>
-                        <p className="text-sm text-muted">{NOT_APPLICABLE_FEE_ONLY}</p>
-                      </div>
-                    )}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                    );
+                  })}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
 
       {canManage ? (
         <div className="flex flex-wrap items-center gap-3">

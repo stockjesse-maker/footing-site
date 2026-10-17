@@ -2,8 +2,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { DataList, DataRow } from "@/components/ui/data-list";
 import { EmptyState } from "@/components/ui/empty-state";
-import { HISTORY_EMPTY } from "@/lib/adjustments/copy";
-import { IMPORT_STATUS_LABELS, IMPORT_STATUS_TONES, formatCount, formatDateRange, formatIsoDate, type ImportStatusKey } from "@/lib/adjustments/staff-copy";
+import { HISTORY_EMPTY_BODY, HISTORY_EMPTY_TITLE, IMPORT_STATUS_LABELS, IMPORT_STATUS_TONES, formatCount, formatDateRange, formatIsoDate, type ImportStatusKey } from "@/lib/adjustments/staff-copy";
 
 /** What the list needs of an import (a subset of `ImportListRow` of queries.ts, so the screen renders without a server). */
 export interface ImportListItem {
@@ -36,9 +35,7 @@ export function importSizeLine(i: Pick<ImportListItem, "status" | "rowCount" | "
 export function HistoryList({ imports }: { imports: ImportListItem[] }) {
   if (!imports.length) {
     return (
-      <EmptyState title="No history yet">
-        {HISTORY_EMPTY.replace(/^No history yet\.\s*/, "")}
-      </EmptyState>
+      <EmptyState title={HISTORY_EMPTY_TITLE}>{HISTORY_EMPTY_BODY}</EmptyState>
     );
   }
   return (

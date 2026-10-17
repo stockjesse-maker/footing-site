@@ -123,3 +123,58 @@ describe("history import over a workbook", () => {
     expect(await parseAdjustmentFile(empty, xlsx)).toMatchObject({ status: "error", code: "empty" });
   });
 });
+
+describe("history import over a workbook: the review's findings F2, F3, F4, F12 and F14", () => {
+  const COST_HEADER = ["ship_date", "carrier", "adjustment_type", "Net Charge", "Carrier Cost"];
+  const accepted = async (book: Buffer) => {
+    const parsed = await parseAdjustmentFile(book, xlsx);
+    if (parsed.status !== "ok") throw new Error(`not accepted: ${parsed.status}`);
+    return parsed;
+  };
+
+  it("F2: a title block above a cost header does not hide it (the sheet is refused and the header is named)", async () => {
+    const book = workbook([{ name: "Data", rows: [["Acme", "Report", "Q3"], COST_HEADER, ["2026-09-01", "UPS", "reweight", 12, 9.1]] }]);
+    expect(await parseAdjustmentFile(book, xlsx)).toMatchObject({ status: "refused", guard: { sheet: "Data", refusedHeaders: expect.arrayContaining(["Carrier Cost"]) } });
+  });
+
+  it("F2: a sheet whose column names cannot be found is refused ('put the column names in row 1'), and so is a headerless export", async () => {
+    const headerless = workbook([{ name: "Data", rows: [["2026-09-01", "UPS Ground", "1Z999AA10123456784", 12.34, 9.1, 3.2, "reweight"]] }]);
+    expect(await parseAdjustmentFile(headerless, xlsx)).toMatchObject({ status: "error", message: expect.stringContaining("Put the column names in row 1") });
+  });
+
+  it("F3: a sheet wider than 200 columns is refused, never cut (a cost header in column 201 would otherwise go unchecked)", async () => {
+    const wide = [...HEADER.slice(0, 3), ...Array.from({ length: 197 }, (_, i) => `note ${i}`), "Carrier Cost"];
+    expect(wide).toHaveLength(201);
+    expect(await parseAdjustmentFile(workbook([{ name: "Data", rows: [wide, wide.map(() => 1)] }]), xlsx)).toMatchObject({ status: "error", code: "too_large", message: expect.stringContaining("more than 200 columns") });
+  });
+
+  it("F4: invisible and look-alike characters in a workbook header do not get past the guard", async () => {
+    for (const header of ["Co\u200bst", "\u0421ost", "\uff23\uff2f\uff33\uff34"]) {
+      expect((await parseAdjustmentFile(workbook([{ name: "Data", rows: [[...HEADER.slice(0, 3), header], ["2026-09-01", "UPS", "reweight", 1]] }]), xlsx)).status, JSON.stringify(header)).toBe("refused");
+    }
+  });
+
+  it("F12: a tracking number typed as a number keeps 15 digits at most; 16 digits or more are refused, so two different 20-digit packages never collapse into one", async () => {
+    const ref = (n: number) => ["2026-09-01", "UPS", "UPS Ground", "", "reweight", "", n, 3, 5, "lb", 13.35, 14.91, 3];
+    const header = ["ship_date", "carrier", "service", "brand", "adjustment_type", "cause", "package_ref", "declared_weight", "actual_weight", "weight_unit", "customer_charge_original", "customer_charge_corrected", "customer_adjustment_fee"];
+    const parsed = await accepted(workbook([{ name: "History", rows: [header, ref(123456789012345), ref(92612999999999999991), ref(92612999999999999992), ref(1234567890123456)] }]));
+    const detection = detectAdjustmentFile(parsed.tables, ctx);
+    const { report, records } = applyAdjustmentMapping(parsed.tables, detection.suggestion, ctx);
+    // 15 digits are exact; the other three are 16 digits or more (and the two 20-digit ones are the same double): each is an error row, none is a duplicate of another.
+    expect(records.map((r) => r.packageRef)).toEqual(["123456789012345"]);
+    expect(report.byCode).toMatchObject({ invalid_package_ref: 3, duplicate_reference: 0 });
+    expect(report.rowNumbers.invalid_package_ref).toEqual([2, 3, 4]);
+    expect(report.committable).toBe(false);
+  });
+
+  it("F14: spacer rows in a sheet count for nothing: not against the limit, not in the row numbers", async () => {
+    const data = (ref: string, date = "2026-08-03") => [date, "UPS", "UPS Ground", "", "reweight", "", ref, 4, 6, "lb", 13.35, 14.91, 3];
+    const book = workbook([{ name: "History", rows: [["Adjustment history"], [], ["Prepared by"], HEADER, [], [], data("X1"), [], data("X2", "not a date"), []] }]);
+    const parsed = await accepted(book);
+    const detection = detectAdjustmentFile(parsed.tables, ctx);
+    expect(detection.sheets[0]).toMatchObject({ headerRow: 3, rowCount: 2 });
+    const { report } = applyAdjustmentMapping(parsed.tables, detection.suggestion, ctx);
+    expect(report.counts.rows).toBe(2);
+    expect(report.rowNumbers.invalid_date).toEqual([2]);
+  });
+});

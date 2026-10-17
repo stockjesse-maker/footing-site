@@ -1,8 +1,10 @@
+"use client";
+
 import { useId } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Field, Select } from "@/components/ui/field";
 import type { AdjustmentCause, AdjustmentDetection, AdjustmentMapping, DuplicateHandling, MoneyField } from "@/lib/adjustments/types";
-import { CAUSE_LABELS, CAUSE_OPTIONS, DUPLICATE_LEGEND, DUPLICATE_OPTIONS, MONEY_FIELD_HINT, MONEY_FIELD_LABELS, formatCount } from "@/lib/adjustments/staff-copy";
+import { CAUSE_LABELS, CAUSE_OPTIONS, DUPLICATE_LEGEND, DUPLICATE_OPTIONS, DUPLICATE_RULE_NOTE, MONEY_FIELD_HINT, MONEY_FIELD_LABELS, formatCount } from "@/lib/adjustments/staff-copy";
 import {
   FIELD_GROUPS,
   TYPE_OPTIONS,
@@ -270,7 +272,7 @@ function ValueMaps({ idPrefix, mapping, onChange, detection, brands, catalog, di
     allowEmpty: boolean;
   }[] = [
     { key: "types", legend: "Adjustment types in the file", description: "Rows whose type is not matched are refused until it is.", name: "typeMap", values: d.types, fallback: null, options: TYPE_OPTIONS.map((t) => ({ value: t.value, label: t.label })), emptyLabel: "Not matched", allowEmpty: true },
-    { key: "causes", legend: "Reasons and causes in the file", description: "Each reason is matched to one of the causes. A reason that is not matched is stored under the cause chosen above.", name: "causeMap", values: d.causes, fallback: mapping.defaults.cause, options: CAUSE_OPTIONS.map((c) => ({ value: c, label: CAUSE_LABELS[c] })), emptyLabel: "Use the cause chosen above", allowEmpty: false },
+    { key: "causes", legend: "Reasons and causes in the file", description: "Each reason is matched to one of the causes. A row with no reason is stored under the cause chosen above.", name: "causeMap", values: d.causes, fallback: mapping.defaults.cause, options: CAUSE_OPTIONS.map((c) => ({ value: c, label: CAUSE_LABELS[c] })), emptyLabel: "", allowEmpty: false },
     { key: "carriers", legend: "Carriers in the file", name: "carrierMap", values: d.carriers, fallback: null, options: carriers.map((c) => ({ value: c.code, label: c.name })), emptyLabel: "Not matched", allowEmpty: true },
     { key: "services", legend: "Services in the file", description: "A service that is not matched stays unknown for those rows; the rows are still counted.", name: "serviceMap", values: d.services, fallback: null, options: catalog.map((s) => ({ value: s.id, label: serviceLabel(s) })), emptyLabel: "Not matched", allowEmpty: true },
     { key: "customers", legend: "Customers in the file", description: "A customer that is not matched stays in your history but counts for no customer.", name: "brandMap", values: d.customers, fallback: null, options: brands.map((b) => ({ value: b.id, label: b.name })), emptyLabel: "Leave unassigned", allowEmpty: true },
@@ -295,7 +297,8 @@ function ValueMaps({ idPrefix, mapping, onChange, detection, brands, catalog, di
                   >
                     {(aria) => (
                       <Select {...aria} value={r.value ?? ""} onChange={(e) => onChange(setMapEntry(mapping, s.name, r.normalized, e.target.value === "" ? null : e.target.value))}>
-                        <option value="">{s.emptyLabel}</option>
+                        {/* A cause always has a value (the stored mapping cannot hold "no cause"); the other maps may be left unmatched. */}
+                        {s.allowEmpty ? <option value="">{s.emptyLabel}</option> : null}
                         {s.options.map((o) => (
                           <option key={o.value} value={o.value}>
                             {o.label}
@@ -319,7 +322,7 @@ function DuplicateChoice({ value, onChange, disabled }: { value: DuplicateHandli
   return (
     <fieldset className="space-y-3" disabled={disabled}>
       <legend className="text-sm font-semibold">{DUPLICATE_LEGEND}</legend>
-      <p className="text-sm text-muted">A package that an earlier file already added (same customer, carrier, package reference and kind of adjustment) is skipped, even when its amounts differ.</p>
+      <p className="text-sm text-muted">{DUPLICATE_RULE_NOTE}</p>
       <div className="space-y-2">
         {DUPLICATE_OPTIONS.map((o) => (
           <label key={o.value} className="flex min-h-11 items-start gap-3 rounded-control border border-line px-3 py-2.5 text-sm has-[:checked]:border-accent has-[:checked]:bg-accent-soft">

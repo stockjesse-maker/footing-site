@@ -2,7 +2,7 @@ import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardDescription } from "@/components/ui/card";
 import type { AdjustmentValidationReport, CodeSummary } from "@/lib/adjustments/types";
-import { IMPORT_LIMITS, PRIVATE_NOTICE, formatCount, formatDateRange, pluralize } from "@/lib/adjustments/staff-copy";
+import { IMPORT_LIMITS, MAPPING_CHANGED, PRIVATE_NOTICE, ROW_NUMBERING_NOTE, formatCount, formatDateRange, pluralize } from "@/lib/adjustments/staff-copy";
 import { splitCodes } from "./import-model";
 
 const TYPE_WORDS: Record<string, string> = { reweight: "reweigh", remeasure: "remeasure", combined: "both together", correction: "other correction fee" };
@@ -63,7 +63,7 @@ export function ValidationReportView({
       <CardDescription>{PRIVATE_NOTICE}</CardDescription>
       {dirty ? (
         <Alert tone="warning" className="mt-3">
-          You changed how the file is read. Check the file again to update this report; it describes the last saved choices.
+          {MAPPING_CHANGED}
         </Alert>
       ) : null}
 
@@ -132,6 +132,7 @@ export function ValidationReportView({
             <section className="mt-5 space-y-3" aria-label="Problems to fix">
               <h3 className="text-base font-semibold">Fix before importing</h3>
               <CodeList codes={errors} report={report} tone="error" />
+              {errors.some((c) => rowList(report, c.code)) ? <p className="text-sm text-muted">{ROW_NUMBERING_NOTE}</p> : null}
             </section>
           ) : null}
           {information.length ? (

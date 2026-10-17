@@ -297,3 +297,18 @@ describe("customer wording of tiers", () => {
     expect(describeFeeRule(tiered("10"))).toContain("1–10 items: $3.00 each; 11+ items: $0.40 each");
   });
 });
+
+describe("what the fee editor says customers can read (decision D7: rule keys are identifiers a customer can read through the API)", () => {
+  const page = readFileSync(new URL("../../src/app/(tenant)/app/fee-schedules/[scheduleId]/versions/[versionId]/page.tsx", import.meta.url), "utf8");
+
+  it("the version page says customers never see staff notes or sources, and that rule keys can be read through the API (review finding F15)", () => {
+    expect(page).toContain("They never see staff notes or sources; rule keys can be read through the API.");
+    expect(page).not.toContain("They never see rule keys");
+  });
+
+  it("no editor label claims that a key, a question key or a group name is staff only; the source note, which really is, still says so", () => {
+    const sources = ["rule-form", "rules-workspace", "schedule-view"].map((f) => readFileSync(new URL(`../../src/components/fees/${f}.tsx`, import.meta.url), "utf8")).join("\n");
+    for (const claim of ["Key (staff only)", "Question key (staff only)", "Group name (staff only)", "a rule key is for staff only"]) expect(sources, claim).not.toContain(claim);
+    expect(sources).toContain("Source (staff only)");
+  });
+});

@@ -82,8 +82,11 @@ const positiveDecimal = (what: string) =>
     .regex(/^\d{1,6}(\.\d{1,6})?$/, `Enter ${what} as a number (up to 6 digits).`)
     .refine((v) => Number(v) > 0, `${what[0]!.toUpperCase()}${what.slice(1)} must be more than zero.`);
 
-/** Plain text a customer may read: the database's `app.plain_text_ok` (no control, bidi or zero-width characters, no angle brackets). */
-const FORBIDDEN_RANGES: readonly (readonly [number, number])[] = [[0x01, 0x08], [0x0b, 0x0c], [0x0e, 0x1f], [0x7f, 0x9f], [0x2028, 0x2029], [0x200b, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069], [0xfeff, 0xfeff]];
+/**
+ * Plain text a customer may read: the database's `app.plain_text_ok` (no control, bidi or zero-width characters, no angle brackets), and NUL,
+ * which no PostgreSQL text can hold (the database never sees it: the call would fail before any function ran).
+ */
+const FORBIDDEN_RANGES: readonly (readonly [number, number])[] = [[0x00, 0x08], [0x0b, 0x0c], [0x0e, 0x1f], [0x7f, 0x9f], [0x2028, 0x2029], [0x200b, 0x200f], [0x202a, 0x202e], [0x2066, 0x2069], [0xfeff, 0xfeff]];
 
 /** True when the text has a control, bidi or zero-width character or an angle bracket (the characters `app.plain_text_ok` refuses). */
 export function hasForbiddenText(v: string): boolean {

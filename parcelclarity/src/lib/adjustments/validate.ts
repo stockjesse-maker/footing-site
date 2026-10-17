@@ -2,7 +2,7 @@ import type { Table } from "../import/parse-table";
 import { addMoney, canonicalPackageRef, cents, cleanText, enumValue, isNegativeMoney, moneyFits, normalizeValue, parseMoneyCell, readDateCell, readDimension, readPackageRef, readWeight, shipDateInRange, subtractMoney } from "./cells";
 import { IMPORT_LIMITS, IMPORT_NOTICE } from "./copy";
 import { isBlankRow } from "./sheet";
-import { jsonbSizeEstimate } from "./jsonb-size";
+import { jsonbSizeEstimate, scrubJsonb } from "./jsonb-size";
 import { MAX_LISTED_COLUMNS, listIgnoredColumns, reportedHeader, suggestBrand, suggestCarrier, serviceKeyOf, validateMapping } from "./mapping";
 import { classifyHeader } from "./header-guard";
 import {
@@ -517,18 +517,6 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
 /** What a stored report may weigh as a jsonb: the database's limit is 32 KB, and the library stays well under it (measured by `jsonbSizeEstimate`, which rounds up). */
 export const STORED_VALIDATION_MAX_BYTES = 24_000;
 
-/** A text without the characters PostgreSQL's jsonb refuses (NUL, a lone surrogate): they become spaces. Applied to every string of a stored report. */
-function scrubText(s: string): string {
-  return s.replace(/\u0000/g, " ").replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, " ");
-}
-
-function scrub<T>(value: T): T {
-  if (typeof value === "string") return scrubText(value) as T;
-  if (Array.isArray(value)) return value.map(scrub) as T;
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [scrubText(k), scrub(v)])) as T;
-  return value;
-}
-
 /**
  * The report as stored in adjustment_imports.validation (at most 32 KB in the database; the library stays under 24 KB, measured the way
  * the database measures a jsonb). Every header and customer name in it is cleaned and cut (80 and 120 characters) and the two lists that
@@ -538,7 +526,7 @@ function scrub<T>(value: T): T {
  */
 export function toStoredValidation(report: AdjustmentValidationReport): AdjustmentValidationReport {
   const size = (r: AdjustmentValidationReport) => jsonbSizeEstimate(r);
-  let out: AdjustmentValidationReport = scrub({
+  let out: AdjustmentValidationReport = scrubJsonb({
     ...report,
     ignoredColumns: report.ignoredColumns.slice(0, MAX_LISTED_COLUMNS).map((c) => ({ ...c, header: reportedHeader(c.header) })),
     customers: report.customers.slice(0, MAX_CUSTOMERS_LISTED).map((c) => ({ ...c, text: cleanText(c.text, 120).text ?? "" })),

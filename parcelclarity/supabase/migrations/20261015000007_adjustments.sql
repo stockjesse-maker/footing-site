@@ -873,9 +873,10 @@ begin
 end $$;
 
 -- The first fifty non-blank lines of a stored CSV or text file, read as the database sees the bytes. A line that can be a header is
--- tested cell by cell: the first line always, and any later line with at least three filled cells of which at most a quarter are
--- numbers or dates (a title row, or a header below a title block). Data rows are not tested, so a service named "USPS Priority Mail
--- Flat Rate" in a data cell never refuses a file. UTF-16 and NUL-bearing text cannot be read here at all, so it is refused with its own
+-- tested cell by cell: the first line always, and any later line with at least three filled cells and NOT ONE number or date (a title
+-- row, or a header below a title block). A record always carries a ship date, so a line with a date or a number is data and is not
+-- tested: a service named "USPS Priority Mail Flat Rate" or a reason reading "Postage correction note" in a data cell never refuses a
+-- file. This matches the TypeScript guard's rule for rows under the header row (src/lib/adjustments/sheet.ts headerCandidateRows). UTF-16 and NUL-bearing text cannot be read here at all, so it is refused with its own
 -- reason (a LATIN1 fallback on such bytes would raise instead). Returns {ok:true}, {ok:false, reason:'unsupported_encoding'} or
 -- {ok:false, reason:'forbidden_header', header}. XLSX and other binary files are not read here (the declared headers are tested).
 create function app.adjustment_scan_file(p_content bytea, p_mime text, p_filename text) returns jsonb
@@ -912,7 +913,7 @@ begin
       v_filled := v_filled + 1;
       if v_cell ~* '^[^0-9a-z]*[0-9][0-9,. ]*[^0-9a-z]*(usd)?$' or v_cell ~ '^[0-9]{1,4}[-/.][0-9]{1,2}[-/.][0-9]{1,4}' then v_numeric := v_numeric + 1; end if;
     end loop;
-    if v_n > 1 and (v_filled < 3 or v_numeric * 4 > v_filled) then continue; end if;
+    if v_n > 1 and (v_filled < 3 or v_numeric > 0) then continue; end if;
     foreach v_cell in array v_cells loop
       v_cell := btrim(v_cell, E' \t"''');
       if v_cell = '' then continue; end if;

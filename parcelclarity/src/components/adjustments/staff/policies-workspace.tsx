@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,15 @@ export function PoliciesWorkspace({ policies, brands, today, canManage, initialC
   const [customerId, setCustomerId] = useState<string>(initialCustomerId && brands.some((b) => b.id === initialCustomerId) ? initialCustomerId : "");
   const customer = brands.find((b) => b.id === customerId) ?? null;
   const summary = useMemo(() => exceptionSummary(policies, brands, today), [policies, brands, today]);
+  const region = useRef<HTMLDivElement>(null);
+  // "Edit" on a customer in the list opens that customer's decisions further down the page: bring them into view and hand them focus.
+  const open = (brandId: string) => {
+    setCustomerId(brandId);
+    requestAnimationFrame(() => {
+      region.current?.scrollIntoView({ block: "start" });
+      region.current?.focus();
+    });
+  };
   const empty = nothingDecided(policies, today);
 
   return (
@@ -68,7 +77,7 @@ export function PoliciesWorkspace({ policies, brands, today, canManage, initialC
                       ))}
                     </ul>
                   </div>
-                  <Button size="sm" variant="secondary" className="min-h-11 shrink-0 sm:min-h-9" onClick={() => setCustomerId(s.brandId)} aria-label={`${canManage ? "Edit" : "Show"} decisions for ${s.brandName}`}>
+                  <Button size="sm" variant="secondary" className="min-h-11 shrink-0 sm:min-h-9" onClick={() => open(s.brandId)} aria-label={`${canManage ? "Edit" : "Show"} decisions for ${s.brandName}`}>
                     {canManage ? "Edit" : "Show"}
                   </Button>
                 </li>
@@ -105,7 +114,7 @@ export function PoliciesWorkspace({ policies, brands, today, canManage, initialC
         )}
 
         {customer ? (
-          <div className="space-y-3" role="region" aria-label={`Decisions for ${customer.name}`}>
+          <div ref={region} tabIndex={-1} className="scroll-mt-4 space-y-3 outline-none" role="region" aria-label={`Decisions for ${customer.name}`}>
             <h3 className="text-base font-semibold [overflow-wrap:anywhere]">{`Decisions for ${customer.name}`}</h3>
             <p className="text-sm text-muted">
               {pluralize(summary.find((s) => s.brandId === customer.id)?.decisions.length ?? 0, "decision")} of their own today.

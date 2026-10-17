@@ -147,6 +147,17 @@ describe("the 3PL's name", () => {
   });
 });
 
+describe("the 3PL's name as a possessive", () => {
+  it("takes 's, or just an apostrophe after a name that ends in s (Northwind Logistics' rates)", () => {
+    expect(copy.possessive("Acme 3PL")).toBe("Acme 3PL's");
+    expect(copy.possessive("your 3PL")).toBe("your 3PL's");
+    expect(copy.possessive("Northwind Logistics")).toBe("Northwind Logistics'");
+    expect(copy.possessive("HARBOR SERVICES")).toBe("HARBOR SERVICES'");
+    const dates = footerDates({ tenantName: "Northwind Logistics", pricedOn: "2026-10-16", ratesEffectiveFrom: "2026-10-16", sharedOn: "2026-10-16", validThrough: "2026-12-31" });
+    expect(dates).toBe("Based on Northwind Logistics' rates in effect on Oct 16, 2026. Shared by Northwind Logistics on Oct 16, 2026 and shown until Dec 31, 2026.");
+  });
+});
+
 describe("money, weight, size and dates", () => {
   it("formats dollars from a string, with thousands separators, and nothing else", () => {
     expect(formatDollars("5.30")).toBe("$5.30");
@@ -306,7 +317,7 @@ describe("the banned words", () => {
 
 describe("no number about how often, how many or how much a month ever appears in a template", () => {
   it("(frequency, counts, rates, per-shipment, monthly and annual wording is absent; the one 'how often' is inside an approved negation)", () => {
-    const strings = [pageIntro(T), hubCardDescription(T), emptyText(T), underReviewText(T), ...footerNotes(T, true), ...footerNotes(T, false), ...Object.values(copy).filter((v): v is string => typeof v === "string")];
+    const strings = [pageIntro(T), hubCardDescription(T), emptyText(T), underReviewText(T), ...footerNotes(T, true), ...footerNotes(T, false), ...(Object.values(copy) as unknown[]).filter((v): v is string => typeof v === "string")];
     for (const s of strings) {
       const cleaned = ALLOWED_NEGATIVE_SENTENCES.reduce((acc, sentence) => acc.split(sentence).join(" "), s);
       expect(cleaned, s).not.toMatch(/\b(?:incidence|frequency|monthly|annual(?:ly)?|per (?:shipment|month|year|1,000|thousand)|a month|a year|each month|every month|how many|how often|percent of your|rate of)\b/i);

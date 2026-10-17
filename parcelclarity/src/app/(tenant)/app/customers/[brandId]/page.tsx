@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { setBrandStatus } from "@/app/actions/team";
+import { CustomerAdjustmentsCard } from "@/components/adjustments/staff/customer-card";
 import { FeeScheduleAssignmentCard } from "@/components/fees/assignment-card";
 import { ConfirmAction } from "@/components/forms/confirm-action";
 import { OverviewFigures, overviewModels } from "@/components/modeling/lists";
@@ -118,6 +119,12 @@ export default async function CustomerDetail({ params }: { params: Promise<{ bra
           <div className="mt-8">
             <FeeScheduleAssignmentCard brandId={brand.id} tenantId={ctx.active.tenantId} />
           </div>
+        </div>
+      ) : null}
+
+      {can(role, "adjustment.view") ? (
+        <div className={canViewPricing ? "mt-8" : "mt-10"}>
+          <CustomerAdjustmentsCard brandId={brand.id} brandName={brand.name} />
         </div>
       ) : null}
     </>

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { AdjustmentsTile } from "@/components/adjustments/staff/overview-tile";
 import { Alert } from "@/components/ui/alert";
 import { ButtonLink } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
@@ -50,6 +51,8 @@ export default async function TenantOverview({ searchParams }: { searchParams: P
         {members ? <Stat label="Team members" value={members.count ?? 0} note="Active people across staff and customers" /> : null}
         {invites ? <Stat label="Pending invitations" value={invites.count ?? 0} note="Waiting to be accepted" /> : null}
       </div>
+
+      {can(ctx.active.role, "adjustment.view") ? <AdjustmentsTile /> : null}
 
       {activeBrands === 0 ? (
         <Card className="mt-6">

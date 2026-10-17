@@ -57,6 +57,11 @@ export function threePl(name: string | null | undefined): ThreePl {
   return { name: n, start: n };
 }
 
+/** "Acme 3PL's", and "Northwind Logistics'" for a name that ends in s (the 3PL's name is its tenant name; many end in s). */
+export function possessive(name: string): string {
+  return /s$/i.test(name) ? `${name}'` : `${name}'s`;
+}
+
 // ---------------------------------------------------------------------------
 // The approved sentences that contain a banned word inside a negation
 // ---------------------------------------------------------------------------
@@ -256,7 +261,7 @@ export function footerDates(args: { tenantName: string | null | undefined; price
   const shared = formatExampleDate(args.sharedOn);
   const until = formatExampleDate(args.validThrough);
   if (!priced || !rates || !shared || !until) return null;
-  const based = priced === rates ? `Based on ${t}'s rates in effect on ${priced}.` : `Based on ${t}'s rates in effect on ${priced} (rate card effective ${rates}).`;
+  const based = priced === rates ? `Based on ${possessive(t)} rates in effect on ${priced}.` : `Based on ${possessive(t)} rates in effect on ${priced} (rate card effective ${rates}).`;
   return `${based} ${sharedByLine(t, shared)} and shown until ${until}.`;
 }
 

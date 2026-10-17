@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { RuleFormInitial } from "@/components/pricing/rule-form";
+import { FEE_RULE_COMPANION_MESSAGE, FEE_RULE_EXCLUDES_MESSAGE, FEE_RULE_FLOOR_MESSAGE } from "@/lib/adjustments/copy";
 
 // The form calls server actions on submit only; rendering it needs no server.
 vi.mock("@/app/actions/surcharges", () => ({ addSurchargeRuleVersion: vi.fn(), createSurchargeRule: vi.fn(), retireRuleVersion: vi.fn(), uploadZipList: vi.fn() }));
@@ -97,3 +98,20 @@ describe("RuleForm, adding a version", () => {
     expect(text(html)).toContain("The key it was created with does not change.");
   });
 });
+
+describe("RuleForm: a reweigh, remeasure or correction fee cannot change what is counted (engine review F2)", () => {
+  const HINTS = [FEE_RULE_FLOOR_MESSAGE, FEE_RULE_EXCLUDES_MESSAGE, FEE_RULE_COMPANION_MESSAGE];
+
+  it.each(["reweight", "remeasure", "shipping_charge_correction"] as const)("a %s rule's form says, at the weight floor, the suppressed rules and the conditions, why those cannot be used for a fee", (category) => {
+    const html = text(renderToStaticMarkup(createElement(RuleForm, { ...base, mode: "version", ruleId: "r1", initial: initial({ category }) })));
+    for (const hint of HINTS) expect(html, hint).toContain(hint);
+  });
+
+  it("an ordinary rule keeps the original help for those fields and shows none of the fee wording", () => {
+    const html = text(renderToStaticMarkup(createElement(RuleForm, { ...base, mode: "version", ruleId: "r1", initial: initial({ category: "residential", chargeClass: "definite" }) })));
+    for (const hint of HINTS) expect(html, hint).not.toContain(hint);
+    expect(html).toContain("large-package minimums");
+    expect(html).toContain("not charged when this rule applies (bundled surcharges)");
+  });
+});
+

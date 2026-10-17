@@ -11,10 +11,10 @@
  *  - handling is always words plus a badge, never colour alone;
  *  - unknown is "not computed" or "Not decided", never zero.
  */
-import { IMPORT_LIMITS, IMPORT_NOTICE, MONEY_FIELD_HINT, MONEY_FIELD_LABELS } from "./copy";
+import { ATTESTATION_TEXT, DUPLICATE_RULE_NOTE, IMPORT_LIMITS, IMPORT_NOTICE, MONEY_FIELD_HINT, MONEY_FIELD_LABELS, REFUSAL_TITLE, ROW_NUMBERING_NOTE } from "./copy";
 import type { AdjustmentCause, ConfidenceLevel, Handling, PolicyComponent, PolicyType } from "@/engine/adjustments/types";
 
-export { IMPORT_LIMITS, IMPORT_NOTICE as PRIVATE_NOTICE, MONEY_FIELD_HINT, MONEY_FIELD_LABELS };
+export { ATTESTATION_TEXT, DUPLICATE_RULE_NOTE, IMPORT_LIMITS, IMPORT_NOTICE as PRIVATE_NOTICE, MONEY_FIELD_HINT, MONEY_FIELD_LABELS, REFUSAL_TITLE, ROW_NUMBERING_NOTE };
 
 // ---------------------------------------------------------------------------
 // Shell, tabs, access
@@ -149,6 +149,8 @@ export const IMPORT_STATUS_TONES: Record<ImportStatusKey, BadgeTone> = {
 
 export const isImportOpen = (status: ImportStatusKey): boolean => status === "uploaded" || status === "mapped" || status === "validated" || status === "committing";
 
+export const HISTORY_EMPTY_TITLE = "No history yet";
+export const HISTORY_EMPTY_BODY = "Upload what your customers were charged for past reweighs and remeasures. Only your team can see it.";
 export const HISTORY_TITLE = "Past adjustments";
 export const HISTORY_INTRO = "Upload what your customers were charged for past reweighs, remeasures and other corrections. It shows how often adjustments happen and what they add.";
 export const UPLOAD_TITLE = "Upload a history file";
@@ -187,7 +189,7 @@ export const WITHDRAW_BUTTON = "Withdraw import";
 export const CHECK_BUTTON = "Check the file";
 export const CHECK_PENDING = "Checking…";
 export const ATTEST_HINT = "Tick the box above to check the file.";
-export const MAPPING_CHANGED = "You changed how the file is read. Check the file again to update the report; it describes the last saved choices.";
+export const MAPPING_CHANGED = "You changed how the file is read. Check the file again to update this report; it describes the last saved choices.";
 
 // ---------------------------------------------------------------------------
 // Statistics
@@ -196,7 +198,9 @@ export const STATS_TITLE = "How often adjustments happen";
 export const STATS_INTRO = "Worked out from your imported history. How often needs the packages you shipped in the same period; what an adjustment adds does not.";
 export const STATS_NO_BASELINE = "Add how many packages you shipped in this period to see how often adjustments happen";
 export const STATS_NO_BASELINE_HINT = "The packages shipped must match the same customer, carrier and service as the filters above. Averages are shown without it.";
-export const STATS_EMPTY = "No history yet. Import a file of past adjustments to see how often they happen and what they add.";
+export const STATS_EMPTY_TITLE = "No history yet";
+export const STATS_EMPTY_BODY = "Import a file of past adjustments to see how often they happen and what they add.";
+export const STATS_EMPTY = `${STATS_EMPTY_TITLE}. ${STATS_EMPTY_BODY}`;
 export const PER_RECORD_NOTE = "Counted per adjustment record, not per package, because some records have no package reference.";
 
 export const RANGE_SENTENCE = "The range reflects incidence uncertainty only.";
@@ -240,7 +244,9 @@ export const STATS_PENDING = "Working it out…";
 // ---------------------------------------------------------------------------
 export const BASELINES_TITLE = "Packages shipped";
 export const BASELINES_INTRO = "How many packages you shipped in a period. It is what turns a count of adjustments into how often they happen. The unit is the carrier package: one label is one package.";
-export const BASELINES_EMPTY = "No packages-shipped figures yet. Add how many packages you shipped in a period to see how often adjustments happen.";
+export const BASELINES_EMPTY_TITLE = "No packages-shipped figures yet";
+export const BASELINES_EMPTY_BODY = "Add how many packages you shipped in a period to see how often adjustments happen.";
+export const BASELINES_EMPTY = `${BASELINES_EMPTY_TITLE}. ${BASELINES_EMPTY_BODY}`;
 export const BASELINE_ADD_BUTTON = "Add packages shipped";
 export const BASELINE_SAVE_BUTTON = "Save packages shipped";
 export const BASELINE_DELETE_BUTTON = "Delete";

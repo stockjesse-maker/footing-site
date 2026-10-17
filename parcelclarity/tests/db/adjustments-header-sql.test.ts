@@ -151,6 +151,11 @@ describe("the stored bytes, read the way the database sees them (app.adjustment_
     expect(await scan(Buffer.from("ship_date,carrier,package_ref,declared_weight,customer_charge_original\n2026-01-01,UPS,Net Rate,4,12.50\n"))).toEqual({ ok: true });
     expect(await scan(Buffer.from("ship_date,carrier,package_ref\nLabel,东京,café\n"))).toMatchObject({ ok: false, header: "Label" });
     expect(await scan(Buffer.from("ship_date,carrier,package_ref\n东京,café,##\n"))).toEqual({ ok: true });
+    // A record always carries a ship date, so a line with a date is data even when its free text uses a forbidden word: a reason reading
+    // "Postage correction note" must not refuse the file (the TypeScript guard reads such rows the same way).
+    expect(await scan(Buffer.from("ship_date,carrier,adjustment_type,reason\n2026-09-02,UPS,reweight,Postage correction note\n"))).toEqual({ ok: true });
+    // A line with three or more filled cells and no number or date can still be a second header block, and is read.
+    expect(await scan(Buffer.from("ship_date,carrier,adjustment_type\nPostage,Carrier,Notes\n"))).toMatchObject({ ok: false });
     // The first line is held to the whole rule, including 'nothing readable'.
     expect(await scan(Buffer.from("ship_date,#,carrier\n"))).toMatchObject({ ok: false, header: "#" });
     // 50 non-blank lines are read, blank lines do not count.

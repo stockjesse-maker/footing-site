@@ -131,9 +131,15 @@ export function decimalText(value: Decimal, maxDp = 6): string {
   return value.toDecimalPlaces(maxDp, Decimal.ROUND_HALF_UP).toFixed(maxDp).replace(/\.?0+$/, "");
 }
 
+/** The longest text a dimension cell can hold and still be a measurement. */
+const MAX_DIMENSION_CELL_LENGTH = 64;
+
 /** A positive length in inches: "10", "10.5", "10 in", '10"'. */
 export function parseDimension(raw: string): string | null | "invalid" {
-  const t = raw.trim().toLowerCase().replace(/\s*(in|inch|inches|")\.?$/, "");
+  const trimmed = raw.trim();
+  // A real measurement is short. Refusing long cells first also keeps the unit-suffix regex below linear.
+  if (trimmed.length > MAX_DIMENSION_CELL_LENGTH) return "invalid";
+  const t = trimmed.toLowerCase().replace(/\s*(in|inch|inches|")\.?$/, "");
   if (!t) return null;
   if (!/^(\d+(?:\.\d+)?|\.\d+)$/.test(t) || !/[1-9]/.test(t)) return "invalid";
   return t.startsWith(".") ? `0${t}` : t;

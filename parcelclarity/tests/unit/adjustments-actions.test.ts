@@ -381,18 +381,24 @@ describe("uploadAdjustmentFile", () => {
     expect(db().calls).toEqual([]);
   });
 
-  it("passes on the database's own refusal of a header (it deletes the file itself) as the same refusal, naming the header", async () => {
+  it("passes on the database's own refusal of a header (it deletes the file itself) as the same refusal, naming the header, and has no file of its own to remove", async () => {
     happyDb({ rpc: { create_adjustment_import: { data: { ok: false, reason: "forbidden_header", header: "Carrier Cost" }, error: null } } });
     const r = await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))));
     expect(r).toMatchObject({ ok: false, refused: true });
-    expect(r.message).toContain('The column "Carrier Cost" looks like what a carrier bills you');
+    expect(r.message).toContain("This file looks like carrier cost data");
+    expect(r.message).toContain('"Carrier Cost"');
     expect(r.message).toContain("Nothing from this file was saved");
+    // The database deleted the file itself when it answered {ok:false}: a second delete would only report "not found".
+    expect(db().rpcNamed("discard_unattached_adjustment_file")).toEqual([]);
   });
 
-  it("maps a refusal of the import and a failed file insert to sentences", async () => {
-    happyDb({ rpc: { create_adjustment_import: { data: null, error: { code: "P0001", message: "too many imports are in progress; finish or discard one first" } } } });
+  it("maps a refusal of the import and a failed file insert to sentences, and removes the stored file after the refusal of the import", async () => {
+    happyDb({ rpc: { create_adjustment_import: { data: null, error: { code: "P0001", message: "too many imports are in progress; finish or discard one first" } }, discard_unattached_adjustment_file: { data: null, error: null } } });
     expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, message: expect.stringContaining("five imports in progress") });
+    expect(db().rpcNamed("discard_unattached_adjustment_file")).toEqual([{ p_file: FILE }]);
     happyDb({ errors: { "uploaded_files:insert": { code: "42501", message: "row-level security" } } });
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toEqual({ ok: false, message: "You don't have permission to change adjustments. Only administrators can." });
+    happyDb({ errors: { "uploaded_files:insert": { code: "XX000", message: "boom" } } });
     expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toEqual({ ok: false, message: "Something went wrong. Please try again." });
     expect(db().rpcs).toEqual([]);
   });
@@ -462,7 +468,7 @@ describe("saveImportMapping", () => {
   it("names the header when the database backstop refuses a mapped column, and reads the other refusals in words", async () => {
     const { mapping } = await proposal(text);
     setUp({}, { rpc: { set_adjustment_import_mapping: { data: null, error: { code: "P0001", message: "a column that looks like carrier cost data cannot be mapped", details: "Postage Cost" } } } });
-    expect(await actions.saveImportMapping(IMPORT, mapping)).toMatchObject({ ok: false, message: 'The column "Postage Cost" cannot be used for a charge. It looks like carrier cost data.' });
+    expect(await actions.saveImportMapping(IMPORT, mapping)).toMatchObject({ ok: false, message: 'The column "Postage Cost" cannot be used for a charge: its name looks like a carrier cost column. Rename it in your file if it is not one.' });
     setUp({}, { rpc: { set_adjustment_import_mapping: { data: null, error: { code: "P0004", message: "this import is no longer being edited" } } } });
     expect(await actions.saveImportMapping(IMPORT, mapping)).toEqual({ ok: false, message: "This import is no longer being edited." });
   });
@@ -513,35 +519,35 @@ describe("validateImport", () => {
     expect(sent[0]).toMatchObject({ p_validation: null, p_attested: false });
   });
 
-  it("counts rows already imported by an earlier file (read through the bulk reader), and reads only imports that cover the same dates", async () => {
+  it("counts rows already imported by an earlier file (read through the bulk reader), whatever dates that file covered (review finding F14)", async () => {
     const text = historyCsv(10);
     const { stored } = await proposal(text);
     const overlapping = "c0c0c0c0-c0c0-4c0c-8c0c-c0c0c0c0c0c0";
     const elsewhere = "c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1";
+    const holding = (refs: string[]) => ({ data: refs.map((ref, i) => ({ id: `r${i}`, rowNo: i + 1, brandId: null, carrierCode: "ups", packageRef: ref, adjustmentType: "reweight" })), error: null });
     install({
       tables: {
         adjustment_imports: [
           importRow({ status: "mapped", mapping: stored }),
           importRow({ id: overlapping, status: "committed", committed_count: 3, range_min: "2026-01-01", range_max: "2026-01-31", file_id: null }),
-          importRow({ id: elsewhere, status: "committed", committed_count: 5, range_min: "2025-01-01", range_max: "2025-01-31", file_id: null }),
+          importRow({ id: elsewhere, status: "committed", committed_count: 2, range_min: "2025-01-01", range_max: "2025-01-31", file_id: null }),
         ],
         uploaded_files: [storedUploadRow(text)],
         brands: brandsTable(),
       },
       rpc: {
         set_adjustment_import_mapping: { data: "validated", error: null },
-        adjustment_records_json: (args) =>
-          args.p_import === overlapping
-            ? { data: [0, 1, 2].map((i) => ({ id: `r${i}`, rowNo: i + 1, brandId: null, carrierCode: "ups", packageRef: `1ZT000000${i}`, adjustmentType: "reweight" })), error: null }
-            : { data: [], error: null },
+        // The unique key of a record has no date in it: a late adjustment of a package shipped last year repeats a row of the new file all the same.
+        adjustment_records_json: (args) => (args.p_import === overlapping ? holding(["1ZT0000000", "1ZT0000001", "1ZT0000002"]) : args.p_import === elsewhere ? holding(["1ZT0000007", "1ZT0000008"]) : { data: [], error: null }),
       },
     });
     // The two committed imports are listed under their own ids; the mapped one is the file being validated.
     db().tables.adjustment_imports!.forEach((r) => (r.tenant_id = TENANT));
     const r = await actions.validateImport(IMPORT, true);
     expect(r).toMatchObject({ ok: true });
-    expect(r.report!.counts).toMatchObject({ rows: 10, alreadyImported: 3, accepted: 7 });
-    expect(db().rpcNamed("adjustment_records_json").map((a) => a.p_import)).toEqual([overlapping]);
+    // Five of the ten rows repeat a package an earlier file added, so they are skipped and counted, and the counts the 3PL approves are the counts that commit.
+    expect(r.report!.counts).toMatchObject({ rows: 10, alreadyImported: 5, accepted: 5 });
+    expect(db().rpcNamed("adjustment_records_json").map((a) => a.p_import).sort()).toEqual([overlapping, elsewhere].sort());
   });
 
   it("refuses an import in another workspace, one that is committed, and a mapping that was never saved", async () => {
@@ -719,3 +725,113 @@ describe("a few ids from the browser", () => {
     expect(NEW_ID).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// The review's findings F2, F3, F9 and the orphaned file, at the action
+// ---------------------------------------------------------------------------
+describe("uploadAdjustmentFile: nothing is stored for a file the guard cannot vouch for, and nothing is left behind when a later step fails", () => {
+  const happyDb = (extra: Parameters<typeof makeDb>[0] = {}) =>
+    install({ tables: { adjustment_imports: [], brands: brandsTable() }, rpc: { create_adjustment_import: { data: { ok: true, importId: IMPORT }, error: null }, discard_unattached_adjustment_file: { data: null, error: null } }, inserted: { uploaded_files: { id: FILE } }, ...extra });
+  const nothingStored = () => {
+    expect(db().writes(), "zero writes of any kind").toEqual([]);
+    expect(db().rpcs, "no function call").toEqual([]);
+  };
+
+  it("F2: a title row above a cost header, and a headerless export, are refused before anything is stored", async () => {
+    happyDb();
+    const titled = "Acme Logistics,Weekly report,Run 7\nship_date,carrier,adjustment_type,Net Charge,Carrier Cost\n2026-09-01,UPS,reweight,12.00,9.10\n";
+    const r1 = await actions.uploadAdjustmentFile(initial, form(csvFile(titled)));
+    expect(r1).toMatchObject({ ok: false, refused: true });
+    expect(r1.message).toContain('"Carrier Cost"');
+    expect(r1.message).not.toContain("9.10");
+    const r2 = await actions.uploadAdjustmentFile(initial, form(csvFile("2026-09-01,UPS Ground,1Z999AA10123456784,12.34,9.10,3.2,reweight\n")));
+    expect(r2).toMatchObject({ ok: false, errors: { file: expect.stringContaining("Put the column names in row 1") } });
+    nothingStored();
+  });
+
+  it("F3: UTF-16 text, a NUL byte and a sheet wider than 200 columns are refused before anything is stored, with the way out in the message", async () => {
+    happyDb();
+    const text = "ship_date,carrier,adjustment_type,Carrier Cost\r\n2026-01-01,UPS,reweight,9.50\r\n";
+    const utf16 = new File([Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")])], "x.csv", { type: "text/csv" });
+    expect(await actions.uploadAdjustmentFile(initial, form(utf16))).toMatchObject({ ok: false, errors: { file: expect.stringContaining("CSV UTF-8") } });
+    const withNul = new File([Buffer.from("ship_date,carrier,adjustment_type\n2026-01-01,UPS,rew\u0000eight\n")], "x.csv", { type: "text/csv" });
+    expect(await actions.uploadAdjustmentFile(initial, form(withNul))).toMatchObject({ ok: false, errors: { file: expect.stringContaining("CSV UTF-8") } });
+    const wide = ["ship_date", "carrier", "adjustment_type", ...Array.from({ length: 197 }, (_, i) => `c${i}`), "Carrier Cost"];
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(`${wide.join(",")}\n${wide.map(() => "1").join(",")}\n`)))).toMatchObject({ ok: false, errors: { file: expect.stringContaining("more than 200 columns") } });
+    nothingStored();
+  });
+
+  it("F13: one refusal names every refused header of the file, not the first only", async () => {
+    happyDb();
+    const text = "ship_date,carrier,adjustment_type,Net Weight,Carrier Cost,Label Date\n2026-09-01,UPS,reweight,3,9.10,2026-08-30\n";
+    const r = await actions.uploadAdjustmentFile(initial, form(csvFile(text)));
+    expect(r).toMatchObject({ ok: false, refused: true });
+    for (const header of ["Net Weight", "Carrier Cost", "Label Date"]) expect(r.message).toContain(`"${header}"`);
+    nothingStored();
+  });
+
+  it("F3 (the orphan): when the import cannot be created the stored file is removed through discard_unattached_adjustment_file, once, with its id", async () => {
+    happyDb({ rpc: { create_adjustment_import: { data: null, error: { code: "53400", message: "too many imports; try again later" } }, discard_unattached_adjustment_file: { data: null, error: null } } });
+    const r = await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))));
+    expect(r).toMatchObject({ ok: false });
+    expect(db().log.indexOf("insert:uploaded_files")).toBeLessThan(db().log.indexOf("rpc:create_adjustment_import"));
+    expect(db().log.indexOf("rpc:create_adjustment_import")).toBeLessThan(db().log.indexOf("rpc:discard_unattached_adjustment_file"));
+    expect(db().rpcNamed("discard_unattached_adjustment_file")).toEqual([{ p_file: FILE }]);
+    expect(r.message).not.toContain("still stored");
+  });
+
+  it("F3 (the orphan): a thrown error, an answer nobody can read and an import row that is not an id all remove the file too", async () => {
+    happyDb({ rpc: { create_adjustment_import: () => { throw new Error("connection reset"); }, discard_unattached_adjustment_file: { data: null, error: null } } });
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toEqual({ ok: false, message: "Something went wrong. Please try again." });
+    expect(db().rpcNamed("discard_unattached_adjustment_file")).toEqual([{ p_file: FILE }]);
+    happyDb({ rpc: { create_adjustment_import: { data: { ok: true, importId: "not-an-id" }, error: null }, discard_unattached_adjustment_file: { data: null, error: null } } });
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false });
+    expect(db().rpcNamed("discard_unattached_adjustment_file")).toEqual([{ p_file: FILE }]);
+    happyDb({ rpc: { create_adjustment_import: { data: null, error: null }, discard_unattached_adjustment_file: { data: null, error: null } } });
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false });
+    expect(db().rpcNamed("discard_unattached_adjustment_file")).toEqual([{ p_file: FILE }]);
+  });
+
+  it("F3 (the orphan): when even the removal fails the person is told the file is still stored; 'not found' from the removal means there is nothing left to remove", async () => {
+    const failing = (code: string) => happyDb({ rpc: { create_adjustment_import: { data: null, error: { code: "P0001", message: "boom" } }, discard_unattached_adjustment_file: { data: null, error: { code, message: "x" } } } });
+    failing("XX000");
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, message: expect.stringContaining("could not be removed automatically, so it is still stored") });
+    failing("P0002");
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, message: expect.not.stringContaining("still stored") });
+    happyDb({ rpc: { create_adjustment_import: { data: null, error: { code: "P0001", message: "boom" } }, discard_unattached_adjustment_file: () => { throw new Error("down"); } } });
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, message: expect.stringContaining("still stored") });
+  });
+
+  it("F3: an answer {ok:false} means the database deleted the file itself: an unreadable encoding and an unknown reason are reported without a second delete", async () => {
+    happyDb({ rpc: { create_adjustment_import: { data: { ok: false, reason: "unsupported_encoding" }, error: null } } });
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, message: expect.stringContaining("CSV UTF-8") });
+    happyDb({ rpc: { create_adjustment_import: { data: { ok: false, reason: "something_new" }, error: null } } });
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toEqual({ ok: false, message: "Something went wrong. Please try again." });
+    expect(db().rpcNamed("discard_unattached_adjustment_file")).toEqual([]);
+  });
+
+  it("F3: the database's own scan of the stored bytes (an insert trigger) is read as the same refusals, and no import is attempted after it", async () => {
+    const refusedWith = (hint: string, details: string | null = null) => happyDb({ errors: { "uploaded_files:insert": { code: "P0001", message: "this file was not saved", hint, details } } });
+    refusedWith("forbidden_header", "Postage Cost");
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, refused: true, message: expect.stringContaining('"Postage Cost"') });
+    refusedWith("unsupported_encoding");
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, errors: { file: expect.stringContaining("CSV UTF-8") } });
+    refusedWith("too_many_unattached_files");
+    expect(await actions.uploadAdjustmentFile(initial, form(csvFile(historyCsv(3))))).toMatchObject({ ok: false, message: expect.stringContaining("waiting for an import") });
+    expect(db().rpcs).toEqual([]);
+  });
+
+  it("F9: the file name, the type and everything sent as JSON carry no NUL character, whatever the file or the browser said", async () => {
+    happyDb();
+    const text = historyCsv(2);
+    const named = new File([text], "Aug\u0000ust history.csv", { type: "text/csv\u0000" });
+    await expect(actions.uploadAdjustmentFile(initial, form(named))).rejects.toThrow(`NEXT_REDIRECT:/app/adjustments/history/${IMPORT}`);
+    const insert = db().inserts()[0]!.payload as { filename: string; mime_type: string };
+    const [args] = db().rpcNamed("create_adjustment_import");
+    const everything = JSON.stringify([insert.filename, insert.mime_type, args]);
+    expect(everything).not.toContain("\\u0000");
+    expect(insert.filename).toBe("Aug ust history.csv");
+    expect(args).toMatchObject({ p_name: "Aug ust history" });
+  });
+});
+

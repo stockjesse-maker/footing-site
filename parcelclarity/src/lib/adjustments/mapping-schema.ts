@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { scrubJsonb } from "./jsonb-size";
 import { ADJUSTMENT_FIELDS, type AdjustmentField, type AdjustmentMapping } from "./types";
 
 /**
@@ -12,8 +13,14 @@ const columns = Object.fromEntries(ADJUSTMENT_FIELDS.map((f) => [f, col])) as Re
 const TYPES = ["reweight", "remeasure", "combined", "correction"] as const;
 const CAUSES = ["wms_no_weight", "scale_error", "carrier_reweigh", "carrier_remeasure", "packaging_change", "other"] as const;
 
+/**
+ * A key of a value map: the normalised text of a cell (letters, digits and single spaces), at most 120 characters, and never a control
+ * character (a NUL would fail the whole database call) or a lone surrogate. It matches "scale error" and "яндекс"; it rejects "a\u0000b".
+ */
+const mapKey = z.string().max(120).refine((k) => scrubJsonb(k) === k && !/[\u0000-\u001f\u007f]/.test(k), "unreadable value");
+
 /** A value map: normalised text to a value. 200 entries at most; the stored mapping as a whole is limited to 8 KB by the database. */
-const valueMap = <T extends z.ZodType>(value: T) => z.record(z.string().max(120), value).refine((m) => Object.keys(m).length <= 200, "too many values");
+const valueMap = <T extends z.ZodType>(value: T) => z.record(mapKey, value).refine((m) => Object.keys(m).length <= 200, "too many values");
 
 export const adjustmentMappingSchema = z.object({
   v: z.literal(1),

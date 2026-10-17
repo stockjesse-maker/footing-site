@@ -2,11 +2,22 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type SVGProps } from "react";
 import { BuildingIcon, CalculatorIcon, DocumentIcon, HomeIcon, ListIcon, SettingsIcon, ShieldIcon, UserIcon, UsersIcon } from "@/components/ui/icons";
 import { cn } from "@/components/ui/cn";
 
-const ICONS = { home: HomeIcon, building: BuildingIcon, users: UsersIcon, calculator: CalculatorIcon, document: DocumentIcon, user: UserIcon, settings: SettingsIcon, shield: ShieldIcon, list: ListIcon };
+/** A balance: "Adjustments" (a package's weight or size corrected after labelling). Drawn like the other icons; kept here because the icon set is shared. */
+function ScaleIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="size-6" {...props}>
+      <path d="M12 4v16M8 20h8M4 7h16" />
+      <path d="M4 7l-2.5 6M4 7l2.5 6M1.5 13a2.5 2.5 0 0 0 5 0Z" />
+      <path d="M20 7l-2.5 6M20 7l2.5 6M17.5 13a2.5 2.5 0 0 0 5 0Z" />
+    </svg>
+  );
+}
+
+const ICONS = { home: HomeIcon, building: BuildingIcon, users: UsersIcon, calculator: CalculatorIcon, document: DocumentIcon, user: UserIcon, settings: SettingsIcon, shield: ShieldIcon, list: ListIcon, scale: ScaleIcon };
 export type IconName = keyof typeof ICONS;
 export interface NavItem {
   href: string;
@@ -46,8 +57,9 @@ export function SidebarNav({ items }: { items: NavItem[] }) {
 export function TabBar({ items }: { items: NavItem[] }) {
   const pathname = usePathname();
   const listRef = useRef<HTMLUListElement>(null);
-  // A workspace with many sections (an administrator sees nine) does not fit a 390px phone at a usable width: the bar
-  // scrolls sideways, each tab keeps a 72px-wide target, and the current page's tab is brought into view.
+  // A workspace with many sections (an administrator sees ten) does not fit a 390px phone at a usable width: the bar
+  // scrolls sideways, each tab keeps a 76px-wide target (a word as long as "Adjustments" needs more than 72px at 11px), and the
+  // current page's tab is brought into view.
   useEffect(() => {
     const list = listRef.current;
     const current = list?.querySelector<HTMLElement>('[aria-current="page"]');
@@ -62,7 +74,7 @@ export function TabBar({ items }: { items: NavItem[] }) {
           const Icon = ICONS[item.icon];
           const active = isActive(pathname, item);
           return (
-            <li key={item.href} className="min-w-[4.5rem] flex-1">
+            <li key={item.href} className="min-w-[4.75rem] flex-1">
               <Link
                 href={item.href}
                 aria-current={active ? "page" : undefined}

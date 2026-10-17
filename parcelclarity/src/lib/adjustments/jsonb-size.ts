@@ -36,3 +36,22 @@ export function jsonbSizeEstimate(value: unknown): number {
   }
   return 4;
 }
+
+/**
+ * Matches a text's NUL characters and its lone surrogates: the two things PostgreSQL's jsonb refuses (a NUL is an error "unsupported Unicode
+ * escape sequence" raised while the argument is converted, before any function body runs; a lone surrogate cannot be encoded).
+ * It matches "a\u0000b" at the NUL and "\ud800" on its own; it rejects "ab" and a surrogate pair such as "\ud83d\ude00".
+ */
+const JSONB_REFUSED = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+const scrubString = (s: string): string => s.replace(JSONB_REFUSED, " ");
+
+/**
+ * The same document with every string (and every object key) made safe for a jsonb parameter: a NUL character or a lone surrogate becomes a
+ * space. Everything the import sends to the database passes through it, so no cell of a file can fail a whole call (review findings F3 and F9).
+ */
+export function scrubJsonb<T>(value: T): T {
+  if (typeof value === "string") return scrubString(value) as T;
+  if (Array.isArray(value)) return value.map(scrubJsonb) as T;
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [scrubString(k), scrubJsonb(v)])) as T;
+  return value;
+}

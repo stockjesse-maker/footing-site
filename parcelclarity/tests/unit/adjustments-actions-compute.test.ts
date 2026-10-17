@@ -331,7 +331,7 @@ describe("evaluateScenario: the hand-derived scenario goldens, priced through th
 
   it("covers most of the golden catalogue (the rest cannot be typed into the form, which refuses them first)", () => {
     expect(runnable.length).toBeGreaterThanOrEqual(45);
-    expect(scenariosFile.scenarios.length).toBe(61);
+    expect(scenariosFile.scenarios.length).toBe(78);
   });
 
   it.each(runnable.map(([c, f]) => [c.id, c, f] as const))("%s", async (_id, c, form) => {
@@ -717,8 +717,8 @@ function riskDbFor(c: (typeof scenariosFile.riskCases)[number]) {
   let records: Record<string, unknown>[] = [];
   if (i.incidence.source === "history" && i.incidence.N > 0) {
     baselines.push({ id: "b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1", tenant_id: TENANT, brand_id: null, carrier_code: null, service_id: null, period_start: "2026-01-01", period_end: "2026-01-31", packages_total: i.incidence.N, labels_missing_weight: null, note: null, created_at: "2026-01-01T00:00:00Z" });
-    // The credits golden has real records (6 charges and 4 credits); every other case counts k packages with no amounts.
-    records = c.id === "r5_credits_excluded_from_exposure"
+    // The credits goldens (r5, and r5b which is r5's history on actual weights) have real records (6 charges and 4 credits); every other case counts k packages with no amounts.
+    records = c.id === "r5_credits_excluded_from_exposure" || c.id === "r5b_credits_actual_weights_net_memo_null"
       ? asBulk(recordSets.r5_credits!.map((r) => ({ ...r, brandId: null, shipDate: "2026-01-10" })))
       : Array.from({ length: i.incidence.k }, (_, n) => ({ id: `k${n}`, rowNo: n + 1, brandId: null, shipDate: "2026-01-10", carrierCode: "ups", serviceId: null, adjustmentType: "reweight", cause: "carrier_reweigh", packageRef: `1ZK${n}`, originalCharge: null, correctedCharge: null, separateFee: null, postageDifference: null }));
   }
@@ -731,9 +731,9 @@ function riskDbFor(c: (typeof scenariosFile.riskCases)[number]) {
 describe("forecastRisk: the hand-derived risk goldens, through the action", () => {
   const runnable = scenariosFile.riskCases.map((c) => [c, riskFormFor(c)] as const).filter(([c, f]) => f !== null && expectedFile.risk[c.id].status === "ok");
 
-  it("covers every case that calculates (36 of 45); the other nine are refusals the form or the history check makes first", () => {
-    expect(runnable.length).toBe(36);
-    expect(scenariosFile.riskCases.length).toBe(45);
+  it("covers every case that calculates (39 of 49); the other ten are refusals the form or the history check makes first", () => {
+    expect(runnable.length).toBe(39);
+    expect(scenariosFile.riskCases.length).toBe(49);
   });
 
   it.each(runnable.map(([c, f]) => [c.id, c, f] as const))("%s", async (_id, c, form) => {

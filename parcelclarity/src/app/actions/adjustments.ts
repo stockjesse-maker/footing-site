@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
   ADJUSTMENT_ENGINE_VERSION,
+  AdjustmentOverflowError,
   evaluateAdjustmentScenario,
   forecastAdjustmentRisk,
   policyFnFor,
@@ -64,7 +65,9 @@ import {
   type ValidateActionResult,
 } from "@/lib/adjustments/action-schemas";
 import { buildScenarioInput, loadScenarioContext, scenarioPins, type ScenarioContext } from "@/lib/adjustments/context";
-import { ENCODING_MESSAGE, IMPORT_LIMITS } from "@/lib/adjustments/copy";
+import { cleanText } from "@/lib/adjustments/cells";
+import { ENCODING_MESSAGE, FILE_NOT_REMOVED, IMPORT_LIMITS } from "@/lib/adjustments/copy";
+import { scrubJsonb } from "@/lib/adjustments/jsonb-size";
 import { flaggedMappingMessage, refusalMessage } from "@/lib/adjustments/header-guard";
 import { buildDetected, detectAdjustmentFile, toStoredMapping, validateMapping } from "@/lib/adjustments/mapping";
 import { adjustmentMappingSchema, parseStoredMapping } from "@/lib/adjustments/mapping-schema";
@@ -212,6 +215,11 @@ export async function endPolicy(policyId: string): Promise<AdjustmentActionResul
 // History import: upload -> mapping -> validation -> commit
 // ---------------------------------------------------------------------------
 const EDITABLE = ["uploaded", "mapped", "validated"] as const;
+const FILENAME_MAX_CHARS = 255;
+const MIME_MAX_CHARS = 120;
+const IMPORT_NAME_MAX_CHARS = 160;
+/** The extension a file name loses when it becomes an import's name: ".csv" in "August history.csv"; "history.pdf" keeps its end. */
+const EXTENSION = /\.(csv|xlsx|txt)$/i;
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
 /**
@@ -252,13 +260,15 @@ export async function uploadAdjustmentFile(_prev: UploadState, formData: FormDat
   // bytes again in a trigger and refuses a cost-looking header or an unreadable encoding); (3) the import is created from it. A failure at
   // step 3, a thrown error included, removes the file through `discard_unattached_adjustment_file` (the Data API roles hold no DELETE).
   const sha256 = createHash("sha256").update(bytes).digest("hex");
+  // The file's name is the browser's text: control characters (a NUL would fail the whole insert) are replaced before anything is sent.
+  const safeFilename = cleanText(file.name, FILENAME_MAX_CHARS).text ?? "upload";
   const { data: stored, error: fileError } = await supabase
     .from("uploaded_files")
     .insert({
       tenant_id: who.tenantId,
       purpose: "adjustment_import",
-      filename: file.name.slice(0, 255),
-      mime_type: (file.type || (parsed.kind === "csv" ? "text/csv" : XLSX_MIME)).slice(0, 120),
+      filename: safeFilename,
+      mime_type: cleanText(file.type, MIME_MAX_CHARS).text ?? (parsed.kind === "csv" ? "text/csv" : XLSX_MIME),
       byte_size: bytes.length,
       sha256: `\\x${sha256}`,
       content: `\\x${Buffer.from(bytes).toString("hex")}`,
@@ -268,7 +278,7 @@ export async function uploadAdjustmentFile(_prev: UploadState, formData: FormDat
   if (fileError || !stored) return fileInsertFailure(fileError);
   const fileId = String(stored.id);
 
-  const name = file.name.replace(/\.(csv|xlsx|txt)$/i, "").trim().slice(0, 160) || "Adjustment history";
+  const name = safeFilename.replace(EXTENSION, "").trim().slice(0, IMPORT_NAME_MAX_CHARS) || "Adjustment history";
   const created = await createImport(supabase, fileId, name, detected);
   if (created.kind === "refused") return { ok: false, refused: true, message: created.message };
   if (created.kind === "failed") return { ok: false, message: created.message };
@@ -297,19 +307,21 @@ async function createImport(supabase: Db, fileId: string, name: string, detected
     let removed = false;
     try {
       const { error } = await supabase.rpc("discard_unattached_adjustment_file", { p_file: fileId });
-      removed = !error;
+      // "Not found" (P0002) is the same answer for a file that is gone and for one an import holds now: neither is an unattached file left behind.
+      removed = !error || error.code === "P0002";
     } catch {
       removed = false;
     }
-    return { kind: "failed", message: removed ? message : `${message} The uploaded file could not be removed automatically, so it is still stored. Try again in a moment, or contact support to have it removed.` };
+    return { kind: "failed", message: removed ? message : `${message} ${FILE_NOT_REMOVED}` };
   };
   try {
-    const { data, error } = await supabase.rpc("create_adjustment_import", { p_file: fileId, p_name: name, p_detected: detected });
+    const { data, error } = await supabase.rpc("create_adjustment_import", { p_file: fileId, p_name: name, p_detected: scrubJsonb(detected) });
     if (error) return await discard(failure(error, { notFound: "The uploaded file was not found. Upload it again." }));
     const created = data as { ok?: boolean; reason?: string; header?: string; importId?: string } | null;
-    // The database ran its own header test over the stored file and deleted the file when it refused (nothing to discard then).
+    // The database ran its own scan over the stored file and deleted the file itself whenever it answers {ok:false} (nothing to discard then).
     if (created?.ok === false && created.reason === "forbidden_header") return { kind: "refused", message: refusalMessage(String(created.header ?? "")) };
     if (created?.ok === false && created.reason === "unsupported_encoding") return { kind: "failed", message: ENCODING_MESSAGE };
+    if (created?.ok === false) return { kind: "failed", message: GENERIC_FAILURE };
     if (!created?.ok || !idOk(created.importId)) return await discard(GENERIC_FAILURE);
     return { kind: "created", importId: created.importId };
   } catch {
@@ -368,7 +380,7 @@ export async function saveImportMapping(importId: string, mappingJson: unknown):
   // The mapping is compacted: only the value-map entries that applying it would not work out by itself are stored.
   const { data, error } = await supabase.rpc("set_adjustment_import_mapping", {
     p_import: importId,
-    p_mapping: toStoredMapping(mapping, headers, context),
+    p_mapping: scrubJsonb(toStoredMapping(mapping, headers, context)),
     p_validation: null,
     p_duplicate_handling: mapping.duplicateHandling,
     p_attested: false,
@@ -435,8 +447,8 @@ export async function validateImport(importId: string, attested: boolean): Promi
 
   const { data, error } = await supabase.rpc("set_adjustment_import_mapping", {
     p_import: importId,
-    p_mapping: toStoredMapping(saved.mapping, saved.headers, result.context),
-    p_validation: toStoredValidation(report),
+    p_mapping: scrubJsonb(toStoredMapping(saved.mapping, saved.headers, result.context)),
+    p_validation: scrubJsonb(toStoredValidation(report)),
     p_duplicate_handling: saved.mapping.duplicateHandling,
     p_attested: true,
   });
@@ -618,7 +630,8 @@ async function statisticsFor(supabase: Db, tenantId: string, f: HistoryFiltersIn
     if (statistics.status === "refused") return { status: "refused", refusal: statistics };
     return { status: "ok", statistics, importIds: history.importIds, recordsRead: history.recordsRead, asOf: today };
   } catch (err) {
-    if (err instanceof RangeError) return { status: "error", message: "An amount in the history is too large to add up exactly." };
+    // Only the engine's own refusal is "too large"; any other RangeError (a call stack, an array length) is a fault, not a statement about the history.
+    if (err instanceof AdjustmentOverflowError) return { status: "error", message: "An amount in the history is too large to add up exactly." };
     return { status: "error", message: "Your history could not be read. Please try again." };
   }
 }

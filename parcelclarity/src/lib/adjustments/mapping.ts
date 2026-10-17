@@ -2,7 +2,7 @@ import type { Table } from "../import/parse-table";
 import { suggestService, type ServiceCatalogEntry } from "../import/rate-card-mapping";
 import { cleanText, detectDateFormat, enumValue, normalizeValue } from "./cells";
 import { NO_HEADER_ROW_MESSAGE } from "./copy";
-import { classifyHeader, flaggedMappingMessage, guardHeader, normalizeGuardHeader, refusalMessage, type HeaderInfo } from "./header-guard";
+import { classifyHeader, flaggedMappingMessage, guardHeader, refusalMessage, type HeaderInfo } from "./header-guard";
 import { jsonbSizeEstimate } from "./jsonb-size";
 import { detectHeaderRow, isBlankRow, sheetHeaders } from "./sheet";
 import { SYNONYMS, type PlainField } from "./synonyms";
@@ -45,6 +45,13 @@ const MAX_DISTINCT = 500;
 export const MAX_CAUSE_VALUES = 50;
 /** Columns listed under "Columns we will ignore" and "choose which amount this is" (the report is stored, so its lists are bounded). */
 export const MAX_LISTED_COLUMNS = 50;
+/** Sample rows kept in `detected`, and the characters of any header or value stored there. */
+const SAMPLE_ROWS = 20;
+const REPORTED_TEXT_CHARS = 120;
+/** The most columns a sheet may have (parse-table.ts refuses a wider one). */
+const MAX_FILE_COLUMNS = 200;
+/** The library's budget for `adjustment_imports.detected`: the database's limit is 64 KB (65,536 bytes as a jsonb), measured here with the jsonb estimate, which rounds up. */
+export const DETECTED_MAX_BYTES = 56_000;
 /** A header shown in a report is cut to this many characters. */
 export const REPORTED_HEADER_CHARS = 80;
 const SERVICE_CONFIDENCE = 0.75;
@@ -342,8 +349,10 @@ export function detectAdjustmentFile(tables: Table[], ctx: Pick<AdjustmentContex
  *   - customers: an exact match with exactly one customer's name;
  *   - services: none (without an entry the service stays unknown, so a null entry says nothing);
  *   - causes: the text spells a cause, and "other" when the default cause is "other" (an unmatched text is stored under the default cause).
- * The result applies identically (the entries it drops would have been recomputed to the same value), so a file with 400 customers
- * or 500 distinct reasons stores a few entries, not hundreds. It is idempotent.
+ * The records it produces are identical (the entries it drops would have been recomputed to the same value), so a file with 400 customers
+ * or 500 distinct reasons stores a few entries, not hundreds. The one visible difference is information: a text that a person had mapped to
+ * "other" under the default cause "other" is counted by the information code cause_defaulted ("not matched") once its entry is gone, and is
+ * stored under the same cause either way. It is idempotent.
  */
 export function compactMapping(mapping: AdjustmentMapping, ctx: Pick<AdjustmentContext, "catalog" | "brands">): AdjustmentMapping {
   const keep = <T>(map: Record<string, T>, recomputed: (key: string) => T | null | undefined): Record<string, T> => {
@@ -463,13 +472,17 @@ export function buildDetected(tables: Table[], mapping: AdjustmentMapping): { sh
   const headers = table.rows[mapping.headerRow] ?? [];
   const mapped = ADJUSTMENT_FIELDS.map((f) => mapping.columns[f]).filter((i): i is number => i !== null && i >= 0 && i < headers.length && guardHeader(headers[i] ?? "").allowed);
   const below = table.rows.slice(mapping.headerRow + 1).filter((r) => !isBlankRow(r));
-  const sampleRows = below.slice(0, 20).map((r) => {
+  let sampleRows = below.slice(0, SAMPLE_ROWS).map((r) => {
     const o: Record<string, string> = {};
     for (const i of mapped) {
-      const key = cleanText(headers[i] ?? "", 120).text;
-      if (key && !(key in o)) o[key] = cleanText(r[i] ?? "", 120).text ?? "";
+      const key = cleanText(headers[i] ?? "", REPORTED_TEXT_CHARS).text;
+      if (key && !(key in o)) o[key] = cleanText(r[i] ?? "", REPORTED_TEXT_CHARS).text ?? "";
     }
     return o;
   });
-  return { sheet: table.name, headerRow: mapping.headerRow, rowCount: below.length, headers: headers.slice(0, 200).map((h) => cleanText(h, 120).text ?? ""), sampleRows };
+  const detected = { sheet: table.name, headerRow: mapping.headerRow, rowCount: below.length, headers: headers.slice(0, MAX_FILE_COLUMNS).map((h) => cleanText(h, REPORTED_TEXT_CHARS).text ?? ""), sampleRows };
+  // The database refuses a `detected` over 64 KB (as a jsonb), and a sample row repeats every mapped header: a file with very long column names
+  // must not become un-importable for that, so rows are dropped from the end until the document fits (the headers alone are under 27 KB).
+  while (sampleRows.length > 0 && jsonbSizeEstimate({ ...detected, sampleRows }) > DETECTED_MAX_BYTES) sampleRows = sampleRows.slice(0, -1);
+  return { ...detected, sampleRows };
 }

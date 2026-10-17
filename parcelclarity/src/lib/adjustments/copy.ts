@@ -39,6 +39,9 @@ export const NO_HEADER_ROW_MESSAGE =
 export const ENCODING_MESSAGE =
   `This file is not saved as plain CSV text (it looks like a UTF-16 "Unicode Text" file, or it holds binary data). In your spreadsheet choose Save As, then "CSV UTF-8 (Comma delimited)", and upload again. ${NOTHING_SAVED}`;
 
+/** Said when a stored upload could not be removed after a failure: the person is told, so a file is never left behind silently. */
+export const FILE_NOT_REMOVED = "The uploaded file could not be removed automatically, so it is still stored. Try again in a moment, or contact support to have it removed.";
+
 /** What the 3PL reads about row numbers in every report. */
 export const ROW_NUMBERING_NOTE = "Row numbers count the rows under the column names that are not blank (blank lines are not counted).";
 

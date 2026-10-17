@@ -46,6 +46,12 @@ export const isEditable = (status: ImportStatus): boolean => status === "uploade
 /** Importing is offered for a checked file, and for one whose earlier import attempt did not finish (it is rolled back and started over). */
 export const canImport = (status: ImportStatus): boolean => status === "validated" || status === "committing";
 
+/** The Import step is offered only for a checked file whose report still describes what is on screen (a mapping changed since is not offered until it is checked again). */
+export const importOffered = (status: ImportStatus, report: Pick<AdjustmentValidationReport, "ok" | "committable"> | null, stale: boolean): boolean => canImport(status) && report !== null && report.ok && report.committable && !stale;
+
+/** The step a person is on once an import has just finished in this session (every step done). */
+export const stepAfterCommit = 5 as const;
+
 export interface FieldSpec {
   field: AdjustmentField;
   label: string;

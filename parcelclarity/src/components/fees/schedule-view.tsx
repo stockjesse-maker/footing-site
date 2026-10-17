@@ -56,7 +56,7 @@ export function FeeScheduleView({ snapshot, audience = "brand", idPrefix = "fees
             </h3>
             <ul className="divide-y divide-line overflow-hidden rounded-card border border-line bg-raised shadow-card">
               {group.rules.map((rule) => (
-                // Not `rule.key`: React keys travel in the page payload, and a rule key is for staff only. Position and name are what the customer reads.
+                // Not `rule.key`: React keys travel in the page payload. Under decision D7 a rule key is a non-confidential identifier a customer can read through the API, but the page has no use for it, so it is not sent. Position and name are what the customer reads.
                 <li key={`${rule.position}:${rule.name}`} className="px-4 py-4 sm:px-6">
                   <RuleBlock rule={rule} rules={rules} byKey={byKey} audience={audience} />
                 </li>

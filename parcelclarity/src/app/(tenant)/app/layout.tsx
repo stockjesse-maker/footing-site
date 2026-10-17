@@ -15,6 +15,7 @@ export default async function TenantLayout({ children }: { children: ReactNode }
     ...(can(role, "ratecard.view") ? [{ href: "/app/fee-schedules", label: "Fee schedules", icon: "list" } as NavItem] : []),
     ...(can(role, "ratecard.view") ? [{ href: "/app/surcharges", label: "Surcharges", icon: "list" } as NavItem] : []),
     ...(can(role, "simulation.run") ? [{ href: "/app/calculator", label: "Calculator", icon: "calculator" } as NavItem] : []),
+    ...(can(role, "adjustment.view") ? [{ href: "/app/adjustments", label: "Adjustments", icon: "scale" } as NavItem] : []),
     ...(can(role, "member.view") ? [{ href: "/app/team", label: "Team", icon: "users" } as NavItem] : []),
     ...(can(role, "audit.view") ? [{ href: "/app/audit", label: "Activity", icon: "list" } as NavItem] : []),
     { href: "/app/settings", label: "Settings", icon: "settings" },

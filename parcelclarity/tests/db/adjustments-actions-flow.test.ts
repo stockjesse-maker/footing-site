@@ -16,6 +16,8 @@ import {
 import type { PricingContext, ShipmentInput, SurchargeRule } from "@/engine/types";
 import { PUBLISH_REFUSALS, rpcFailure, riskInputsFrom, type RiskFormInput } from "@/lib/adjustments/action-schemas";
 import { buildScenarioInput, scenarioPins } from "@/lib/adjustments/context";
+import { refusalMessage } from "@/lib/adjustments/header-guard";
+import { scrubJsonb } from "@/lib/adjustments/jsonb-size";
 import { buildDetected, detectAdjustmentFile, toStoredMapping } from "@/lib/adjustments/mapping";
 import { parseAdjustmentFile } from "@/lib/adjustments/parse";
 import { buildAppendChunks, reconcileCommit, type AppendResult } from "@/lib/adjustments/payload";
@@ -143,8 +145,11 @@ describe("the flow, through the real database", () => {
     const catalog = (await sql<{ id: string; carrier_code: string; carrier_name: string; code: string; name: string }>("select s.id, s.carrier_code, c.name as carrier_name, s.code, s.name from public.shipping_services s join public.carriers c on c.code = s.carrier_code where s.is_active")).map((s) => ({ id: s.id, carrierCode: s.carrier_code, carrierName: s.carrier_name, code: s.code, name: s.name }));
     const brands = [{ id: w.brandA.id, name: "Alpha Apparel" }, { id: w.brandB.id, name: "Beta Beverages" }];
     const detection = detectAdjustmentFile(parsed.tables, { catalog, brands });
-    expect(detection.suggestion.brandMap["alpha apparel"]).toBe(w.brandA.id);
-    expect(detection.suggestion.carrierMap.ups).toBe("ups");
+    // The suggested mapping is compacted (review finding F8): an exact customer or carrier name is matched when the mapping is applied, so it needs no
+    // entry; the records are attributed all the same.
+    expect(detection.suggestion.brandMap).toEqual({});
+    expect(detection.suggestion.carrierMap).toEqual({});
+    expect(applyAdjustmentMapping(parsed.tables, detection.suggestion, { catalog, brands, today }).records.every((r) => r.brandId === w.brandA.id && r.carrierCode === "ups")).toBe(true);
 
     // Stored as the caller: this workspace, the import purpose, no customer.
     const [stored] = await asUser<{ id: string }>(
@@ -185,14 +190,77 @@ describe("the flow, through the real database", () => {
     expect(await sql("select 1 from public.adjustment_records where import_id = $1", [importId])).toHaveLength(40);
   });
 
-  it("refuses a file whose header looks like carrier cost data, deletes it, and says what the screen says", async () => {
+  it("refuses a file whose header looks like carrier cost data at the upload itself (nothing is saved), and the screen says which header", async () => {
     const bytes = Buffer.from("ship_date,carrier,package_ref,Carrier Rate\n2026-08-03,UPS,1ZX1,12.34\n");
-    const [stored] = await asUser<{ id: string }>(admin(), "insert into public.uploaded_files (tenant_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, 'adjustment_import', 'x.csv', 'text/csv', $2, decode($3, 'hex'), $4) returning id", [T(), bytes.length, createHash("sha256").update(bytes).digest("hex"), bytes]);
-    const r = await rpc<{ ok: boolean; reason: string; header: string }>(admin(), "create_adjustment_import", { p_file: stored!.id, p_name: "cost", p_detected: { headers: [], sampleRows: [] } });
-    expect(r).toMatchObject({ ok: false, reason: "forbidden_header" });
-    expect(r.header).toBe("Carrier Rate");
-    expect(await sql("select 1 from public.uploaded_files where id = $1", [stored!.id])).toHaveLength(0);
-    expect(await sql("select 1 from public.adjustment_imports where name = 'cost' and tenant_id = $1", [T()])).toHaveLength(0);
+    const filesBefore = Number((await sql<{ n: string }>("select count(*)::text as n from public.uploaded_files where tenant_id = $1", [T()]))[0]!.n);
+    const refused = await refusal(
+      asUser(admin(), "insert into public.uploaded_files (tenant_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, 'adjustment_import', 'x.csv', 'text/csv', $2, decode($3, 'hex'), $4) returning id", [T(), bytes.length, createHash("sha256").update(bytes).digest("hex"), bytes]),
+    );
+    // The insert trigger scans the stored bytes: the reason is in the hint, the offending header in the detail (what the action reads).
+    expect(refused).toMatchObject({ code: "P0001", message: "this file was not saved", hint: "forbidden_header", details: "Carrier Rate" });
+    expect(refusalMessage(refused.details!)).toContain('"Carrier Rate"');
+    expect(refusalMessage(refused.details!)).toContain("Nothing from this file was saved");
+    expect(Number((await sql<{ n: string }>("select count(*)::text as n from public.uploaded_files where tenant_id = $1", [T()]))[0]!.n)).toBe(filesBefore);
+    expect(await sql("select 1 from public.adjustment_imports where tenant_id = $1 and name = 'cost'", [T()])).toHaveLength(0);
+  });
+
+  it("F3: UTF-16 text and bytes with a NUL are refused by the same trigger with their own reason, and no file is kept", async () => {
+    for (const bytes of [Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("ship_date,carrier,adjustment_type,Carrier Cost\r\n", "utf16le")]), Buffer.from("ship_date,carrier\u0000,adjustment_type\n")]) {
+      const refused = await refusal(asUser(admin(), "insert into public.uploaded_files (tenant_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, 'adjustment_import', 'x.csv', 'text/csv', $2, decode($3, 'hex'), $4) returning id", [T(), bytes.length, createHash("sha256").update(bytes).digest("hex"), bytes]));
+      expect(refused).toMatchObject({ code: "P0001", hint: "unsupported_encoding" });
+    }
+  });
+
+  it("F3 (the orphan): a stored file that no import holds is removed by discard_unattached_adjustment_file, once; nobody else can remove it; one an import holds cannot be removed that way", async () => {
+    const bytes = Buffer.from(historyCsv(2));
+    const store = (user: string, tenant: string) =>
+      asUser<{ id: string }>(user, "insert into public.uploaded_files (tenant_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, 'adjustment_import', 'orphan.csv', 'text/csv', $2, decode($3, 'hex'), $4) returning id", [tenant, bytes.length, createHash("sha256").update(bytes).digest("hex"), bytes]);
+    const [orphan] = await store(admin(), T());
+    // The way the action meets it: create_adjustment_import fails (a detail document over the limit), so the file is left unattached.
+    const failed = await refusal(rpc(admin(), "create_adjustment_import", { p_file: orphan!.id, p_name: "x", p_detected: { headers: Array.from({ length: 201 }, (_, i) => `h${i}`), sampleRows: [] } }));
+    expect(failed.code).toBe("PC001");
+    expect(await sql("select 1 from public.uploaded_files where id = $1", [orphan!.id])).toHaveLength(1);
+    // Another account's administrator and a customer's member find nothing; so does anyone for a file that does not exist.
+    for (const user of [w.t2.admin.id, w.brandA.admin.id, w.outsider.id]) expect((await refusal(rpc(user, "discard_unattached_adjustment_file", { p_file: orphan!.id }))).code, user).toMatch(/^(P0002|42501)$/);
+    expect((await refusal(rpc(admin(), "discard_unattached_adjustment_file", { p_file: "00000000-0000-4000-8000-000000000000" }))).code).toBe("P0002");
+    expect(await sql("select 1 from public.uploaded_files where id = $1", [orphan!.id]), "still there after the refusals").toHaveLength(1);
+    await rpc(admin(), "discard_unattached_adjustment_file", { p_file: orphan!.id });
+    expect(await sql("select 1 from public.uploaded_files where id = $1", [orphan!.id])).toHaveLength(0);
+    expect((await refusal(rpc(admin(), "discard_unattached_adjustment_file", { p_file: orphan!.id }))).code, "the second removal is 'not found'").toBe("P0002");
+    // A file an import holds is not unattached: it goes only with the import.
+    const [held] = await store(admin(), T());
+    const parsed = await parseAdjustmentFile(new Uint8Array(bytes), "csv");
+    if (parsed.status !== "ok") throw new Error("refused");
+    const made = await rpc<{ ok: boolean; importId: string }>(admin(), "create_adjustment_import", { p_file: held!.id, p_name: "held", p_detected: { headers: [], sampleRows: [] } });
+    expect(made.ok).toBe(true);
+    expect((await refusal(rpc(admin(), "discard_unattached_adjustment_file", { p_file: held!.id }))).code).toBe("P0002");
+    await rpc(admin(), "discard_adjustment_import", { p_import: made.importId });
+    expect(await sql("select 1 from public.uploaded_files where id = $1", [held!.id])).toHaveLength(0);
+  });
+
+  it("F9: a report for a file of 200 columns with 120-character headers is accepted by the database as built (under 24 KB by the library's measure, 32 KB for the database); a NUL in it is cleaned, and a raw NUL is refused before any function runs", async () => {
+    const headers = ["ship_date", "carrier", "adjustment_type", ...Array.from({ length: 197 }, (_, i) => `Column ${String(i).padStart(3, "0")} `.padEnd(120, "q"))];
+    const text = `${headers.join(",")}\n${["2026-09-01", "UPS", "reweight", ...headers.slice(3).map(() => "1")].join(",")}\n`;
+    const bytes = Buffer.from(text);
+    const parsed = await parseAdjustmentFile(new Uint8Array(bytes), "csv");
+    if (parsed.status !== "ok") throw new Error(parsed.status);
+    const catalog = (await sql<{ id: string; carrier_code: string; carrier_name: string; code: string; name: string }>("select s.id, s.carrier_code, c.name as carrier_name, s.code, s.name from public.shipping_services s join public.carriers c on c.code = s.carrier_code where s.is_active")).map((x) => ({ id: x.id, carrierCode: x.carrier_code, carrierName: x.carrier_name, code: x.code, name: x.name }));
+    const detection = detectAdjustmentFile(parsed.tables, { catalog, brands: [] });
+    const result = applyAdjustmentMapping(parsed.tables, detection.suggestion, { catalog, brands: [], today });
+    expect(result.report.committable).toBe(true);
+    const detected = buildDetected(parsed.tables, detection.suggestion);
+    const [stored] = await asUser<{ id: string }>(admin(), "insert into public.uploaded_files (tenant_id, purpose, filename, mime_type, byte_size, sha256, content) values ($1, 'adjustment_import', 'wide.csv', 'text/csv', $2, decode($3, 'hex'), $4) returning id", [T(), bytes.length, createHash("sha256").update(bytes).digest("hex"), bytes]);
+    const made = await rpc<{ ok: boolean; importId: string }>(admin(), "create_adjustment_import", { p_file: stored!.id, p_name: "wide", p_detected: detected });
+    expect(made.ok, "the details of a file with 200 long headers fit the 64 KB limit").toBe(true);
+    const validation = scrubJsonb(toStoredValidation(result.report));
+    const [measured] = await sql<{ size: number }>("select pg_column_size($1::jsonb) as size", [JSON.stringify(validation)]);
+    expect(measured!.size).toBeLessThanOrEqual(32_768);
+    expect(await rpc<string>(admin(), "set_adjustment_import_mapping", { p_import: made.importId, p_mapping: scrubJsonb(toStoredMapping(detection.suggestion, headers)), p_validation: validation, p_duplicate_handling: "refuse", p_attested: true })).toBe("validated");
+    // A NUL character in a jsonb argument is refused by PostgreSQL itself (22P05) before any function body runs: the library never sends one.
+    const nul = await refusal(rpc(admin(), "set_adjustment_import_mapping", { p_import: made.importId, p_mapping: scrubJsonb(toStoredMapping(detection.suggestion, headers)), p_validation: { counts: { rows: 1, accepted: 1 }, note: "bad\u0000name" }, p_duplicate_handling: "refuse", p_attested: true }));
+    expect(nul.code).toBe("22P05");
+    expect(JSON.stringify(scrubJsonb({ counts: { rows: 1, accepted: 1 }, note: "bad\u0000name" }))).not.toContain("\\u0000");
+    await rpc(admin(), "discard_adjustment_import", { p_import: made.importId });
   });
 
   // -------------------------------------------------------------------------
@@ -398,5 +466,44 @@ describe("the flow, through the real database", () => {
     const left = await sql<{ n: string }>("select count(*)::text as n from public.uploaded_files where tenant_id = $1 and purpose = 'adjustment_import'", [T()]);
     expect(left[0]!.n).toBe("0");
     expect(buildScenarioInput).toBeTypeOf("function");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The surcharge override action embeds a rule's versions (actions/surcharges.ts, createOverride)
+// ---------------------------------------------------------------------------
+describe("surcharge_rules embeds surcharge_rule_versions only with a relationship hint", () => {
+  const API = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const SERVICE = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const configured = Boolean(API && SERVICE);
+  const required = process.env.PC_REQUIRE_HTTP === "1";
+  /** The select string createOverride sends (src/app/actions/surcharges.ts). */
+  const EMBED = "id, brand_id, surcharge_rule_versions!srv_rule_in_tenant(method, status, version_number)";
+
+  it("two foreign keys join the tables, so an embed without a hint is ambiguous, and the hint names a real one", async () => {
+    const fks = await sql<{ conname: string; cols: string }>(
+      `select c.conname, (select string_agg(a.attname, ',' order by a.attnum) from pg_attribute a where a.attrelid = c.conrelid and a.attnum = any(c.conkey)) as cols
+         from pg_constraint c where c.contype = 'f' and c.conrelid = 'public.surcharge_rule_versions'::regclass and c.confrelid = 'public.surcharge_rules'::regclass order by c.conname`,
+    );
+    expect(fks.map((r) => r.conname)).toEqual(["srv_rule_in_tenant", "surcharge_rule_versions_rule_id_fkey"]);
+    expect(fks.find((r) => r.conname === "srv_rule_in_tenant")!.cols).toBe("rule_id,tenant_id");
+  });
+
+  it.skipIf(!configured && !required)("through the Data API: the unhinted embed answers PGRST201 (more than one relationship), the action's hinted embed is planned and answered (200)", async () => {
+    if (!configured) throw new Error("PC_REQUIRE_HTTP=1 but the local stack's API is not configured (see TESTING.md).");
+    // The API serves the stack's own database (the tests above run in a throwaway one), so no row is needed: the relationship is resolved when the
+    // request is PLANNED, which is where the ambiguity is reported, whether or not any rule exists.
+    const call = async (select: string) => {
+      const res = await fetch(`${API}/rest/v1/surcharge_rules?select=${encodeURIComponent(select)}&limit=1`, { headers: { apikey: SERVICE!, Authorization: `Bearer ${SERVICE}` } });
+      return { status: res.status, body: (await res.json()) as unknown };
+    };
+    const unhinted = await call("id, brand_id, surcharge_rule_versions(method, status, version_number)");
+    expect(unhinted.body).toMatchObject({ code: "PGRST201" });
+    expect(unhinted.status).not.toBe(200);
+    const hinted = await call(EMBED);
+    expect(hinted.status).toBe(200);
+    expect(Array.isArray(hinted.body)).toBe(true);
+    // Every rule that comes back carries its versions as an array (the shape createOverride reads).
+    for (const rule of hinted.body as { surcharge_rule_versions?: unknown }[]) expect(Array.isArray(rule.surcharge_rule_versions)).toBe(true);
   });
 });

@@ -1,4 +1,4 @@
-import { FEE_CATEGORY_WORDS, formatCount, pluralize } from "@/lib/adjustments/staff-copy";
+import { BASIS_LABELS, FEE_CATEGORY_WORDS, formatCount, pluralize } from "@/lib/adjustments/staff-copy";
 
 /**
  * The Overview checklist, computed from what `loadOverview` returns (src/lib/adjustments/queries.ts). Nothing is stored: each step is "done"
@@ -13,6 +13,9 @@ export interface OverviewInput {
   scenarios: { active: number };
   examples: { live: number; current: number; underReview: number; expired: number };
   customersSeeingUndecidedRule: { brandId: string; brandName: string; categories: string[] }[];
+  /** For "where things stand" and the /app tile; optional so the checklist alone can be computed from the first six. */
+  estimates?: { active: number; latest: { name: string; basis: "declared_weights" | "actual_weights" | null; createdAt: string } | null };
+  imports?: { committed: number; records: number };
 }
 
 export interface ChecklistStep {
@@ -120,4 +123,60 @@ export function parseLegacyFeeRules(raw: unknown): LegacyFeeRule[] | null {
     out.push({ ruleName, versionNumber });
   }
   return out;
+}
+
+/** One line of "where things stand": a label, the value in words, and where to go. */
+export interface GlanceRow {
+  id: string;
+  label: string;
+  value: string;
+  detail: string | null;
+  href: string;
+  linkLabel: string;
+}
+
+/** The figures the Overview shows under the checklist. Counts of things the account holds; never a money figure and never a rate. */
+export function glanceRows(o: OverviewInput): GlanceRow[] {
+  const { cells, decided, exceptions } = o.policies;
+  const e = o.examples;
+  const rows: GlanceRow[] = [
+    {
+      id: "decisions",
+      label: "Decisions for all customers",
+      value: `${formatCount(decided)} of ${formatCount(cells)} made`,
+      detail: exceptions > 0 ? `${pluralize(exceptions, "decision")} set for individual customers` : null,
+      href: "/app/adjustments/policies",
+      linkLabel: "Open policies",
+    },
+  ];
+  if (o.imports) {
+    rows.push({
+      id: "history",
+      label: "History imported",
+      value: o.imports.committed === 0 ? "None yet" : `${pluralize(o.imports.records, "record")} from ${pluralize(o.imports.committed, "import")}`,
+      detail: null,
+      href: "/app/adjustments/history",
+      linkLabel: "Open history",
+    });
+  }
+  rows.push({
+    id: "examples",
+    label: "Examples shared with customers",
+    value: e.live === 0 ? "None shared" : `${formatCount(e.live)} shared`,
+    detail: e.live === 0 ? null : `${formatCount(e.current)} current${e.underReview > 0 ? `, ${formatCount(e.underReview)} under review` : ""}${e.expired > 0 ? `, ${formatCount(e.expired)} expired` : ""}`,
+    href: "/app/adjustments/examples",
+    linkLabel: "Open examples",
+  });
+  if (o.estimates) {
+    const latest = o.estimates.latest;
+    rows.push({
+      id: "estimates",
+      label: "Saved estimates",
+      value: o.estimates.active === 0 ? "None saved" : `${formatCount(o.estimates.active)} saved`,
+      detail: latest ? `Latest: ${latest.name}, ${latest.basis ? (BASIS_LABELS[latest.basis] ?? "basis not recorded") : "basis not recorded"}` : null,
+      href: "/app/adjustments/risk",
+      linkLabel: "Open risk estimates",
+    });
+  }
+  return rows;
 }
