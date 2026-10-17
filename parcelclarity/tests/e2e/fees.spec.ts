@@ -171,7 +171,7 @@ async function addRule(page: Page, r: RuleSpec) {
   await expect(page.getByRole("heading", { name: "Add a rule" })).toBeVisible();
   if (r.preset) await label(page, "Preset").selectOption({ label: r.preset });
   await label(page, "Name").fill(r.name);
-  await label(page, "Key (staff only)").fill(r.key);
+  await label(page, "Key").fill(r.key);
   if (r.amountLabel && r.amount) await label(page, r.amountLabel).fill(r.amount);
   await r.extra?.(page);
   await page.getByRole("button", { name: "Save rule" }).click();
@@ -230,7 +230,7 @@ test("the 3PL creates a fee schedule and adds its rules in the editor", async ({
       await p.getByText("Only some orders (optional)").click();
       await label(p, "Packaging types this applies to").fill(types);
       await p.getByText("Alternatives (optional)").click();
-      await label(p, "Group name (staff only)").fill(KEYS.group);
+      await label(p, "Group name").fill(KEYS.group);
       await label(p, "Priority (lowest number wins)").fill(priority);
     },
   });
@@ -249,7 +249,7 @@ test("the 3PL creates a fee schedule and adds its rules in the editor", async ({
     amountLabel: "Amount per pallet per month (USD)",
     amount: "18.00",
     extra: async (p) => {
-      await label(p, "Question key (staff only)").fill(KEYS.qStorage);
+      await label(p, "Question key").fill(KEYS.qStorage);
       await label(p, "Help with the question (optional)").fill("Count each pallet position you use, averaged over the month.");
     },
   });
@@ -260,14 +260,14 @@ test("the 3PL creates a fee schedule and adds its rules in the editor", async ({
     amountLabel: "Amount per pallet per month (USD)",
     amount: "27.00",
     extra: async (p) => {
-      await label(p, "Question key (staff only)").fill(KEYS.qLongTerm);
+      await label(p, "Question key").fill(KEYS.qLongTerm);
       await expect(label(p, "Part of the standard rule")).toHaveValue(/.+/); // the preset found the standard storage rule
     },
   });
   // 6. Receiving per pallet.
-  await addRule(page, { preset: "Receiving per pallet", name: "Pallet receiving", key: KEYS.receiving, amountLabel: "Amount per pallet per month (USD)", amount: "12.00", extra: async (p) => label(p, "Question key (staff only)").fill(KEYS.qReceiving) });
+  await addRule(page, { preset: "Receiving per pallet", name: "Pallet receiving", key: KEYS.receiving, amountLabel: "Amount per pallet per month (USD)", amount: "12.00", extra: async (p) => label(p, "Question key").fill(KEYS.qReceiving) });
   // 7. Returns rate.
-  await addRule(page, { preset: "Returns per order", name: "Returns processing", key: KEYS.returns, amountLabel: "Amount per return (USD)", amount: "3.00", extra: async (p) => label(p, "Question key (staff only)").fill(KEYS.qReturns) });
+  await addRule(page, { preset: "Returns per order", name: "Returns processing", key: KEYS.returns, amountLabel: "Amount per return (USD)", amount: "3.00", extra: async (p) => label(p, "Question key").fill(KEYS.qReturns) });
   // 8. Flat monthly fee.
   await addRule(page, { preset: "Flat monthly fee", name: "Account administration", key: KEYS.admin, amountLabel: "Amount per month (USD)", amount: "75.00" });
   // 9. Account minimum: no category ticked, so every fee except flat monthly fees counts toward it.
@@ -276,7 +276,7 @@ test("the 3PL creates a fee schedule and adds its rules in the editor", async ({
   // The rules read back in the customer's words, in the editor's list and in the preview, and the staff-only parts are labelled.
   const rules = page.locator("#rules-heading").locator("xpath=ancestor::section[1]");
   await expect(rules.getByText("$2.00 per order.", { exact: true })).toBeVisible();
-  await expect(rules.getByText(`Key (staff only): ${KEYS.pick}`)).toBeVisible();
+  await expect(rules.getByText(`Key: ${KEYS.pick}`)).toBeVisible();
   await expect(rules.getByText(`Source (staff only): ${SOURCE_SENTINEL}`)).toBeVisible();
   const preview = page.locator('section[aria-labelledby="preview-heading"]');
   await expect(preview.getByRole("heading", { name: "Pick & pack", level: 3 })).toBeVisible();

@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Select } from "@/components/ui/field";
 import { isAdjustmentFeeCategory } from "@/engine/types";
+import { FEE_RULE_COMPANION_MESSAGE, FEE_RULE_EXCLUDES_MESSAGE, FEE_RULE_FLOOR_MESSAGE } from "@/lib/adjustments/copy";
 import type { CalculationBase, CalculationMethod, ChargeClass, PackageType, RuleCondition, SignatureOption, SurchargeCategory, VerificationStatus } from "@/engine/types";
 import type { ServiceCatalogEntry } from "@/lib/import/rate-card-mapping";
 import { formatDate, formatDateTime } from "@/lib/format/date";
@@ -1053,13 +1054,14 @@ export function RuleForm({ mode, ruleId, catalog, carriers, brands = [], knownGr
 
         <div className="grid gap-4 sm:grid-cols-2">
           <CheckBox id={id("perPackage")} label="Charge once per package" checked={v.perPackage} onChange={(perPackage) => set("perPackage", perPackage)} hint="Unchecked: evaluated and charged once per shipment." />
-          <TextInput id={id("billableWeightFloorLb")} name="billableWeightFloorLb" label="Billable weight floor (lb)" value={v.billableWeightFloorLb} onChange={(x) => set("billableWeightFloorLb", x)} inputMode="decimal" placeholder="None" hint="When this rule applies, bill the package at no less than this weight (lb), e.g. large-package minimums." />
+          <TextInput id={id("billableWeightFloorLb")} name="billableWeightFloorLb" label="Billable weight floor (lb)" value={v.billableWeightFloorLb} onChange={(x) => set("billableWeightFloorLb", x)} inputMode="decimal" placeholder="None" hint={adjustmentFee ? FEE_RULE_FLOOR_MESSAGE : "When this rule applies, bill the package at no less than this weight (lb), e.g. large-package minimums."} />
         </div>
       </fieldset>
 
       <ErrorFieldset name="conditions" id={id("conditions")} className="space-y-3">
         <legend className={legend}>When it applies</legend>
         <p className="text-sm text-muted">Every condition must hold. With no conditions the rule applies to every shipment on the services below.</p>
+        {adjustmentFee ? <p className="text-sm text-muted">{FEE_RULE_COMPANION_MESSAGE}</p> : null}
         <ConditionList drafts={cond.drafts} idPrefix={id("cond")} nested={false} zipListId={zipListId} onChangeRow={changeRow} onRemoveRow={removeRow} onAdd={addTop} onAddChild={addChild} />
       </ErrorFieldset>
 
@@ -1105,7 +1107,7 @@ export function RuleForm({ mode, ruleId, catalog, carriers, brands = [], knownGr
             }
           />
           <TextInput id={id("exclusivityPriority")} name="exclusivityPriority" label="Priority within the group" value={v.exclusivityPriority} onChange={(x) => set("exclusivityPriority", x)} type="number" inputMode="numeric" min="0" max="100" hint="0 to 100; higher wins." />
-          <TextInput id={id("excludesRuleKeys")} name="excludesRuleKeys" label="Suppresses these rules (optional)" value={v.excludesRuleKeys} onChange={(x) => set("excludesRuleKeys", x)} placeholder="e.g. ups.additional_handling" autoCapitalize="none" hint="Comma-separated rule keys that are not charged when this rule applies (bundled surcharges)." />
+          <TextInput id={id("excludesRuleKeys")} name="excludesRuleKeys" label="Suppresses these rules (optional)" value={v.excludesRuleKeys} onChange={(x) => set("excludesRuleKeys", x)} placeholder="e.g. ups.additional_handling" autoCapitalize="none" hint={adjustmentFee ? FEE_RULE_EXCLUDES_MESSAGE : "Comma-separated rule keys that are not charged when this rule applies (bundled surcharges)."} />
         </div>
       </fieldset>
 

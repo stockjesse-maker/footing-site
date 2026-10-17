@@ -8,6 +8,7 @@ import { getContext, requireUser } from "@/lib/auth/session";
 import { can } from "@/lib/auth/permissions";
 import { loadPricingContext } from "@/lib/pricing/snapshot";
 import { RATE_LIMITED_MESSAGE, withinRateLimit } from "@/lib/rate-limit";
+import { CUSTOMER_PRICING_ISSUE } from "@/lib/adjustments/copy";
 import { customerSafe, priceOrderFees } from "@/lib/pricing/customer-safe";
 import { loadBrandFeeSchedule } from "@/lib/fees/queries";
 import { createClient } from "@/lib/supabase/server";
@@ -23,7 +24,7 @@ export interface CalculatorResponse {
   /** Staff only: which version priced the shipment. Customers get `effectiveDate` alone. */
   version?: { id: string; versionNumber: number; effectiveDate: string; expirationDate: string | null; status: string };
   effectiveDate?: string | null;
-  /** Configuration problems found while loading (e.g. a rule version whose stored conditions no longer validate). Shown with the result. */
+  /** Configuration problems found while loading (e.g. a rule version whose stored conditions no longer validate). Shown with the result. A customer gets one fixed sentence (never a rule's name); staff get the text. */
   issues?: string[];
   /** Present when the request carried what's in the box: the order fees of each result (same order as `results`), or why there are none. */
   fees?: CalculatorFeesResponse;
@@ -149,6 +150,7 @@ export async function priceShipment(request: unknown): Promise<CalculatorRespons
     p_metadata: { services: services.length, packages: req.packages.length, statuses: results.map((r) => r.status), orderFees: fees?.status ?? null },
   });
   await activity;
-  if (isBrand) return { ok: true, results: results.map(customerSafe), effectiveDate: snapshot.version.effectiveDate, issues: snapshot.issues, ...(fees ? { fees } : {}) };
+  // The engine's message about a rule it could not apply names the rule, which is the 3PL's own text: a customer is told only that one could not be applied.
+  if (isBrand) return { ok: true, results: results.map(customerSafe), effectiveDate: snapshot.version.effectiveDate, issues: snapshot.issues.length ? [CUSTOMER_PRICING_ISSUE] : [], ...(fees ? { fees } : {}) };
   return { ok: true, results, version: snapshot.version, effectiveDate: snapshot.version.effectiveDate, issues: snapshot.issues, ...(fees ? { fees } : {}) };
 }

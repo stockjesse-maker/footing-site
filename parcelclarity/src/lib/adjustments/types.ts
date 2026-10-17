@@ -126,9 +126,14 @@ export interface IgnoredColumn {
 
 export interface AdjustmentSheetInfo {
   name: string;
+  /** The row that holds the column names (0-based); 0 for a sheet where none was found. */
   headerRow: number;
+  /** The column names; empty for a sheet where none was found (a data row is never read as column names). */
   headers: string[];
+  /** Non-blank rows under the column names. */
   rowCount: number;
+  /** False when no row among the first fifty holds a ship date and a carrier, service or type column: the sheet cannot be imported. */
+  recognised: boolean;
 }
 
 export interface AdjustmentDetection {
@@ -162,6 +167,7 @@ export type ErrorCode =
   | "unknown_carrier"
   | "service_carrier_mismatch"
   | "invalid_package_ref"
+  | "ragged_row"
   | "example_row";
 
 export type InformationCode =
@@ -172,7 +178,9 @@ export type InformationCode =
   | "missing_weight"
   | "already_imported"
   | "merged_duplicate"
+  | "merged_amounts_unknown"
   | "ignored_duplicate"
+  | "short_row"
   | "service_unmapped"
   | "cause_defaulted"
   | "handling_unreadable"
@@ -189,7 +197,7 @@ export interface MappingIssue {
 export interface ImportIssue {
   code: ImportCode;
   severity: "error" | "information";
-  /** 1-based data row (row 1 is the first row under the header). */
+  /** 1-based data row: row 1 is the first row under the column names that is not blank (blank lines are not counted; ROW_NUMBERING_NOTE says so). */
   row: number;
 }
 
@@ -224,7 +232,7 @@ export interface AdjustmentValidationReport {
   byCode: Record<ImportCode, number>;
   /** Codes with at least one row, errors first. */
   codes: CodeSummary[];
-  /** 1-based data row numbers per code, at most 50 each. */
+  /** 1-based data row numbers per code (blank lines are not counted), at most 50 each. */
   rowNumbers: Partial<Record<ImportCode, number[]>>;
   /** First 100 issues in row order. */
   issues: ImportIssue[];

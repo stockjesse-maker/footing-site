@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ActionState } from "@/lib/actions";
 import { fieldErrors, uuidSchema, type FieldErrors } from "@/lib/auth/validation";
 import { isValidPolicyPair } from "@/engine/adjustments/policy";
+import { storableWeight } from "@/engine/adjustments/storage";
 import {
   ADJUSTMENT_CAUSES,
   POLICY_COMPONENTS,
@@ -238,6 +239,16 @@ const dimsAllOrNone = (v: { length?: string; width?: string; height?: string }, 
 
 const emptyToUndefined = (v: unknown) => (v === "" || v === null ? undefined : v);
 
+/**
+ * An example keeps its weights in pounds with at most 6 decimals, and a weight that must be rounded to get there can cross a billable-weight
+ * boundary, so the saved package would no longer price to the amount shown to the customer (engine review finding F10). A weight in ounces with
+ * more than 2 decimals (16.001 oz is 1.0000625 lb) is therefore refused up front, with the engine's own test (`storableWeight`).
+ */
+export const OUNCE_PRECISION_MESSAGE = "Enter ounces with at most 2 decimals (or pounds with at most 6), so the saved example prices to the amount shown.";
+const exactWeight = (v: { weight?: string; weightUnit?: "lb" | "oz" }, ctx: z.RefinementCtx) => {
+  if (v.weight !== undefined && !storableWeight(v.weight, v.weightUnit ?? "lb")) ctx.addIssue({ code: "custom", path: ["weight"], message: OUNCE_PRECISION_MESSAGE });
+};
+
 const declaredPackage = z
   .strictObject({
     weight: positiveDecimal("the declared weight"),
@@ -246,7 +257,10 @@ const declaredPackage = z
     width: z.preprocess(emptyToUndefined, positiveDecimal("the width").optional()),
     height: z.preprocess(emptyToUndefined, positiveDecimal("the height").optional()),
   })
-  .superRefine(dimsAllOrNone);
+  .superRefine((v, ctx) => {
+    dimsAllOrNone(v, ctx);
+    exactWeight(v, ctx);
+  });
 
 /** What changes for one package; only the fields present change. The package count cannot differ. */
 const correctionPackage = z
@@ -259,6 +273,7 @@ const correctionPackage = z
   })
   .superRefine((v, ctx) => {
     dimsAllOrNone(v, ctx);
+    exactWeight(v, ctx);
     if (v.weightUnit !== undefined && v.weight === undefined) ctx.addIssue({ code: "custom", path: ["weight"], message: "Enter the corrected weight with its unit." });
   });
 

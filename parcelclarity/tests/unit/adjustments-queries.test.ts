@@ -238,11 +238,11 @@ describe("history records", () => {
 
   it("builds the keys of what is already imported: customer, carrier, package reference and type, only for records that have a reference", async () => {
     install({ tables: { adjustment_imports: [importRow()] }, rpc: { adjustment_records_json: { data: [bulk(1), bulk(2, { brandId: null }), bulk(3, { packageRef: null })], error: null } } });
-    const keys = await q.loadExistingKeys(client(), TENANT, null);
+    const keys = await q.loadExistingKeys(client(), TENANT);
     expect([...keys].sort()).toEqual([`-|ups|1ZQ2|reweight`, `${BRAND}|ups|1ZQ1|reweight`].sort());
   });
 
-  it("reads only imports whose ship-date range overlaps the new file (and always one with no stored range)", async () => {
+  it("reads EVERY committed import, whatever its ship-date range: the unique key has no date, so a late adjustment of an old shipment repeats a package of an import that does not overlap the new file in time (review finding F14)", async () => {
     const jan = "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1";
     const mar = "b2b2b2b2-b2b2-4b2b-8b2b-b2b2b2b2b2b2";
     const unknown = "c3c3c3c3-c3c3-4c3c-8c3c-c3c3c3c3c3c3";
@@ -250,14 +250,16 @@ describe("history records", () => {
       tables: { adjustment_imports: [importRow({ id: jan, range_min: "2026-01-01", range_max: "2026-01-31" }), importRow({ id: mar, range_min: "2026-03-01", range_max: "2026-03-31" }), importRow({ id: unknown, range_min: null, range_max: null })] },
       rpc: { adjustment_records_json: { data: [], error: null } },
     });
-    await q.loadExistingKeys(client(), TENANT, { from: "2026-01-20", to: "2026-02-10" });
-    expect(db().rpcNamed("adjustment_records_json").map((a) => a.p_import).sort()).toEqual([jan, unknown].sort());
-    // Ranges touching on one day overlap; a range ending the day before does not.
-    install({ tables: { adjustment_imports: [importRow({ id: jan, range_min: "2026-01-01", range_max: "2026-01-31" })] }, rpc: { adjustment_records_json: { data: [], error: null } } });
-    await q.loadExistingKeys(client(), TENANT, { from: "2026-01-31", to: "2026-02-10" });
-    expect(db().rpcNamed("adjustment_records_json")).toHaveLength(1);
-    await q.loadExistingKeys(client(), TENANT, { from: "2026-02-01", to: "2026-02-10" });
-    expect(db().rpcNamed("adjustment_records_json")).toHaveLength(1);
+    await q.loadExistingKeys(client(), TENANT);
+    expect(db().rpcNamed("adjustment_records_json").map((a) => a.p_import).sort()).toEqual([jan, mar, unknown].sort());
+    // The signature has no date range to filter by any more.
+    expect(q.loadExistingKeys.length).toBe(2);
+  });
+
+  it("compares references in their canonical form: spellings of one package are one key, so 'already imported' matches the database's unique index", async () => {
+    install({ tables: { adjustment_imports: [importRow()] }, rpc: { adjustment_records_json: { data: [bulk(1, { packageRef: "1z0001 ab" }), bulk(2, { packageRef: "1Z0001AB\u200b" })], error: null } } });
+    const keys = await q.loadExistingKeys(client(), TENANT);
+    expect([...keys]).toEqual([`${BRAND}|ups|1Z0001AB|reweight`]);
   });
 });
 

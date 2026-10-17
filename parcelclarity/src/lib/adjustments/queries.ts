@@ -372,15 +372,16 @@ export async function loadCommittedHistory(supabase: SupabaseClient, tenantId: s
 
 /**
  * Keys (customer, carrier, package reference, type) of the records already committed, for the "already imported" count and so a
- * file is never imported twice. Only committed imports whose ship-date range overlaps `range` are read (an import's range covers every
- * row it held, so a package of the new file can only repeat a package of an import that overlaps it); an import with no stored range is read.
+ * file is never imported twice. EVERY committed import is read: the unique key has no date in it, so a package of the new file can repeat
+ * a package of an import whose ship dates do not overlap the new file's (a late adjustment of an old shipment), and a skipped-by-the-database
+ * row that the report did not count would break the counts the 3PL approved (review finding F14). The references are compared in their
+ * canonical form (the database stores that form), so a different spelling of the same package is the same key.
  */
-export async function loadExistingKeys(supabase: SupabaseClient, tenantId: string, range: { from: string | null; to: string | null } | null): Promise<Set<string>> {
+export async function loadExistingKeys(supabase: SupabaseClient, tenantId: string): Promise<Set<string>> {
   const keys = new Set<string>();
   let read = 0;
   for (const imp of await committedImports(supabase, tenantId)) {
     if (imp.committedCount === 0) continue;
-    if (range && range.from && range.to && imp.from && imp.to && (imp.to < range.from || imp.from > range.to)) continue;
     for await (const page of importRecords(supabase, imp.id)) {
       read += page.length;
       if (read > MAX_RECORDS_READ) throw new Error("history records could not be loaded: more records than an account can hold");

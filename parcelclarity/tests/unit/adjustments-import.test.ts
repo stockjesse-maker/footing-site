@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ADJUSTMENT_FILE_LIMITS, type Table } from "@/lib/import/parse-table";
 import type { ServiceCatalogEntry } from "@/lib/import/rate-card-mapping";
-import { addMoney, cleanText, detectDateFormat, normalizeValue, parseMoneyCell, readDimension, readPackageRef, readWeight, shipDateInRange } from "@/lib/adjustments/cells";
+import { addMoney, cleanText, detectDateFormat, isNegativeMoney, normalizeValue, parseMoneyCell, readDimension, readPackageRef, readWeight, shipDateInRange, subtractMoney } from "@/lib/adjustments/cells";
 import {
   ADJUSTMENT_TEMPLATE_HEADERS,
   flaggedMappingMessage,
@@ -72,18 +72,22 @@ async function load(name: string) {
 interface GuardCase { header: string; guard: "pass" | "refuse"; autoMapsToMoney: boolean }
 const guardTable = json<{ templateHeaders: string[]; cases: GuardCase[]; stems: string[] }>("header-guard.json");
 
-describe("header guard: the 71 hand-derived outcomes", () => {
-  it("covers 71 headers and the template header list matches the fixture", () => {
-    expect(guardTable.cases).toHaveLength(71);
+describe("header guard: the hand-derived outcomes (71 plain headers and 67 hostile ones)", () => {
+  it("covers 138 headers and the template header list matches the fixture", () => {
+    expect(guardTable.cases).toHaveLength(138);
+    expect(guardTable.cases.filter((c) => !(c as { group?: string }).group)).toHaveLength(71);
+    expect(guardTable.cases.filter((c) => (c as { group?: string }).group === "hostile")).toHaveLength(67);
     expect([...ADJUSTMENT_TEMPLATE_HEADERS]).toEqual(guardTable.templateHeaders);
-    expect(guardTable.cases.filter((c) => c.guard === "refuse")).toHaveLength(26);
-    expect(guardTable.cases.filter((c) => c.autoMapsToMoney)).toHaveLength(10);
+    expect(guardTable.cases.filter((c) => c.guard === "refuse")).toHaveLength(26 + 47);
+    expect(guardTable.cases.filter((c) => c.autoMapsToMoney)).toHaveLength(10 + 4);
   });
 
   it.each(guardTable.cases.map((c) => [c.header, c] as const))("%s", (_h, c) => {
     expect(guardHeader(c.header).allowed, `guard for ${c.header}`).toBe(c.guard === "pass");
     expect(isAutoMappableMoneyHeader(c.header), `auto-map for ${c.header}`).toBe(c.autoMapsToMoney);
-    if (c.guard === "refuse") expect(guardHeader(c.header).word).not.toBeNull();
+    // A refusal always says why: a stem for the word rules, or one of the other reasons (a carrier's name beside an amount word, nothing readable, characters we cannot check).
+    if (c.guard === "refuse") expect(guardHeader(c.header).reason).not.toBeNull();
+    else expect(guardHeader(c.header).reason).toBeNull();
   });
 
   it("passes every exact template header however it is cased or punctuated, and refuses carrier lookalikes", () => {
@@ -132,24 +136,60 @@ describe("header guard: the 71 hand-derived outcomes", () => {
     for (const h of ["Tracking Number", "Order Number", "Reference", "Customer Name", "Notes", "Created", "SKU"]) expect(isMoneyLikeHeader(h), h).toBe(false);
   });
 
-  it("the refusal names the first refused header, says how to fix it, and never carries a cell value", () => {
+  it("the refusal names every refused header with what to do about it, never claims what a column holds, and never carries a cell value", () => {
     const message = refusalMessage("Carrier Rate");
-    expect(message).toBe(
-      'This file looks like carrier cost data. The column "Carrier Rate" looks like what a carrier bills you. ParcelClarity only accepts what your customer was, or would be, charged. Nothing from this file was saved. ' +
-        "Remove that column, or export the customer charge instead, then upload again. If the column holds something else, rename it and upload again: " +
-        '"carrier" for the carrier\'s name, "declared_weight" or "actual_weight" for weights, "customer_charge_original", "customer_charge_corrected" or "customer_adjustment_fee" for what the customer was charged.',
-    );
-    expect(message.startsWith(REFUSAL_TITLE)).toBe(true);
-    expect(flaggedMappingMessage("Carrier Rate", true)).toBe('The column "Carrier Rate" cannot be used for a charge. It looks like carrier cost data.');
-    expect(flaggedMappingMessage("Carrier Rate", false)).toBe('The column "Carrier Rate" cannot be used for this field. It looks like carrier cost data.');
+    expect(message.startsWith(`${REFUSAL_TITLE}. Nothing from this file was saved.`)).toBe(true);
+    expect(message).toContain('"Carrier Rate" (its name has the word "carrier"; if it is what your customer was charged, rename it "customer_charge_original", "customer_charge_corrected" or "customer_adjustment_fee"; if it is what a carrier bills you, remove the column)');
+    expect(message).toContain("Rename or remove that column and upload again.");
+    // It says the NAME looks like a cost column; it never says the column is a carrier bill.
+    expect(message).not.toMatch(/looks like what a carrier bills you/);
+    expect(flaggedMappingMessage("Carrier Rate", true)).toBe('The column "Carrier Rate" cannot be used for a charge: its name looks like a carrier cost column. Rename it in your file if it is not one.');
+    expect(flaggedMappingMessage("Carrier Rate", false)).toBe('The column "Carrier Rate" cannot be used for this field: its name looks like a carrier cost column. Rename it in your file if it is not one.');
     expect(refusalMessage(`Postage\u0000Cost\n${"x".repeat(200)}`).length).toBeLessThan(900);
     const result = guardHeaders(["ship_date", "Carrier Rate", "Postage Cost"]);
-    expect(result).toMatchObject({ allowed: false, firstRefusedHeader: "Carrier Rate", refusedHeaders: ["Carrier Rate", "Postage Cost"] });
+    expect(result).toMatchObject({ allowed: false, firstRefusedHeader: "Carrier Rate", refusedHeaders: ["Carrier Rate", "Postage Cost"], refusedCount: 2 });
+    // One message for both, each with its own hint.
+    expect(result.message).toContain('"Carrier Rate" (');
+    expect(result.message).toContain('"Postage Cost" (');
+    expect(result.message).toContain("Rename or remove those columns and upload again.");
+  });
+
+  it("the hint depends on what the name says: a weight, a date, a package number, the carrier's own name, an amount", () => {
+    expect(refusalMessage("Net Weight")).toContain('"Net Weight" (its name has the word "net"; if it holds a weight, rename it "declared_weight" or "actual_weight")');
+    expect(refusalMessage("Label Date")).toContain('if it holds a date, rename it "ship_date" or "adjusted_on"');
+    expect(refusalMessage("Label ID")).toContain('if it holds a package or tracking number, rename it "package_ref"');
+    expect(refusalMessage("Carrier Name")).toContain('if it names the carrier or the service, rename it "carrier" or "service"');
+    expect(refusalMessage("UPS Charge")).toContain('say so in the name (for example "UPS charge to customer")');
+    expect(refusalMessage("Cost Center")).toContain("if it is what your customer was charged");
+  });
+
+  it("a header refused for another reason than a cost word says so, and does not say the file looks like carrier cost data", () => {
+    for (const [header, text] of [
+      ["#", "the name has no letters or digits"],
+      ["\u200b", "the name has no letters or digits"],
+      ["東京", "the name uses characters we cannot check"],
+      ["Co\ufffdst", "save the file as \"CSV UTF-8\""],
+      ["x".repeat(201), "the name is longer than 200 characters"],
+    ] as const) {
+      const m = refusalMessage(header);
+      expect(m, header).toContain(text);
+      expect(m.startsWith("Some column names in this file cannot be accepted. Nothing from this file was saved."), header).toBe(true);
+      expect(m).not.toContain(REFUSAL_TITLE);
+    }
+  });
+
+  it("lists up to 20 refused headers in one message and counts the rest", () => {
+    const headers = Array.from({ length: 25 }, (_, i) => `Carrier Cost ${i + 1}`);
+    const r = guardHeaders(headers);
+    expect(r.refusedCount).toBe(25);
+    expect(r.refusedHeaders).toHaveLength(20);
+    expect(r.message!.match(/"Carrier Cost \d+"/g)).toHaveLength(20);
+    expect(r.message).toContain("and 5 more.");
   });
 
   it("runs over every sheet of a workbook, each at its own header row, and the first refused header in sheet order wins", () => {
     const ok: Table = { name: "Good", rows: [["ship_date", "carrier", "service"], ["2026-01-01", "UPS", "Ground"]], truncated: false };
-    const bad: Table = { name: "Costs", rows: [["Report title", "", ""], ["ship_date", "Negotiated Rate", "Carrier Rate"], ["2026-01-01", "1.00", "2.00"]], truncated: false };
+    const bad: Table = { name: "Costs", rows: [["Report title", "", ""], ["ship_date", "Negotiated Rate", "Carrier Rate", "carrier"], ["2026-01-01", "1.00", "2.00", "UPS"]], truncated: false };
     const r = guardTables([ok, bad]);
     expect(r).toMatchObject({ allowed: false, sheet: "Costs", firstRefusedHeader: "Negotiated Rate", refusedHeaders: ["Negotiated Rate", "Carrier Rate"] });
     expect(r.message).not.toContain("1.00");
@@ -210,11 +250,13 @@ describe("parseMoneyCell", () => {
     }
   });
 
-  it("adds optional amounts without turning unknown into 0", () => {
-    expect(addMoney(null, null)).toBeNull();
-    expect(addMoney("3.00", null)).toBe("3.00");
-    expect(addMoney(null, "4.10")).toBe("4.10");
+  it("adds and subtracts known amounts exactly (an unknown amount is never passed to these: the caller decides what it means)", () => {
     expect(addMoney("0.10", "0.20")).toBe("0.30");
+    expect(subtractMoney("13.35", "12.79")).toBe("0.56");
+    expect(subtractMoney("12.79", "13.35")).toBe("-0.56");
+    expect(isNegativeMoney("-0.56")).toBe(true);
+    expect(isNegativeMoney("0.00")).toBe(false);
+    expect(isNegativeMoney("-0.00")).toBe(false);
   });
 });
 
@@ -272,7 +314,8 @@ describe("weights, dimensions, dates and text", () => {
     expect(readPackageRef("")).toEqual({ ref: null });
     expect(readPackageRef("   ")).toEqual({ ref: null });
     for (const raw of ["9.40011E+21", "9.4e21", "1E+10", "x".repeat(121)]) expect(readPackageRef(raw), raw).toBe("invalid");
-    expect(readPackageRef("x".repeat(120))).toEqual({ ref: "x".repeat(120) });
+    // The reference is read in its canonical form (upper case, no whitespace or invisible characters), the one the database stores and compares.
+    expect(readPackageRef("x".repeat(120))).toEqual({ ref: "X".repeat(120) });
     // Digits and letters that merely contain an e are fine.
     expect(readPackageRef("1E2F3")).toEqual({ ref: "1E2F3" });
     expect(readPackageRef("12345678901234567890")).toEqual({ ref: "12345678901234567890" });
@@ -321,7 +364,8 @@ describe("history-sample.csv", () => {
     expect(parsed.kind).toBe("csv");
     expect(parsed.tables).toHaveLength(1);
     expect(parsed.tables[0]!.rows).toHaveLength(41);
-    expect(ADJUSTMENT_FILE_LIMITS).toMatchObject({ maxBytes: 5 * 1024 * 1024, maxRowsPerSheet: 20_001 });
+    // The shared parser bounds memory (rows of every kind, columns, cell length) and never cuts a sheet; the 20,000 DATA rows are counted by the importer, under the column names.
+    expect(ADJUSTMENT_FILE_LIMITS).toMatchObject({ maxBytes: 5 * 1024 * 1024, maxRowsPerSheet: 60_000, maxColumns: 200, maxCellLength: 10_000, refuseWideRows: true, maxNumericDigits: 15 });
   });
 
   it("detects every template column, the iso date format, and the services, causes and customers with their row counts", async () => {
@@ -347,7 +391,14 @@ describe("history-sample.csv", () => {
       "carrier reweigh": [21, "carrier_reweigh"], "carrier remeasure": [8, "carrier_remeasure"], "wms no weight": [4, "wms_no_weight"], "other": [3, "other"],
       "scale error": [2, "scale_error"], "packaging change": [2, "packaging_change"],
     });
-    expect(d.suggestion.brandMap).toEqual({ "beta beverages": ID.beta, "alpha apparel": ID.alpha, "gamma goods": null });
+    // The suggested mapping keeps only what applying it would not work out by itself: exact customer, carrier and cause matches are recomputed, so nothing is stored for them.
+    expect(d.suggestion.brandMap).toEqual({});
+    expect(d.suggestion.carrierMap).toEqual({});
+    // A service is the one thing no rule can recompute (it needs the catalog match the 3PL confirmed), so those entries stay.
+    expect(d.suggestion.serviceMap).toEqual({ "ups ground": ID.upsGround, "usps ground advantage": ID.uspsGa });
+    // (The cause column of this file spells the causes exactly, so nothing is stored for them either.)
+    expect(d.suggestion.causeMap).toEqual({});
+    expect(d.suggestion.typeMap).toEqual({});
   });
 
   it("validates to the hand-counted numbers of import-expected.json, row by row", async () => {
@@ -523,7 +574,8 @@ describe("history-errors.csv", () => {
     expect(report.byCode.merged_duplicate).toBe(e.merged);
     expect(report.byCode.ignored_duplicate).toBe(e.ignored);
     const nine = records.find((r) => r.packageRef === "1ZE0000009")!;
-    if (mode === "sum") expect([nine.originalCharge, nine.correctedCharge, nine.separateFee]).toEqual(["25.58", "26.70", "6.00"]);
+    // "sum" adds the repeat's DIFFERENCE (13.35 - 12.79 = 0.56) to the corrected charge; the original charge is not added to itself; fees are added.
+    if (mode === "sum") expect([nine.originalCharge, nine.correctedCharge, nine.separateFee]).toEqual(["12.79", "13.91", "6.00"]);
     else expect([nine.originalCharge, nine.correctedCharge, nine.separateFee]).toEqual(["12.79", "13.35", "3.00"]);
     // The repeat is never counted as an error row twice and never as accepted.
     expect(report.counts.accepted).toBe(2);
@@ -537,13 +589,14 @@ describe("history-errors.csv", () => {
     expect(applyAdjustmentMapping([t], base, ctx()).report).toMatchObject({ committable: false, byCode: expect.objectContaining({ duplicate_reference: 1 }) });
     const summed = applyAdjustmentMapping([t], { ...base, duplicateHandling: "sum" }, ctx());
     expect(summed.report.committable).toBe(true);
-    expect(summed.records.map((r) => [r.packageRef, r.originalCharge, r.correctedCharge, r.separateFee])).toEqual([["R1", "20.00", "22.00", null], ["R2", "10.00", "11.00", null]]);
+    // The repeat is a second adjustment of the same package: its difference (1.00) is added to the corrected charge; the original charge stays what it was.
+    expect(summed.records.map((r) => [r.packageRef, r.originalCharge, r.correctedCharge, r.separateFee])).toEqual([["R1", "10.00", "12.00", null], ["R2", "10.00", "11.00", null]]);
     const first = applyAdjustmentMapping([t], { ...base, duplicateHandling: "first" }, ctx());
     expect(first.records.map((r) => [r.packageRef, r.originalCharge])).toEqual([["R1", "10.00"], ["R2", "10.00"]]);
   });
 
   it("amounts added up by 'sum' that no longer fit the stored column make the first row an error row instead of failing at commit", () => {
-    const t = csvTable(["ship_date,carrier,adjustment_type,package_ref,customer_charge_corrected", "2026-08-03,UPS,reweight,R1,9000000000.00", "2026-08-03,UPS,reweight,R1,9000000000.00"].join("\n"));
+    const t = csvTable(["ship_date,carrier,adjustment_type,package_ref,customer_charge_original,customer_charge_corrected,customer_adjustment_fee", "2026-08-03,UPS,reweight,R1,1.00,9000000000.00,9000000000.00", "2026-08-03,UPS,reweight,R1,1.00,9000000000.00,1.00"].join("\n"));
     const base = detectAdjustmentFile([t], ctx()).suggestion;
     const { report, records } = applyAdjustmentMapping([t], { ...base, duplicateHandling: "sum" }, ctx());
     expect(report.byCode).toMatchObject({ invalid_amount: 1, merged_duplicate: 1 });
@@ -679,8 +732,11 @@ describe("mapping suggestion", () => {
     expect(serviceKeyOf(null, "Ground")).toBe("ground");
     const t = files(["ship_date", "carrier", "service", "brand", "adjustment_type"], ["2026-01-01", "United Parcel Service", "Ground", "alpha apparel", "Weight Adjustment"]);
     const d = detectAdjustmentFile([t], ctx());
-    expect(d.suggestion.carrierMap).toEqual({ "united parcel service": null });
-    expect(d.suggestion.brandMap).toEqual({ "alpha apparel": ID.alpha });
+    // What each text would be mapped to is listed for the person; the mapping itself keeps only what applying it cannot work out (a type written in words).
+    expect(d.distinct.carriers.map((c) => [c.normalized, c.suggested])).toEqual([["united parcel service", null]]);
+    expect(d.distinct.customers.map((c) => [c.normalized, c.suggested])).toEqual([["alpha apparel", ID.alpha]]);
+    expect(d.suggestion.carrierMap).toEqual({});
+    expect(d.suggestion.brandMap).toEqual({});
     expect(d.suggestion.typeMap).toEqual({ "weight adjustment": "reweight" });
     const { report, records } = applyAdjustmentMapping([t], d.suggestion, ctx());
     expect(report.byCode.unknown_carrier).toBe(1);
@@ -711,7 +767,9 @@ describe("mapping suggestion", () => {
       ["R1", "carrier_reweigh", "Carrier reweigh"], ["R2", "wms_no_weight", "WMS did not send weight"], ["R3", "scale_error", "Scale error at pack bench"],
       ["R4", "other", "Address and charge correction"], ["R5", "carrier_reweigh", "Carrier reweigh"],
     ]);
-    expect(report.byCode.cause_defaulted).toBe(0);
+    // The reason that matches no cause has no entry (the default cause is what applying the mapping does anyway), so it is counted as defaulted.
+    expect(report.byCode.cause_defaulted).toBe(1);
+    expect(report.rowNumbers.cause_defaulted).toEqual([4]);
     // The 3PL changes one entry of the map and the records follow it.
     const changed = applyAdjustmentMapping([t], { ...d.suggestion, causeMap: { ...d.suggestion.causeMap, "address and charge correction": "packaging_change" } }, ctx());
     expect(changed.records[3]!.cause).toBe("packaging_change");
@@ -751,7 +809,7 @@ describe("mapping re-validation", () => {
     const issues = validateMapping(manual, [flaggedTable], ctx());
     expect(issues.map((i) => i.code)).toContain("flagged_header_mapped");
     expect(issues.find((i) => i.code === "flagged_header_mapped")).toMatchObject({ field: "originalCharge" });
-    expect(issues.find((i) => i.code === "flagged_header_mapped")!.message).toBe('The column "Carrier Cost" cannot be used for a charge. It looks like carrier cost data.');
+    expect(issues.find((i) => i.code === "flagged_header_mapped")!.message).toBe('The column "Carrier Cost" cannot be used for a charge: its name looks like a carrier cost column. Rename it in your file if it is not one.');
     const result = applyAdjustmentMapping([flaggedTable], manual, ctx());
     expect(result.report.ok).toBe(false);
     expect(result.report.committable).toBe(false);
@@ -785,9 +843,12 @@ describe("mapping re-validation", () => {
     expect(validateMapping({ ...base, columns: { ...base.columns, adjustedOn: 9 } }, [t], ctx()).map((i) => i.code)).toContain("column_out_of_range");
     expect(validateMapping({ ...base, sheet: "Nope" }, [t], ctx())).toEqual([expect.objectContaining({ code: "sheet_missing" })]);
     expect(validateMapping({ ...base, headerRow: 5 }, [t], ctx())).toEqual([expect.objectContaining({ code: "header_row_invalid" })]);
-    // Moving the header row re-runs the guard over the new row.
+    // A mapping can only point at the row the importer reads as the column names: moving it to another row (whose cells would then be stored as column names) is refused.
     const moved: Table = { name: "Sheet1", rows: [["ship_date", "carrier", "adjustment_type"], ["Postage Cost", "x", "y"], ["2026-01-01", "UPS", "reweight"]], truncated: false };
-    expect(validateMapping({ ...base, headerRow: 1 }, [moved], ctx()).map((i) => i.code)).toContain("forbidden_header");
+    expect(validateMapping({ ...base, headerRow: 1 }, [moved], ctx())).toEqual([expect.objectContaining({ code: "header_row_invalid" })]);
+    expect(validateMapping({ ...base, headerRow: 2 }, [moved], ctx())).toEqual([expect.objectContaining({ code: "header_row_invalid" })]);
+    // And the guard reads that second block of text too (the file is refused before any mapping exists).
+    expect(guardTables([moved])).toMatchObject({ allowed: false, firstRefusedHeader: "Postage Cost" });
   });
 
   it("refuses customers, carriers and services in the mapping that are not in the account or catalog, and a mapping too large to store", () => {
@@ -798,14 +859,17 @@ describe("mapping re-validation", () => {
     expect(codes({ ...base, defaults: { ...base.defaults, brandId: "00000000-0000-4000-8000-000000000999" } })).toContain("unknown_customer_in_map");
     expect(codes({ ...base, carrierMap: { x: "dhl" } })).toContain("unknown_carrier_in_map");
     expect(codes({ ...base, serviceMap: { x: "00000000-0000-4000-8000-000000000999" } })).toContain("unknown_service_in_map");
-    const manyBrands = Array.from({ length: 150 }, (_, i) => ({ id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`, name: `Customer ${String(i).padStart(3, "0")}` }));
-    const rows = ["ship_date,carrier,brand,adjustment_type", ...manyBrands.map((b) => `2026-01-01,UPS,${b.name},reweight`)].join("\n");
-    const big = csvTable(rows);
-    const bigCtx = ctx({ brands: manyBrands });
-    const d = detectAdjustmentFile([big], bigCtx);
-    expect(validateMapping(d.suggestion, [big], bigCtx).map((i) => i.code)).toContain("mapping_too_large");
-    const stored = JSON.stringify(toStoredMapping(d.suggestion, big.rows[0]!));
-    expect(stored.length).toBeGreaterThan(MAPPING_MAX_BYTES);
+    // 150 customers the account does not have: the suggestion stores nothing for them (applying the mapping leaves them unassigned anyway) and fits.
+    const names = Array.from({ length: 150 }, (_, i) => `Customer ${String(i).padStart(3, "0")}`);
+    const big = csvTable(["ship_date,carrier,brand,adjustment_type", ...names.map((n) => `2026-01-01,UPS,${n},reweight`)].join("\n"));
+    const d = detectAdjustmentFile([big], ctx());
+    expect(validateMapping(d.suggestion, [big], ctx())).toEqual([]);
+    expect(Object.keys(d.suggestion.brandMap)).toEqual([]);
+    expect(JSON.stringify(toStoredMapping(d.suggestion, big.rows[0]!, ctx())).length).toBeLessThan(2500);
+    // The 3PL assigns every one of them to a customer by hand: that many entries cannot be stored in 8 KB.
+    const assigned = { ...d.suggestion, brandMap: Object.fromEntries(names.map((n) => [normalizeValue(n), ID.alpha])) };
+    expect(validateMapping(assigned, [big], ctx()).map((i) => i.code)).toContain("mapping_too_large");
+    expect(JSON.stringify(toStoredMapping(assigned, big.rows[0]!, ctx())).length).toBeGreaterThan(MAPPING_MAX_BYTES - 1500);
     // A typical mapping is far below the 8 KB the database allows.
     const small = detectAdjustmentFile([csvTable("ship_date,carrier,adjustment_type\n2026-01-01,UPS,reweight")], ctx());
     expect(JSON.stringify(toStoredMapping(small.suggestion, ["ship_date", "carrier", "adjustment_type"])).length).toBeLessThan(2500);
@@ -1047,7 +1111,10 @@ describe("hard rules", () => {
   it("detects the sheet that is asked for", () => {
     const a: Table = { name: "Notes", rows: [["read", "me", "first"], ["x", "y", "z"]], truncated: false };
     const b: Table = { name: "History", rows: [["ship_date", "carrier", "adjustment_type"], ["2026-01-01", "UPS", "reweight"]], truncated: false };
-    expect(detectAdjustmentFile([a, b], ctx()).suggestion.sheet).toBe("Notes");
+    // The first sheet that has column names we can find (a workbook may start with a notes sheet); the notes sheet is not recognised and cannot be mapped.
+    expect(detectAdjustmentFile([a, b], ctx()).suggestion.sheet).toBe("History");
+    expect(detectAdjustmentFile([a, b], ctx()).sheets.map((s) => s.recognised)).toEqual([false, true]);
+    expect(detectAdjustmentFile([a, b], ctx(), "Notes").notes.join(" ")).toMatch(/put the column names in row 1/i);
     const d = detectAdjustmentFile([a, b], ctx(), "History");
     expect(d.suggestion).toMatchObject({ sheet: "History", columns: expect.objectContaining({ shipDate: 0, carrier: 1, adjustmentType: 2 }) });
     expect(d.sheets.map((s) => s.name)).toEqual(["Notes", "History"]);

@@ -290,7 +290,7 @@ export function RuleForm({ versionId, rule, source, otherRules: siblingRules, on
           />
           <Text
             id={id("key")}
-            label="Key (staff only)"
+            label="Key"
             value={values.key}
             onChange={(key) => set({ key, keyTouched: true })}
             onBlur={() => touch("key")}
@@ -515,14 +515,14 @@ export function RuleForm({ versionId, rule, source, otherRules: siblingRules, on
           <div className="grid gap-4 sm:grid-cols-2">
             <Text
               id={id("driverKey")}
-              label="Question key (staff only)"
+              label="Question key"
               value={values.driverKey}
               onChange={changeDriverKey}
               onBlur={() => touch("driver.key")}
               error={err("driver.key")}
               list={id("driverKeys")}
               maxLength={61}
-              hint="Rules that give the same key ask the customer one question, answered once."
+              hint="Rules that give the same key ask the customer one question, answered once. Question keys can be read by your customers through the API, so do not put customer names or margins in them."
             />
             {values.basis === "driver" ? (
               <Pick<"monthly_quantity" | "returns_rate">
@@ -700,7 +700,17 @@ export function RuleForm({ versionId, rule, source, otherRules: siblingRules, on
               have different priorities.
             </p>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Text id={id("exclusiveGroup")} label="Group name (staff only)" value={values.exclusiveGroup} onChange={(exclusiveGroup) => set({ exclusiveGroup })} onBlur={() => touch("exclusiveGroup")} error={err("exclusiveGroup")} placeholder="e.g. packaging" maxLength={41} />
+              <Text
+                id={id("exclusiveGroup")}
+                label="Group name"
+                value={values.exclusiveGroup}
+                onChange={(exclusiveGroup) => set({ exclusiveGroup })}
+                onBlur={() => touch("exclusiveGroup")}
+                error={err("exclusiveGroup")}
+                placeholder="e.g. packaging"
+                maxLength={41}
+                hint="Group names can be read by your customers through the API, so do not put customer names or margins in them."
+              />
               <Text id={id("priority")} label="Priority (lowest number wins)" value={values.priority} onChange={(priority) => set({ priority })} onBlur={() => touch("priority")} error={err("priority")} inputMode="numeric" placeholder="e.g. 1" />
             </div>
           </div>

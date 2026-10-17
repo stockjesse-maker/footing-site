@@ -21,10 +21,18 @@ export const CUSTOMER_RULE_LABEL = "Your 3PL's approved pricing configuration";
 
 /**
  * What a customer may hold of an engine result: amounts, names, categories, statuses, classes and
- * plain-language explanations. Rule keys and versions, the 3PL's source notes, ids, the engine
- * version and the 3PL's exception references are removed on the server, so no client rendering
- * (and no stored copy a customer can read) can leak them. Verification state stays: it is what
- * makes a line an estimate rather than a definite charge, and the result already says so.
+ * plain-language explanations. The 3PL's source notes and ids, the engine version and the 3PL's
+ * exception references are removed on the server, so no client rendering can leak them (and the
+ * exception note itself lives in a staff-only table). Rule keys and versions are removed as well, but
+ * that is data minimisation, not the control that keeps them private: under decision D7 (Milestone 5)
+ * rule keys, rule and version ids and fee-dictionary names are classified as non-confidential
+ * identifiers that a customer can read through the API (the editors say so), so nothing here may
+ * depend on their staying hidden. What stays confidential is carried by other means: staff-only
+ * tables and no carrier cost anywhere. (The engine's warning messages keep the names of rules that
+ * were applied, which are what the customer reads in line labels; the load problem text, which names
+ * a rule that could NOT be applied, never reaches a customer: the calculator hands one fixed sentence.)
+ * Verification state stays: it is what makes a line an estimate rather than a definite charge, and
+ * the result already says so.
  */
 export function customerSafe(result: ShipmentCalculation): ShipmentCalculation {
   const safeRule = (rule: ShipmentCalculation["lines"][number]["rule"]) =>

@@ -141,7 +141,7 @@ export default async function FeeVersionPage({ params }: { params: Promise<{ sch
               What your customer will read
             </h2>
             <p className="mt-1 max-w-2xl text-sm text-muted">
-              This is how a customer on this schedule sees this version, generated from the rules above. They never see rule keys, staff notes or sources.
+              This is how a customer on this schedule sees this version, generated from the rules above. They never see staff notes or sources; rule keys can be read through the API.
               {version.effectiveDate ? ` In effect from ${formatDate(version.effectiveDate)}.` : ""}
             </p>
           </div>

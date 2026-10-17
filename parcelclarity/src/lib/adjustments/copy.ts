@@ -49,3 +49,22 @@ export const DUPLICATE_RULE_NOTE =
 /** The cap on one cell of a history file (characters) and the cap on a column name. Longer text is never read: the file is refused. */
 export const MAX_CELL_CHARS = 10_000;
 export const MAX_COLUMN_NAME_CHARS = 200;
+
+/**
+ * What a customer reads when a pricing rule of their 3PL could not be applied to a calculator quote (review finding F10). The engine's own
+ * message names the rule ("The surcharge rule "<name>" has an invalid condition ..."), and a rule's name is the 3PL's text: a customer gets this
+ * one sentence instead, and staff keep the full text. Shared by the calculator action and its form (a customer's browser never renders anything else).
+ */
+export const CUSTOMER_PRICING_ISSUE = "At least one surcharge rule could not be applied to this estimate.";
+
+/**
+ * Why a reweigh, remeasure or shipping charge correction rule cannot carry a billable weight floor, suppress other rules or depend on another rule
+ * (engine review finding F2). Such a rule is a conditional charge: it is shown beside a quote and never counted in it. If it could suppress a
+ * counted rule, raise a weight floor or switch a companion rule on, the quote would change with the fee, and so would the postage difference an
+ * adjustment example reports. The rule form shows these as hints and the action refuses with the same words.
+ */
+export const FEE_RULE_FLOOR_MESSAGE = "A reweigh, remeasure or correction fee cannot have a billable weight floor. It is shown beside a quote and never changes the weight the quote is priced on.";
+export const FEE_RULE_EXCLUDES_MESSAGE = "A reweigh, remeasure or correction fee cannot suppress other rules. It is shown beside a quote and never counted in it, so it must not remove a charge that is counted.";
+export const FEE_RULE_COMPANION_MESSAGE = 'A reweigh, remeasure or correction fee cannot depend on another rule being applied. Remove the "another rule applied to the package" condition.';
+export const RULE_DEPENDS_ON_FEE_MESSAGE =
+  'This rule depends on a reweigh, remeasure or correction fee being applied ("another rule applied to the package"). Those fees are never counted in a quote, so a rule that depends on one cannot be counted. Remove that condition.';

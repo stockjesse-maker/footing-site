@@ -124,7 +124,9 @@ function addDays(iso: string, days: number): string {
 
 /** A date cell as written, or null for a blank one, or "invalid". Reuses the orders importer's reader (no time-zone shifting). */
 export function readDateCell(raw: string, format: "iso" | "mdy" | "dmy"): string | null | "invalid" {
-  return parseOrderDate(raw, format);
+  const t = raw.trim();
+  if (t.length > MAX_VALUE_CELL_CHARS) return "invalid";
+  return parseOrderDate(t, format);
 }
 
 /** The database refuses ship dates before 2015 and after tomorrow (tomorrow is allowed for time zones). */
@@ -136,6 +138,7 @@ export function shipDateInRange(iso: string, today: string): boolean {
 export function detectDateFormat(cells: string[]): { format: "iso" | "mdy" | "dmy"; ambiguous: boolean } {
   let sawNumeric = false;
   for (const raw of cells) {
+    if (raw.length > MAX_VALUE_CELL_CHARS) continue;
     const c = classifyDateCell(raw);
     if (!c || c.kind === "iso") continue;
     sawNumeric = true;

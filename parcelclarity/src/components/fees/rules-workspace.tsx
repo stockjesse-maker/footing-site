@@ -144,7 +144,7 @@ export function RulesWorkspace({ versionId, editable, draft = editable, rules, s
                   {rule.description ? <p className="text-sm text-muted">{rule.description}</p> : null}
                   {rule.driver && (rule.basis === "driver" || rule.basis === "order_driver") ? <p className="text-sm text-muted">Asks the customer: {rule.driver.label}</p> : null}
                   <p className="text-xs text-muted">
-                    Key (staff only): <span className="tabular">{rule.key}</span>
+                    Key: <span className="tabular">{rule.key}</span>
                   </p>
                   {rule.id && sources[rule.id] ? <p className="text-xs text-muted">Source (staff only): {sources[rule.id]}</p> : null}
                 </div>

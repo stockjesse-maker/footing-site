@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardDescription, CardTitle } from "@/components/ui/card";
 import { Field, Input, Select } from "@/components/ui/field";
 import type { ShipmentCalculation, SignatureOption, WeightUnit } from "@/engine/types";
+import { CUSTOMER_PRICING_ISSUE } from "@/lib/adjustments/copy";
 import { formatDate } from "@/lib/format/date";
 import {
   PACKAGING_OTHER,
@@ -263,6 +264,25 @@ const boxFieldId = (idPrefix: string, field: BoxFieldRef): string => (field.star
  * The block that feeds the order fees: items, different products, packaging and the per-order counts the
  * fee schedule in effect on the ship date asks for. Fields the schedule does not need are not shown.
  */
+/**
+ * The warning above a quote when the 3PL's pricing rules could not all be applied. A customer reads one fixed sentence (the engine's own text names
+ * the 3PL's rule, which is the 3PL's text), whatever the server sent; staff read the text so they can fix the rule.
+ */
+export function CalculatorIssues({ audience, issues }: { audience: ResultAudience; issues: string[] }) {
+  if (!issues.length) return null;
+  return (
+    <Alert tone="warning">
+      <p className="font-medium">Some surcharge rules could not be applied</p>
+      <ul className="mt-1 list-disc pl-5">
+        {(audience === "staff" ? issues : [CUSTOMER_PRICING_ISSUE]).map((issue) => (
+          <li key={issue}>{issue}</li>
+        ))}
+      </ul>
+      <p className="mt-1">{audience === "staff" ? "The quote below omits them; fix the rules before relying on it." : "The estimate below omits them; ask your 3PL before relying on it."}</p>
+    </Alert>
+  );
+}
+
 export function BoxBlock({
   idPrefix,
   options,
@@ -880,17 +900,7 @@ export function CalculatorForm({ cards, initialRateCardId, initialVersionId, all
               {run.fees.status === "load_failed" ? "Order fees could not be calculated right now. The shipping price is unaffected; try again in a moment." : "No fee schedule in effect on this date, so no order fees are included."}
             </Alert>
           ) : null}
-          {run.issues.length ? (
-            <Alert tone="warning">
-              <p className="font-medium">Some surcharge rules could not be applied</p>
-              <ul className="mt-1 list-disc pl-5">
-                {run.issues.map((issue) => (
-                  <li key={issue}>{issue}</li>
-                ))}
-              </ul>
-              <p className="mt-1">{audience === "staff" ? "The quote below omits them; fix the rules before relying on it." : "The estimate below omits them; ask your 3PL before relying on it."}</p>
-            </Alert>
-          ) : null}
+          <CalculatorIssues audience={audience} issues={run.issues} />
           {run.results.length === 1 && run.results[0] ? (
             <CalculationResult result={run.results[0]} audience={audience} cardName={run.cardName} effectiveDate={run.effectiveDate} fees={feesByService?.[0] ?? null} onAddFeeInput={focusBoxField} />
           ) : (

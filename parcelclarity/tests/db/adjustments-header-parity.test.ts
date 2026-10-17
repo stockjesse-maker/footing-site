@@ -2,28 +2,33 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ADJUSTMENT_TEMPLATE_HEADERS, guardHeader, normalizeGuardHeader } from "@/lib/adjustments/header-guard";
+import { canonicalPackageRef } from "@/lib/adjustments/cells";
+import { ADJUSTMENT_TEMPLATE_HEADERS, guardHeader, isAutoMappableMoneyHeader, normalizeGuardHeader } from "@/lib/adjustments/header-guard";
+import { CONFUSABLE_CHARACTERS, foldHeader } from "@/lib/adjustments/header-text";
 import { buildDetected, detectAdjustmentFile, toStoredMapping } from "@/lib/adjustments/mapping";
 import { parseAdjustmentFile } from "@/lib/adjustments/parse";
 import { buildAppendChunks, reconcileCommit, type AppendResult } from "@/lib/adjustments/payload";
 import type { AdjustmentContext } from "@/lib/adjustments/types";
-import { applyAdjustmentMapping, toStoredValidation } from "@/lib/adjustments/validate";
+import { adjustmentRecordKey, applyAdjustmentMapping, toStoredValidation } from "@/lib/adjustments/validate";
 import { asUser, sql } from "./harness";
 import { buildWorld, type World } from "./world";
 
 /**
- * Header guard parity (Milestone 5, amendment A4). The TypeScript guard (src/lib/adjustments/header-guard.ts) runs before a file is
- * stored; the SQL function app.adjustment_header_forbidden is the backstop that create_adjustment_import and
- * set_adjustment_import_mapping apply to the stored header names. They must agree where it matters:
+ * Header guard and package reference parity (Milestone 5, amendment A4, review findings F4 and F12). The TypeScript guard
+ * (src/lib/adjustments/header-guard.ts) runs before a file is stored; the SQL function app.adjustment_header_forbidden is the backstop that
+ * create_adjustment_import, set_adjustment_import_mapping and the upload trigger apply to the stored header names. They must agree where it matters:
  *   * the backstop never refuses a header the TypeScript guard accepts (so a file that passed the guard is never refused after
  *     it was stored, and no accepted template header is refused);
- *   * the backstop refuses every header the TypeScript guard refuses, EXCEPT a pinned list where it is deliberately looser
- *     (it is a regex over whole words: "Carrier Name" has the word carrier but no money word; the TypeScript guard also splits
- *     camelCase, refuses some plurals and unseparated long stems). Each difference is pinned below so drift on either side fails.
+ *   * the backstop refuses every header the table refuses, EXCEPT a pinned list where it is deliberately looser ("Carrier Name" has the
+ *     word carrier but no amount word: the TypeScript guard asks for a rename, the backstop only has to catch what the guard would have
+ *     caught). Each difference is pinned below so drift on either side fails.
+ *   * the TypeScript fold and normalisation (src/lib/adjustments/header-text.ts) give the database's answers, character by character;
+ *   * the TypeScript canonical package reference is app.canon_package_ref.
  */
 
-interface GuardCase { header: string; guard: "pass" | "refuse"; autoMapsToMoney: boolean }
+interface GuardCase { header: string; guard: "pass" | "refuse"; autoMapsToMoney: boolean; group?: string }
 const table = JSON.parse(readFileSync(path.resolve(__dirname, "../fixtures/adjustments/header-guard.json"), "utf8")) as { templateHeaders: string[]; cases: GuardCase[] };
+const refs = JSON.parse(readFileSync(path.resolve(__dirname, "../fixtures/adjustments/package-refs.json"), "utf8")) as { cases: { input: string; canonical: string | null; note: string }[] };
 
 async function sqlRefuses(headers: string[]): Promise<Map<string, boolean>> {
   const rows = await sql<{ h: string; r: boolean }>("select h, app.adjustment_header_forbidden(h) as r from unnest($1::text[]) as h", [headers]);
@@ -32,55 +37,66 @@ async function sqlRefuses(headers: string[]): Promise<Map<string, boolean>> {
 
 const tsRefuses = (h: string) => !guardHeader(h).allowed;
 
-/** Headers the TypeScript guard refuses beyond the fixture table: camelCase, plurals, unseparated long stems, "invoiced". */
+/** Headers the TypeScript guard refuses beyond the fixture table: camelCase, plurals, unseparated long stems, "invoiced", a carrier's brand beside an amount word. */
 const PROBES = [
   "CarrierCost", "PostageCost", "UPSCost", "BuyRate", "WholesalePrice", "NegotiatedRate", "NegotiatedRate2", "postagecost", "invoicenumber",
   "Costs", "Rates", "Labels", "Nets", "Buys", "Invoices", "Postages", "Carriers", "Invoiced", "invoiced_amount", "Carrier", "carrier", "CARRIER",
   "Carrier Name", "Carrier Service", "carrier_code", "Carrier ID", "Carrier Charge to Customer", "Carrier Adjustment", "carrier.fee",
   "Customer Charge", "Charged to Customer", "Billed to Customer", "Customer Adjustment Fee", "Corrected Weight (lb)", "Tracking", "Service Level", "Reweigh Reason",
   "Separate Fee Note", "Generated On", "Internet Order", "Buyer Name", "Costume", "Ratey", "", "   ", "Ship Date", "ship date", "SHIP_DATE",
+  "UPS Charge", "UPS Service Fee", "ups2 fee", "FedEx Billed", "Fed Ex Total", "On Trac Price", "Laser Ship Amount", "DHL Amount to Customer", "USPS Charged to Customer Amount", "UPS Service Fee", "UPS Ground", "Billed To Account", "Charged To Account",
+  "Amount Billed To Account", "Ship Date\ufffd", "R\u00e9f\u00e9rence", "Gr\u00f6\u00dfe", "\u4e1c\u4eac", "ship_date\u0301", "Cost\u0301", "S\u200bhip D\u200bate",
 ];
 
+const VOCABULARY = ["ship", "date", "carrier", "service", "customer", "brand", "charge", "charged", "to", "billed", "fee", "adjustment", "amount", "total", "price", "original", "corrected", "weight", "net", "gross",
+  "cost", "rate", "postage", "label", "wholesale", "negotiated", "paid", "invoice", "invoiced", "buy", "buyer", "tracking", "number", "ref", "reason", "cause", "notes", "sku", "order", "zip", "separate", "internet", "unit",
+  "ups", "usps", "fedex", "dhl", "ontrac", "lasership", "fed", "ex", "on", "trac", "laser", "ship"];
+const ZERO_WIDTH = ["\u200b", "\u200d", "\u00ad", "\u2060", "\ufeff", "\u200e"];
+const CYRILLIC: Record<string, string> = { a: "\u0430", c: "\u0441", e: "\u0435", o: "\u043e", p: "\u0440", x: "\u0445", y: "\u0443" };
+
+/** Seeded header-like texts: words in a few shapes, sometimes with an invisible character, fullwidth letters or a Cyrillic look-alike in them. */
+function seededHeaders(count: number, seed0 = 20261016): string[] {
+  let seed = seed0;
+  const next = (n: number) => (seed = (seed * 1664525 + 1013904223) % 4294967296) % n;
+  const separators = [" ", "_", "-", ".", "  ", " / "];
+  return Array.from({ length: count }, () => {
+    const words = Array.from({ length: 1 + next(4) }, () => VOCABULARY[next(VOCABULARY.length)]!);
+    let text = words.join(separators[next(separators.length)]!);
+    if (next(3) === 0) text = text.toUpperCase();
+    else if (next(3) === 0) text = text.replace(/(^|[ _.-])([a-z])/g, (_m, a: string, b: string) => a + b.toUpperCase());
+    if (next(4) === 0) {
+      const at = next(text.length + 1);
+      text = text.slice(0, at) + ZERO_WIDTH[next(ZERO_WIDTH.length)]! + text.slice(at);
+    }
+    if (next(8) === 0) text = [...text].map((c) => (c >= "!" && c <= "~" ? String.fromCodePoint(c.charCodeAt(0) + 0xfee0) : c)).join("");
+    else if (next(8) === 0) text = [...text].map((c) => CYRILLIC[c] ?? c).join("");
+    return text;
+  });
+}
+
 describe("the SQL backstop against the TypeScript header guard", () => {
-  it("never refuses a header the TypeScript guard accepts: the 71 fixture headers, the probe list and 600 seeded combinations", async () => {
-    const vocabulary = ["ship", "date", "carrier", "service", "customer", "brand", "charge", "charged", "to", "billed", "fee", "adjustment", "amount", "total", "price", "original", "corrected", "weight", "net", "gross",
-      "cost", "rate", "postage", "label", "wholesale", "negotiated", "paid", "invoice", "invoiced", "buy", "buyer", "tracking", "number", "ref", "reason", "cause", "notes", "sku", "order", "zip", "separate", "internet", "unit"];
-    let seed = 20261016;
-    const next = (n: number) => (seed = (seed * 1664525 + 1013904223) % 4294967296) % n;
-    const separators = [" ", "_", "-", ".", "  ", " / "];
-    const random = Array.from({ length: 600 }, () => {
-      const words = Array.from({ length: 1 + next(4) }, () => vocabulary[next(vocabulary.length)]!);
-      const sep = separators[next(separators.length)]!;
-      const text = words.join(sep);
-      return next(3) === 0 ? text.toUpperCase() : next(3) === 0 ? text.replace(/(^|[ _.-])([a-z])/g, (_m, a: string, b: string) => a + b.toUpperCase()) : text;
-    });
-    const all = [...new Set([...table.cases.map((c) => c.header), ...PROBES, ...random])];
+  it("never refuses a header the TypeScript guard accepts: the 138 fixture headers, the probe list and 1,200 seeded texts with invisible, fullwidth and look-alike characters", async () => {
+    const all = [...new Set([...table.cases.map((c) => c.header), ...PROBES, ...seededHeaders(1200)])];
     const sqlSays = await sqlRefuses(all);
     const sqlOnly = all.filter((h) => sqlSays.get(h) === true && !tsRefuses(h));
     expect(sqlOnly, `refused by SQL but accepted by the TypeScript guard: ${JSON.stringify(sqlOnly)}`).toEqual([]);
   });
 
-  it("every one of the 71 fixture headers: the SQL backstop refuses everything the TypeScript guard refuses, except the one pinned looser case", async () => {
-    expect(table.cases).toHaveLength(71);
+  it("every one of the 138 fixture headers: the TypeScript guard and its auto-map rule match the table; the SQL backstop refuses everything the table refuses except the pinned looser cases, and accepts everything it accepts", async () => {
+    expect(table.cases).toHaveLength(138);
+    // The TypeScript guard agrees with the hand-derived table on every header.
+    expect(table.cases.filter((c) => tsRefuses(c.header) !== (c.guard === "refuse")).map((c) => c.header)).toEqual([]);
+    expect(table.cases.filter((c) => isAutoMappableMoneyHeader(c.header) !== c.autoMapsToMoney).map((c) => c.header)).toEqual([]);
     const sqlSays = await sqlRefuses(table.cases.map((c) => c.header));
-    const tsRefused = table.cases.filter((c) => tsRefuses(c.header)).map((c) => c.header);
-    expect(tsRefused).toHaveLength(26);
-    // The TypeScript guard agrees with the fixture on all 71 (the unit test pins the table; this keeps the two layers on the same footing).
-    expect(table.cases.filter((c) => tsRefuses(c.header) !== (c.guard === "refuse"))).toEqual([]);
-    const looser = tsRefused.filter((h) => sqlSays.get(h) === false);
-    expect(looser).toEqual(["Carrier Name"]);
-    // Why: the backstop refuses "carrier" only beside a money word, and "Carrier Name" has none.
-    for (const h of looser) {
-      const words = normalizeGuardHeader(h).split(" ");
-      expect(words).toContain("carrier");
-      expect(words.some((w) => ["charge", "charges", "cost", "bill", "billed", "billing", "fee", "fees", "adjustment", "adjustments", "amount", "invoice", "rate", "rates"].includes(w))).toBe(false);
-    }
-    // And the SQL side refuses the other 25 for the same stems.
-    expect(tsRefused.filter((h) => sqlSays.get(h) === true)).toHaveLength(25);
-    // Headers the TypeScript guard accepts are accepted by the backstop too (45 of them).
-    const accepted = table.cases.filter((c) => c.guard === "pass").map((c) => c.header);
-    expect(accepted).toHaveLength(45);
-    expect(accepted.filter((h) => sqlSays.get(h) === true)).toEqual([]);
+    const refused = table.cases.filter((c) => c.guard === "refuse");
+    expect(refused).toHaveLength(73);
+    // The SQL side refuses all but "Carrier Name" (the word carrier with no amount word: the TypeScript guard asks for a rename, the backstop has to catch only what the guard would have caught).
+    expect(refused.filter((c) => sqlSays.get(c.header) === false).map((c) => c.header)).toEqual(["Carrier Name"]);
+    const accepted = table.cases.filter((c) => c.guard === "pass");
+    expect(accepted).toHaveLength(65);
+    expect(accepted.filter((c) => sqlSays.get(c.header) === true).map((c) => c.header)).toEqual([]);
+    // The 67 hostile headers: every refusal in the table is a refusal in SQL too.
+    expect(table.cases.filter((c) => c.group === "hostile" && c.guard === "refuse" && sqlSays.get(c.header) === false)).toEqual([]);
   });
 
   it("accepts every template header, so the mapping and detected headers of a template file are never refused after they were stored", async () => {
@@ -94,24 +110,75 @@ describe("the SQL backstop against the TypeScript header guard", () => {
     const sqlSays = await sqlRefuses(PROBES);
     const tsOnly = PROBES.filter((h) => tsRefuses(h) && sqlSays.get(h) === false).sort();
     const sqlOnly = PROBES.filter((h) => !tsRefuses(h) && sqlSays.get(h) === true);
-    // The backstop is looser: the word "carrier" with no money word, camelCase and unseparated words, and a few plurals it does not list.
-    expect(tsOnly).toEqual([
-      "Buys", "BuyRate", "Carrier Charge to Customer", "Carrier ID", "Carrier Name", "Carrier Service", "CarrierCost", "Carriers", "Invoices", "Nets", "NegotiatedRate", "NegotiatedRate2", "Postages", "PostageCost", "UPSCost",
-      "WholesalePrice", "carrier_code", "invoicenumber", "postagecost",
-    ].sort());
+    // The backstop is looser only where the TypeScript guard asks the 3PL to rename a column (the word "carrier" with no amount word) and for the
+    // replacement character after a template header (the guard refuses it as "not saved as UTF-8"; SQL reads "Ship Date" and passes it, which is the safe direction).
+    expect(tsOnly).toEqual(["Carrier Charge to Customer", "Carrier ID", "Carrier Name", "Carrier Service", "Carriers", "carrier_code", "Ship Date\ufffd"].sort());
     expect(sqlOnly).toEqual([]);
     // Both agree on these.
-    for (const h of ["Carrier", "carrier", "CARRIER", "Customer Charge", "Charged to Customer", "Billed to Customer", "Customer Adjustment Fee", "Corrected Weight (lb)", "Tracking", "Service Level", "Reweigh Reason", "Separate Fee Note", "Generated On", "Internet Order", "Buyer Name", "Costume", "Ratey", "", "   ", "Ship Date", "ship date", "SHIP_DATE"]) {
+    for (const h of ["Carrier", "carrier", "CARRIER", "Customer Charge", "Charged to Customer", "Billed to Customer", "Customer Adjustment Fee", "Corrected Weight (lb)", "Tracking", "Service Level", "Reweigh Reason", "Separate Fee Note", "Generated On", "Internet Order", "Buyer Name", "Costume", "Ratey", "", "   ", "Ship Date", "ship date", "SHIP_DATE",
+      "UPS Ground", "Billed To Account", "Charged To Account", "Amount Billed To Account", "R\u00e9f\u00e9rence", "S\u200bhip D\u200bate"]) {
       expect(sqlSays.get(h), `SQL accepts ${JSON.stringify(h)}`).toBe(false);
       expect(tsRefuses(h), `TS accepts ${JSON.stringify(h)}`).toBe(false);
     }
-    for (const h of ["Costs", "Rates", "Labels", "Invoiced", "invoiced_amount", "Carrier Adjustment", "carrier.fee"]) {
+    for (const h of ["Costs", "Rates", "Labels", "Invoiced", "invoiced_amount", "Carrier Adjustment", "carrier.fee", "UPS Charge", "UPS Service Fee", "ups2 fee", "FedEx Billed", "Fed Ex Total", "On Trac Price", "Laser Ship Amount", "Gr\u00f6\u00dfe", "\u4e1c\u4eac", "Cost\u0301", "CarrierCost", "BuyRate", "postagecost"]) {
       expect(sqlSays.get(h), `SQL refuses ${JSON.stringify(h)}`).toBe(true);
       expect(tsRefuses(h), `TS refuses ${JSON.stringify(h)}`).toBe(true);
     }
     // "Carrier Charge to Customer" is the customer's own charge, so the backstop accepts it; the strict word list refuses it and the 3PL renames the column.
     expect(sqlSays.get("Carrier Charge to Customer")).toBe(false);
     expect(tsRefuses("Carrier Charge to Customer")).toBe(true);
+    // A carrier's brand beside an amount word is refused unless the header says it is the customer's.
+    expect(sqlSays.get("DHL Amount to Customer")).toBe(false);
+    expect(tsRefuses("DHL Amount to Customer")).toBe(false);
+  });
+});
+
+describe("the TypeScript fold and normalisation are the database's", () => {
+  it("fold and norm agree on every character of the confusable table, the 138 fixture headers and the seeded texts", async () => {
+    const samples = [...new Set([...CONFUSABLE_CHARACTERS, ...table.cases.map((c) => c.header), ...PROBES, ...seededHeaders(600, 7)])];
+    const rows = await sql<{ h: string; f: string; n: string }>("select h, app.adjustment_header_fold(h) as f, app.adjustment_header_norm(h) as n from unnest($1::text[]) as h", [samples]);
+    const wrong = rows.filter((r) => foldHeader(r.h) !== r.f || normalizeGuardHeader(r.h) !== r.n).map((r) => ({ h: r.h, ts: [foldHeader(r.h), normalizeGuardHeader(r.h)], sql: [r.f, r.n] }));
+    expect(wrong).toEqual([]);
+    expect(CONFUSABLE_CHARACTERS).toHaveLength(88);
+  });
+
+  it("fold agrees on every code point from U+0020 to U+2FFFF that PostgreSQL's and Node's Unicode tables both know: all of the BMP, and the astral planes but for characters one table is too old to know (a sweep of about 195,000 characters)", async () => {
+    const rows = await sql<{ i: number; f: string }>(
+      "select i, app.adjustment_header_fold(chr(i)) as f from generate_series(32, 196607) as i where not (i between 55296 and 57343) and i <> 65533 order by i",
+    );
+    expect(rows.length).toBeGreaterThan(190_000);
+    const mismatches = rows.filter((r) => foldHeader(String.fromCodePoint(r.i)) !== r.f).map((r) => `U+${r.i.toString(16).toUpperCase()}`);
+    // Two Unicode versions may disagree about a character one of them added after the other's tables were cut (Unicode 16 letters and "outlined" Latin
+    // letters and digits above U+10000 that Node decomposes and PostgreSQL 16 does not): nothing in the Basic Multilingual Plane may differ, and in SQL
+    // a character it does not decompose is a non-ASCII letter that the residual rule refuses, so such a header is refused there (the safe direction).
+    expect(mismatches.filter((m) => Number.parseInt(m.slice(2), 16) < 0x10000), "BMP").toEqual([]);
+    expect(mismatches.length, `first mismatches: ${mismatches.slice(0, 20).join(" ")}`).toBeLessThanOrEqual(80);
+  }, 120_000);
+});
+
+describe("package reference canonical form: the TypeScript twin is app.canon_package_ref", () => {
+  it("answers every hand-derived pair of package-refs.json in TypeScript and in SQL alike", async () => {
+    const inputs = refs.cases.map((c) => c.input);
+    const sqlOut = (await sql<{ c: string | null }>("select app.canon_package_ref(t.v) as c from unnest($1::text[]) with ordinality as t(v, n) order by t.n", [inputs])).map((r) => r.c);
+    expect(refs.cases.filter((c) => canonicalPackageRef(c.input) !== c.canonical).map((c) => `${JSON.stringify(c.input)}: ${c.note}`)).toEqual([]);
+    expect(sqlOut).toEqual(refs.cases.map((c) => c.canonical));
+  });
+
+  it("agrees with the database on 3,000 seeded texts (whitespace, invisible characters, fullwidth letters, ligatures, case, the replacement character)", async () => {
+    let seed = 99;
+    const next = (n: number) => (seed = (seed * 1664525 + 1013904223) % 4294967296) % n;
+    const pool = ["1Z", "ab", "AB", "\u00e9", "\u00c0", "\uff21", "\uff11", "\ufb01", "\u2460", " ", "\t", "\n", "\u00a0", "\u3000", "\u2028", "\u0085", "\u200b", "\u00ad", "\ufeff", "\u202e", "-", "_", ".", "/", "9400", "x", "\ufffd", "\u1680", "\u180e", "\u2060", "\u{e0020}", "\u0663", "\u00df", "\u0130", "\u212a"];
+    const inputs = Array.from({ length: 3000 }, () => Array.from({ length: 1 + next(8) }, () => pool[next(pool.length)]!).join(""));
+    const sqlOut = (await sql<{ c: string | null }>("select app.canon_package_ref(t.v) as c from unnest($1::text[]) with ordinality as t(v, n) order by t.n", [inputs])).map((r) => r.c);
+    const wrong = inputs.map((input, i) => ({ input, ts: canonicalPackageRef(input), sql: sqlOut[i] })).filter((r) => r.ts !== r.sql);
+    expect(wrong).toEqual([]);
+  });
+
+  it("the record key uses it: spellings of one package are one key, so the duplicate check, 'already imported' and the unique index agree", () => {
+    const k = (ref: string) => adjustmentRecordKey("b", "ups", ref, "reweight");
+    expect(new Set(["1Z0001AB", "1z0001ab", "1Z0001 AB", "1Z0001AB\u200b", " 1z 0001 ab "].map(k)).size).toBe(1);
+    expect(k("1Z0001AB")).not.toBe(adjustmentRecordKey("b", "usps", "1Z0001AB", "reweight"));
+    expect(k("1Z0001AB")).not.toBe(adjustmentRecordKey("c", "ups", "1Z0001AB", "reweight"));
   });
 });
 
@@ -198,7 +265,9 @@ describe("what the TypeScript import pipeline sends, the database accepts", () =
     expect(byRef("1Z9A000008")).toMatchObject({ original_charge: "21.44", corrected_charge: "24.44", separate_fee: "3.00", postage_difference: "3.00" });
     // What the import stored in `detected` and `mapping` holds no value from an unmapped column and no flagged header.
     const [imp] = await sql<{ detected: { headers: string[]; sampleRows: Record<string, string>[] }; mapping: { fields: Record<string, string> } }>("select detected, mapping from public.adjustment_imports where id = $1", [out.importId]);
-    expect(imp!.detected.sampleRows.length).toBeLessThanOrEqual(20);
+    // At commit the database removes the sample rows (values from the file) and keeps the column names.
+    expect(imp!.detected.sampleRows).toBeUndefined();
+    expect(imp!.detected.headers).toHaveLength(23);
     expect(Object.keys(imp!.mapping.fields)).toHaveLength(23);
   });
 

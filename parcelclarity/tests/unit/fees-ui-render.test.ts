@@ -91,7 +91,12 @@ describe("rule editor renders", () => {
     expect(t).toContain("Rule keys can be read by your customers through the API, so do not put customer names or margins in them.");
     expect(t).not.toContain("Customers never see it. It cannot change");
     // Labelled controls the e2e suite relies on.
-    for (const label of ["Name", "Category", "Key (staff only)", "Charged", "Charged per", "Pricing", "Description (optional)", "Where this number comes from (optional)"]) expect(t, label).toContain(label);
+    for (const label of ["Name", "Category", "Key", "Charged", "Charged per", "Pricing", "Description (optional)", "Where this number comes from (optional)"]) expect(t, label).toContain(label);
+    // The key is not private (decision D7): the labels do not say it is staff only (the source note really is).
+    expect(html).toMatch(/<label[^>]*>Key<\/label>/);
+    expect(t).not.toContain("Key (staff only)");
+    expect(t).not.toContain("Question key (staff only)");
+    expect(t).not.toContain("Group name (staff only)");
     expect(html).toContain(">Save rule<");
     expect(html).toContain(">Cancel<");
   });
@@ -111,7 +116,8 @@ describe("rules list renders", () => {
     // The first rule cannot move up, the last cannot move down.
     expect(html).toMatch(/<button[^>]*\sdisabled=""[^>]*aria-label="Move up: Pick &amp; pack, per order"|<button[^>]*aria-label="Move up: Pick &amp; pack, per order"[^>]*\sdisabled=""/);
     expect(t).toContain("Source (staff only): Pricing sheet, May");
-    expect(t).toContain("Key (staff only):");
+    expect(t).toContain("Key: ");
+    expect(t).not.toContain("Key (staff only)");
   });
 
   it("tags each move button with its rule so keyboard focus can return to it after the list re-renders", () => {

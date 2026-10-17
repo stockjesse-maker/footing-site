@@ -3,8 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
-import { ADJUSTMENT_FEE_CLASS_MESSAGE, SURCHARGE_CATEGORIES, isAdjustmentFeeCategory } from "@/engine/types";
+import { referencedRuleKeys, referencesRule } from "@/engine/surcharges";
+import { ADJUSTMENT_FEE_CATEGORIES, ADJUSTMENT_FEE_CLASS_MESSAGE, SURCHARGE_CATEGORIES, isAdjustmentFeeCategory, type RuleCondition } from "@/engine/types";
 import { calculationBaseSchema, ruleConditionSchema } from "@/engine/validate";
+import { FEE_RULE_COMPANION_MESSAGE, FEE_RULE_EXCLUDES_MESSAGE, FEE_RULE_FLOOR_MESSAGE, RULE_DEPENDS_ON_FEE_MESSAGE } from "@/lib/adjustments/copy";
 import type { ActionState } from "@/lib/actions";
 import { fieldErrors, nameSchema, uuidSchema } from "@/lib/auth/validation";
 import { requireTenantContext } from "@/lib/auth/session";
@@ -51,8 +53,27 @@ const ruleVersionFields = z
     if (v.method === "per_unit" && (v.amount === null || v.perUnitSize === null)) ctx.addIssue({ code: "custom", path: ["amount"], message: "Enter the amount per unit and the unit size." });
     if (v.expirationDate && v.expirationDate < v.effectiveDate) ctx.addIssue({ code: "custom", path: ["expirationDate"], message: "Expiration must not precede the effective date." });
     // A correction the carrier applies after shipping can never be a counted charge (the database trigger refuses it too, with 23514).
-    if (isAdjustmentFeeCategory(v.category) && v.chargeClass !== "conditional") ctx.addIssue({ code: "custom", path: ["chargeClass"], message: ADJUSTMENT_FEE_CLASS_MESSAGE });
+    if (isAdjustmentFeeCategory(v.category)) {
+      if (v.chargeClass !== "conditional") ctx.addIssue({ code: "custom", path: ["chargeClass"], message: ADJUSTMENT_FEE_CLASS_MESSAGE });
+      // Nor can it change what is counted: no suppressed rules, no weight floor, no dependency on another rule (they would move the quote with the fee).
+      if (v.excludesRuleKeys.length) ctx.addIssue({ code: "custom", path: ["excludesRuleKeys"], message: FEE_RULE_EXCLUDES_MESSAGE });
+      if (v.billableWeightFloorLb !== null && Number(v.billableWeightFloorLb) > 0) ctx.addIssue({ code: "custom", path: ["billableWeightFloorLb"], message: FEE_RULE_FLOOR_MESSAGE });
+      if (v.conditions.some(referencesRule)) ctx.addIssue({ code: "custom", path: ["conditions"], message: FEE_RULE_COMPANION_MESSAGE });
+    }
   });
+
+/**
+ * True when a condition of a rule that is NOT an adjustment fee refers (`rule_applied`) to a rule that is one. The referenced rule is never counted,
+ * so a rule that depends on it would be counted only when an uncounted charge applies. The keys are looked up among the rules this session can read
+ * (the platform's and the workspace's own).
+ */
+async function dependsOnFeeRule(supabase: Awaited<ReturnType<typeof createClient>>, category: string, conditions: RuleCondition[]): Promise<boolean> {
+  if (isAdjustmentFeeCategory(category)) return false;
+  const keys = [...new Set(conditions.flatMap(referencedRuleKeys))];
+  if (!keys.length) return false;
+  const { data } = await supabase.from("surcharge_rules").select("rule_key").in("rule_key", keys).in("category", [...ADJUSTMENT_FEE_CATEGORIES]).limit(1);
+  return (data ?? []).length > 0;
+}
 
 function parseJsonField(formData: FormData, name: string, fallback: unknown): unknown {
   const raw = formData.get(name);
@@ -134,6 +155,7 @@ export async function createSurchargeRule(_prev: ActionState, formData: FormData
   const v = parsed.data;
   const supabase = await createClient();
   if (!(await withinRateLimit(supabase, "rule.create", 60, 3600))) return { ok: false, message: RATE_LIMITED_MESSAGE };
+  if (await dependsOnFeeRule(supabase, v.category, v.conditions)) return { ok: false, errors: { conditions: RULE_DEPENDS_ON_FEE_MESSAGE } };
 
   const ruleKey = `${v.carrierCode}.${slugKey(v.name)}`;
   let ruleId: string | null = null;
@@ -166,6 +188,7 @@ export async function addSurchargeRuleVersion(_prev: ActionState, formData: Form
   formData.set("category", rule.category);
   const parsed = readRuleFields(formData);
   if (!parsed.success) return { ok: false, errors: fieldErrors(parsed.error) };
+  if (await dependsOnFeeRule(supabase, rule.category, parsed.data.conditions)) return { ok: false, errors: { conditions: RULE_DEPENDS_ON_FEE_MESSAGE } };
   if (parsed.data.name) await supabase.from("surcharge_rules").update({ name: parsed.data.name }).eq("id", ruleId);
   const { data: latest } = await supabase.from("surcharge_rule_versions").select("version_number").eq("rule_id", ruleId).order("version_number", { ascending: false }).limit(1).maybeSingle();
   const { error } = await supabase.from("surcharge_rule_versions").insert(versionRow({ ...parsed.data, carrierCode: rule.carrier_code }, ctx.active.tenantId, ruleId, (latest?.version_number ?? 0) + 1));
@@ -259,7 +282,7 @@ export async function createOverride(_prev: ActionState, formData: FormData): Pr
   const supabase = await createClient();
   // The exception must fit the rule: a percentage exception on a flat fee (or an amount on a
   // percentage) could never change the figure and would only mislead the quote.
-  const { data: rule } = await supabase.from("surcharge_rules").select("id, brand_id, surcharge_rule_versions(method, status, version_number)").eq("id", v.ruleId).maybeSingle();
+  const { data: rule } = await supabase.from("surcharge_rules").select("id, brand_id, surcharge_rule_versions!srv_rule_in_tenant(method, status, version_number)").eq("id", v.ruleId).maybeSingle();
   if (!rule) return { ok: false, message: "That rule cannot be overridden for this customer." };
   if (rule.brand_id && rule.brand_id !== v.brandId) return { ok: false, message: "That rule is scoped to a different customer." };
   const versions = ((rule.surcharge_rule_versions ?? []) as { method: string; status: string; version_number: number }[]).filter((x) => x.status === "published" || x.status === "retired").sort((a, b) => b.version_number - a.version_number);

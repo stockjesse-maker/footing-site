@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { ForecastSummary } from "@/engine/forecast/types";
 import type { BulkSummary } from "@/engine/modeling/types";
 import type { ShipmentCalculation, ShipmentInput } from "@/engine/types";
+import { PossibleAdjustmentsHubCard, hasCurrentAdjustmentExample } from "@/components/adjustments/customer/hub-card";
 import { DatasetList, HubCard, OverviewFigures, ScenarioList, overviewModels, runStateLabel } from "@/components/modeling/lists";
 import { OrderMappingWizard, type DatasetValidation } from "@/components/modeling/order-mapping-wizard";
 import { RunProgress } from "@/components/modeling/run-progress";
@@ -78,7 +79,12 @@ function BackLink({ href, label }: { href: string; label: string }) {
 // Hub
 // ---------------------------------------------------------------------------
 export async function ModelHubView(v: ModelingView) {
-  const [{ datasets, projects }, assigned] = await Promise.all([loadModelingLists(v.supabase, v.brandId), loadAssignedCards(v.supabase, v.brandId, v.tenantDefaultOriginZip)]);
+  // The adjustments card is for the customer only (never the 3PL's on-behalf hub), and only while one example is current.
+  const [{ datasets, projects }, assigned, showAdjustments] = await Promise.all([
+    loadModelingLists(v.supabase, v.brandId),
+    loadAssignedCards(v.supabase, v.brandId, v.tenantDefaultOriginZip),
+    v.staff ? Promise.resolve(false) : hasCurrentAdjustmentExample(v.supabase, v.brandId),
+  ]);
   const models = overviewModels(projects);
   const brandIdProp = v.staff ? v.brandId : undefined;
   return (
@@ -108,6 +114,7 @@ export async function ModelHubView(v: ModelingView) {
         />
         <HubCard title="Product weights" description="For orders files that carry no package weight (Shopify exports)." href={`${v.basePath}/products`} cta="Manage product weights" />
         {!v.staff ? <HubCard title="Your fee schedule" description={`The fulfillment fees ${v.tenantName} charges you: what each one is and how it is counted.`} href={`${v.basePath}/fees`} cta="See your fee schedule" /> : null}
+        {!v.staff && showAdjustments ? <PossibleAdjustmentsHubCard tenantName={v.tenantName} /> : null}
       </div>
       <div className="mt-8 space-y-8">
         {assigned.cards.length ? <OrderUploadForm brandId={brandIdProp} tenantName={v.tenantName} /> : null}

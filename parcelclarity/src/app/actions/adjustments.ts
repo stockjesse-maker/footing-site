@@ -64,7 +64,7 @@ import {
   type ValidateActionResult,
 } from "@/lib/adjustments/action-schemas";
 import { buildScenarioInput, loadScenarioContext, scenarioPins, type ScenarioContext } from "@/lib/adjustments/context";
-import { IMPORT_LIMITS } from "@/lib/adjustments/copy";
+import { ENCODING_MESSAGE, IMPORT_LIMITS } from "@/lib/adjustments/copy";
 import { flaggedMappingMessage, refusalMessage } from "@/lib/adjustments/header-guard";
 import { buildDetected, detectAdjustmentFile, toStoredMapping, validateMapping } from "@/lib/adjustments/mapping";
 import { adjustmentMappingSchema, parseStoredMapping } from "@/lib/adjustments/mapping-schema";
@@ -88,7 +88,7 @@ import {
   type ImportDetail,
 } from "@/lib/adjustments/queries";
 import { applyAdjustmentMapping, toStoredValidation } from "@/lib/adjustments/validate";
-import type { AdjustmentImportResult, AdjustmentMapping } from "@/lib/adjustments/types";
+import type { AdjustmentContext, AdjustmentImportResult, AdjustmentMapping } from "@/lib/adjustments/types";
 import { ADJUSTMENT_FILE_LIMITS, type Table } from "@/lib/import/parse-table";
 import { loadServiceCatalog } from "@/lib/pricing/catalog";
 import { RATE_LIMITED_MESSAGE, withinRateLimit } from "@/lib/rate-limit";
@@ -238,7 +238,7 @@ export async function uploadAdjustmentFile(_prev: UploadState, formData: FormDat
 
   const { count, error: countError } = await supabase.from("adjustment_imports").select("id", { count: "exact", head: true }).eq("tenant_id", who.tenantId).in("status", ["uploaded", "mapped", "validated", "committing"]);
   if (countError) return { ok: false, message: GENERIC_FAILURE };
-  // Checked before the file is stored: a stored file whose import is then refused would have no way to be deleted by the caller.
+  // Checked before the file is stored: everything that can be known without storing anything is known first.
   if ((count ?? 0) >= 5) return { ok: false, message: "You already have five imports in progress. Finish or discard one first." };
 
   const detected = await (async () => {
@@ -248,6 +248,9 @@ export async function uploadAdjustmentFile(_prev: UploadState, formData: FormDat
   })().catch(() => null);
   if (!detected) return { ok: false, errors: { file: "The file could not be read." } };
 
+  // The order that cannot leave a file behind: (1) everything above ran without storing a byte; (2) the file is stored (the database scans its
+  // bytes again in a trigger and refuses a cost-looking header or an unreadable encoding); (3) the import is created from it. A failure at
+  // step 3, a thrown error included, removes the file through `discard_unattached_adjustment_file` (the Data API roles hold no DELETE).
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const { data: stored, error: fileError } = await supabase
     .from("uploaded_files")
@@ -262,17 +265,56 @@ export async function uploadAdjustmentFile(_prev: UploadState, formData: FormDat
     })
     .select("id")
     .single();
-  if (fileError || !stored) return { ok: false, message: GENERIC_FAILURE };
+  if (fileError || !stored) return fileInsertFailure(fileError);
+  const fileId = String(stored.id);
 
   const name = file.name.replace(/\.(csv|xlsx|txt)$/i, "").trim().slice(0, 160) || "Adjustment history";
-  const { data, error } = await supabase.rpc("create_adjustment_import", { p_file: stored.id, p_name: name, p_detected: detected });
-  if (error) return { ok: false, message: failure(error, { notFound: "The uploaded file was not found. Upload it again." }) };
-  const created = data as { ok?: boolean; reason?: string; header?: string; importId?: string } | null;
-  // The database runs its own header test over the stored file and deletes the file when it refuses.
-  if (created?.ok === false && created.reason === "forbidden_header") return { ok: false, refused: true, message: refusalMessage(String(created.header ?? "")) };
-  if (!created?.ok || !idOk(created.importId)) return { ok: false, message: GENERIC_FAILURE };
+  const created = await createImport(supabase, fileId, name, detected);
+  if (created.kind === "refused") return { ok: false, refused: true, message: created.message };
+  if (created.kind === "failed") return { ok: false, message: created.message };
   revalidateAdjustments();
   redirect(`${HISTORY_PATH}/${created.importId}`);
+}
+
+/** What an uploaded_files insert that the database refused means for the person (the insert trigger writes its reason in the hint). */
+function fileInsertFailure(error: DbError | null): UploadState {
+  if (error?.code === "P0001" && error.hint === "forbidden_header") return { ok: false, refused: true, message: refusalMessage(String(error.details ?? "")) };
+  if (error?.code === "P0001" && error.hint === "unsupported_encoding") return { ok: false, errors: { file: ENCODING_MESSAGE } };
+  if (error?.code === "P0001" && error.hint === "too_many_unattached_files") return { ok: false, message: "You already have uploaded files waiting for an import. Finish or discard an import first." };
+  if (error?.code === "42501") return { ok: false, message: NO_PERMISSION_MANAGE };
+  return { ok: false, message: GENERIC_FAILURE };
+}
+
+type CreatedImport = { kind: "created"; importId: string } | { kind: "refused"; message: string } | { kind: "failed"; message: string };
+
+/**
+ * Registers the stored file as an import. Whatever goes wrong, the file does not stay behind: the database deletes it itself when it refuses a
+ * header or an encoding (create_adjustment_import returns {ok:false}); for every other failure (an error from the database, an answer we cannot
+ * read, a thrown error, a refused rate limit) it is discarded here. When even that fails the person is told, so the file is not silently left.
+ */
+async function createImport(supabase: Db, fileId: string, name: string, detected: unknown): Promise<CreatedImport> {
+  const discard = async (message: string): Promise<CreatedImport> => {
+    let removed = false;
+    try {
+      const { error } = await supabase.rpc("discard_unattached_adjustment_file", { p_file: fileId });
+      removed = !error;
+    } catch {
+      removed = false;
+    }
+    return { kind: "failed", message: removed ? message : `${message} The uploaded file could not be removed automatically, so it is still stored. Try again in a moment, or contact support to have it removed.` };
+  };
+  try {
+    const { data, error } = await supabase.rpc("create_adjustment_import", { p_file: fileId, p_name: name, p_detected: detected });
+    if (error) return await discard(failure(error, { notFound: "The uploaded file was not found. Upload it again." }));
+    const created = data as { ok?: boolean; reason?: string; header?: string; importId?: string } | null;
+    // The database ran its own header test over the stored file and deleted the file when it refused (nothing to discard then).
+    if (created?.ok === false && created.reason === "forbidden_header") return { kind: "refused", message: refusalMessage(String(created.header ?? "")) };
+    if (created?.ok === false && created.reason === "unsupported_encoding") return { kind: "failed", message: ENCODING_MESSAGE };
+    if (!created?.ok || !idOk(created.importId)) return await discard(GENERIC_FAILURE);
+    return { kind: "created", importId: created.importId };
+  } catch {
+    return await discard(GENERIC_FAILURE);
+  }
 }
 
 type ImportFile = { ok: true; tables: Table[] } | { ok: false; message: string };
@@ -317,15 +359,16 @@ export async function saveImportMapping(importId: string, mappingJson: unknown):
 
   const read = await readImportFile(supabase, who.tenantId, imp);
   if (!read.ok) return { ok: false, message: read.message };
-  const context = await Promise.all([loadServiceCatalog(supabase), loadAdjustmentBrands(supabase, who.tenantId)]).catch(() => null);
+  const context = await importContext(supabase, who.tenantId).catch(() => null);
   if (!context) return { ok: false, message: GENERIC_FAILURE };
-  const issues = validateMapping(mapping, read.tables, { catalog: context[0], brands: context[1].map((b) => ({ id: b.id, name: b.name })) });
+  const issues = validateMapping(mapping, read.tables, context);
   if (issues.length) return { ok: false, message: issues[0]!.message, issues };
 
   const headers = read.tables.find((t) => t.name === mapping.sheet)!.rows[mapping.headerRow]!;
+  // The mapping is compacted: only the value-map entries that applying it would not work out by itself are stored.
   const { data, error } = await supabase.rpc("set_adjustment_import_mapping", {
     p_import: importId,
-    p_mapping: toStoredMapping(mapping, headers),
+    p_mapping: toStoredMapping(mapping, headers, context),
     p_validation: null,
     p_duplicate_handling: mapping.duplicateHandling,
     p_attested: false,
@@ -335,18 +378,24 @@ export async function saveImportMapping(importId: string, mappingJson: unknown):
   return { ok: true, status: typeof data === "string" ? data : "mapped", message: "Mapping saved." };
 }
 
-/**
- * The file with the saved mapping applied, "already imported" rows left out. Reads the history already committed for the ship dates the
- * file covers (through the bulk reader) so a file is never imported twice and the counts the 3PL approves are the counts that commit.
- */
-async function prepareImport(supabase: Db, tenantId: string, tables: Table[], mapping: AdjustmentMapping): Promise<AdjustmentImportResult> {
+/** What the mapping needs from outside the file: the service catalog and the account's customers. */
+async function importContext(supabase: Db, tenantId: string): Promise<Pick<AdjustmentContext, "catalog" | "brands">> {
   const [catalog, brands] = await Promise.all([loadServiceCatalog(supabase), loadAdjustmentBrands(supabase, tenantId)]);
-  const ctx = { catalog, brands: brands.map((b) => ({ id: b.id, name: b.name })), today: todayIso() };
+  return { catalog, brands: brands.map((b) => ({ id: b.id, name: b.name })) };
+}
+
+/**
+ * The file with the saved mapping applied, "already imported" rows left out. Reads the history already committed (every committed import, through
+ * the bulk reader: the unique key has no date, so a package can repeat one of an import that does not overlap in time) so a file is never imported
+ * twice and the counts the 3PL approves are the counts that commit.
+ */
+async function prepareImport(supabase: Db, tenantId: string, tables: Table[], mapping: AdjustmentMapping): Promise<AdjustmentImportResult & { context: Pick<AdjustmentContext, "catalog" | "brands"> }> {
+  const context = await importContext(supabase, tenantId);
+  const ctx = { ...context, today: todayIso() };
   const first = applyAdjustmentMapping(tables, mapping, ctx);
-  if (!first.report.ok) return first;
-  const range = first.report.shipDateRange;
-  const existingKeys = await loadExistingKeys(supabase, tenantId, { from: range.min, to: range.max });
-  return existingKeys.size ? applyAdjustmentMapping(tables, mapping, { ...ctx, existingKeys }) : first;
+  if (!first.report.ok) return { ...first, context };
+  const existingKeys = await loadExistingKeys(supabase, tenantId);
+  return { ...(existingKeys.size ? applyAdjustmentMapping(tables, mapping, { ...ctx, existingKeys }) : first), context };
 }
 
 /**
@@ -386,7 +435,7 @@ export async function validateImport(importId: string, attested: boolean): Promi
 
   const { data, error } = await supabase.rpc("set_adjustment_import_mapping", {
     p_import: importId,
-    p_mapping: toStoredMapping(saved.mapping, saved.headers),
+    p_mapping: toStoredMapping(saved.mapping, saved.headers, result.context),
     p_validation: toStoredValidation(report),
     p_duplicate_handling: saved.mapping.duplicateHandling,
     p_attested: true,

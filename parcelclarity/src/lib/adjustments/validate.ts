@@ -1,8 +1,10 @@
 import type { Table } from "../import/parse-table";
-import { addMoney, cents, cleanText, moneyFits, normalizeValue, parseMoneyCell, readDateCell, readDimension, readPackageRef, readWeight, shipDateInRange } from "./cells";
+import { addMoney, canonicalPackageRef, cents, cleanText, enumValue, isNegativeMoney, moneyFits, normalizeValue, parseMoneyCell, readDateCell, readDimension, readPackageRef, readWeight, shipDateInRange, subtractMoney } from "./cells";
 import { IMPORT_LIMITS, IMPORT_NOTICE } from "./copy";
-import { isMoneyLikeHeader } from "./header-guard";
-import { suggestBrand, suggestCarrier, serviceKeyOf, validateMapping } from "./mapping";
+import { isBlankRow } from "./sheet";
+import { jsonbSizeEstimate } from "./jsonb-size";
+import { MAX_LISTED_COLUMNS, listIgnoredColumns, reportedHeader, suggestBrand, suggestCarrier, serviceKeyOf, validateMapping } from "./mapping";
+import { classifyHeader } from "./header-guard";
 import {
   ADJUSTMENT_CAUSES,
   ADJUSTMENT_FIELDS,
@@ -32,9 +34,14 @@ import {
  *
  * Errors (block the commit): invalid_date, non_positive_weight, invalid_weight, partial_dimensions, invalid_dimension,
  * negative_amount, invalid_amount, duplicate_reference, invalid_type, unknown_carrier, service_carrier_mismatch,
- * invalid_package_ref, example_row.
+ * invalid_package_ref, ragged_row, example_row.
  * Information (never block): unknown_customer, no_amounts, credit_row, possible_double_count, missing_weight,
- * already_imported, merged_duplicate, ignored_duplicate, service_unmapped, cause_defaulted, handling_unreadable, reason_truncated.
+ * already_imported, merged_duplicate, merged_amounts_unknown, ignored_duplicate, short_row, service_unmapped, cause_defaulted,
+ * handling_unreadable, reason_truncated.
+ *
+ * Row numbers are positions among the rows under the column names that are not blank (blank lines are not counted), for a CSV and a
+ * workbook alike. A row with more cells than the column names (usually a comma inside an unquoted text, which moves every later cell one
+ * column to the left) is an error row: its amounts would land in the wrong columns.
  */
 
 export { IMPORT_LIMITS, IMPORT_NOTICE };
@@ -42,11 +49,11 @@ export const ADJUSTMENT_MAX_ROWS = 20_000;
 
 const ERROR_ORDER: ErrorCode[] = [
   "invalid_date", "non_positive_weight", "invalid_weight", "partial_dimensions", "invalid_dimension", "negative_amount", "invalid_amount", "duplicate_reference",
-  "invalid_type", "unknown_carrier", "service_carrier_mismatch", "invalid_package_ref", "example_row",
+  "invalid_type", "unknown_carrier", "service_carrier_mismatch", "invalid_package_ref", "ragged_row", "example_row",
 ];
 const INFO_ORDER: InformationCode[] = [
-  "unknown_customer", "no_amounts", "credit_row", "possible_double_count", "missing_weight", "already_imported", "merged_duplicate", "ignored_duplicate",
-  "service_unmapped", "cause_defaulted", "handling_unreadable", "reason_truncated",
+  "unknown_customer", "no_amounts", "credit_row", "possible_double_count", "missing_weight", "already_imported", "merged_duplicate", "merged_amounts_unknown", "ignored_duplicate",
+  "short_row", "service_unmapped", "cause_defaulted", "handling_unreadable", "reason_truncated",
 ];
 const ALL_CODES: ImportCode[] = [...ERROR_ORDER, ...INFO_ORDER];
 const isError = (c: ImportCode): c is ErrorCode => (ERROR_ORDER as ImportCode[]).includes(c);
@@ -57,7 +64,7 @@ const have = (count: number) => (count === 1 ? "has" : "have");
 const are = (count: number) => (count === 1 ? "is" : "are");
 
 /** One plain sentence per code, with the count. Counts are rows; none of these ever carries a cell value. */
-const SENTENCES: Record<ImportCode, (count: number) => string> = {
+const SENTENCES: Record<ImportCode, (count: number, rowNumbers?: readonly number[]) => string> = {
   invalid_date: (c) => `${rows(c)} ${have(c)} a ship date that cannot be read (or is before 2015 or after tomorrow), or an adjusted-on date that cannot be read or is earlier than the ship date.`,
   non_positive_weight: (c) => `${rows(c)} ${have(c)} a weight of zero or less.`,
   invalid_weight: (c) => `${rows(c)} ${have(c)} a weight that cannot be read as a number or is too large to store (the unit must be lb, oz, g or kg).`,
@@ -69,7 +76,9 @@ const SENTENCES: Record<ImportCode, (count: number) => string> = {
   invalid_type: (c) => `${rows(c)} ${have(c)} no adjustment type, or one that is not matched to reweigh, remeasure, both, or another correction fee.`,
   unknown_carrier: (c) => `${rows(c)} ${have(c)} no carrier, or one that is not matched to a carrier in the list.`,
   service_carrier_mismatch: (c) => `${rows(c)} ${have(c)} a service that belongs to a different carrier than the carrier on the row.`,
-  invalid_package_ref: (c) => `${rows(c)} ${have(c)} a package reference that is longer than 120 characters or that a spreadsheet shortened to scientific notation (such as 9.4E+21); keep that column as text and export the file again.`,
+  invalid_package_ref: (c) => `${rows(c)} ${have(c)} a package reference that is longer than 120 characters, that a spreadsheet shortened to scientific notation (such as 9.4E+21) or to a rounded number, or that holds characters the file could not be read as text; keep that column as text, save the file as CSV UTF-8 and export it again.`,
+  ragged_row: (c, nums) =>
+    `${dataRowList(c, nums)} ${have(c)} more cells than the column names, so the cells after the extra one have moved one column to the left and an amount may sit in the wrong column. This usually means a comma inside a text value: put quotes around that text and export the file again.`,
   example_row: (c) => `${rows(c)} ${are(c)} the fictional example ${c === 1 ? "row" : "rows"} from the template. Delete ${c === 1 ? "it" : "them"} before importing.`,
   unknown_customer: (c) => `${rows(c)} name${c === 1 ? "s" : ""} a customer that is not in your account. ${c === 1 ? "It stays" : "They stay"} in your history but ${c === 1 ? "counts" : "count"} for no customer.`,
   no_amounts: (c) => `${rows(c)} ${have(c)} no amounts; ${c === 1 ? "it counts" : "they count"} toward how often adjustments happen, not toward how much they cost.`,
@@ -77,7 +86,9 @@ const SENTENCES: Record<ImportCode, (count: number) => string> = {
   possible_double_count: (c) => `${rows(c)} may count the adjustment fee twice: the corrected charge already exceeds the original charge by the fee. Enter the shipping charge without the separate fee.`,
   missing_weight: (c) => `${rows(c)} ${have(c)} no declared weight (for example the WMS sent none); ${c === 1 ? "it is" : "they are"} kept and marked as missing, never as zero.`,
   already_imported: (c) => `${rows(c)} ${are(c)} already imported from an earlier file and will be skipped.`,
-  merged_duplicate: (c) => `${rows(c)} repeated an earlier package and ${c === 1 ? "was" : "were"} added into the first row for it.`,
+  merged_duplicate: (c) => `${rows(c)} repeated an earlier package and ${c === 1 ? "was" : "were"} added into the first row for it (the extra charge of each repeat is added to the corrected charge, and separate fees are added).`,
+  merged_amounts_unknown: (c) => `${rows(c)} repeated an earlier package but the amounts could not be added up because one of the original charge, the corrected charge or the fee is missing in one of the rows; the charges of that package are unknown, not zero. Choose "keep the first row" or fix the file if that is not what you want.`,
+  short_row: (c) => `${rows(c)} end${c === 1 ? "s" : ""} before the last column we read (fewer cells than the column names); the missing cells are read as blank, so any amount there is unknown, not zero.`,
   ignored_duplicate: (c) => `${rows(c)} repeated an earlier package and ${c === 1 ? "was" : "were"} ignored; the first row is kept.`,
   service_unmapped: (c) => `${rows(c)} ${have(c)} a service that is not matched to one of your services; the service stays unknown for ${c === 1 ? "it" : "them"}.`,
   cause_defaulted: (c) => `${rows(c)} ${have(c)} no cause, or one that is not matched; ${c === 1 ? "it is" : "they are"} stored under the default cause.`,
@@ -85,17 +96,31 @@ const SENTENCES: Record<ImportCode, (count: number) => string> = {
   reason_truncated: (c) => `${rows(c)} ${have(c)} a reason longer than 120 characters; the text is cut to 120 characters.`,
 };
 
-export function sentenceFor(code: ImportCode, count: number): string {
-  return SENTENCES[code](count);
+/** "Data row 3", "Data rows 3, 7 and 12", "Data rows 3, 7, 12, 15, 21 and 14 more": the rows an error sits in, for the codes whose fix depends on finding the row. Row numbers, never cell values. */
+function dataRowList(count: number, nums: readonly number[] | undefined): string {
+  const listed = (nums ?? []).slice(0, 5);
+  if (!listed.length) return rows(count);
+  const more = count - listed.length;
+  const text = listed.length === 1 && more <= 0 ? `${listed[0]}` : more > 0 ? `${listed.join(", ")} and ${n(more)} more` : `${listed.slice(0, -1).join(", ")} and ${listed[listed.length - 1]}`;
+  return `${count === 1 ? "Data row" : "Data rows"} ${text}`;
+}
+
+export function sentenceFor(code: ImportCode, count: number, rowNumbers?: readonly number[]): string {
+  return SENTENCES[code](count, rowNumbers);
 }
 
 const MAX_ISSUES = 100;
 const MAX_ROW_NUMBERS = 50;
 const MAX_CUSTOMERS_LISTED = 50;
 
-/** The unique key of a stored record: (customer, carrier, package reference, type). The database enforces it with a unique index. */
+/**
+ * The unique key of a stored record: (customer, carrier, package reference, type), the reference in its canonical form (upper case, no
+ * whitespace or invisible characters; canonicalPackageRef), so "1z0001ab", "1Z0001 AB" and a reference with a zero-width space are one package
+ * here as in the database's unique index. (A reference with no canonical form never reaches a record: readPackageRef turns it into a blank or an
+ * invalid reference; the text itself is the fallback.)
+ */
 export function adjustmentRecordKey(brandId: string | null, carrierCode: string, packageRef: string, adjustmentType: AdjustmentType): string {
-  return `${brandId ?? "-"}|${carrierCode}|${packageRef}|${adjustmentType}`;
+  return `${brandId ?? "-"}|${carrierCode}|${canonicalPackageRef(packageRef) ?? packageRef}|${adjustmentType}`;
 }
 
 function recordedHandling(raw: string): RecordedHandling | null | "invalid" {
@@ -106,8 +131,6 @@ function recordedHandling(raw: string): RecordedHandling | null | "invalid" {
   if (/^(manual approval|manual|case by case|approval)$/.test(t)) return "manual_approval";
   return "invalid";
 }
-
-const enumValue = <T extends string>(list: readonly T[], normalized: string): T | null => (list as readonly string[]).includes(normalized.replace(/ /g, "_")) ? (normalized.replace(/ /g, "_") as T) : null;
 
 interface Parsed {
   /** 1-based position under the header row. */
@@ -120,6 +143,8 @@ interface Parsed {
   brandText: string;
   /** Set when the row was folded into an earlier row (sum) or ignored (first). */
   consumed: "merged" | "ignored" | null;
+  /** Set on a repeat row folded into an earlier row when some amount of either row could not be added up (it was unknown on the other side). */
+  amountsLost: boolean;
 }
 
 function emptyCounts(): Record<ImportCode, number> {
@@ -148,10 +173,52 @@ function failedReport(mappingIssues: MappingIssue[], ignoredColumns: IgnoredColu
   };
 }
 
-/** Columns the mapping does not read; money-like ones are the "Columns we will ignore". Names only, never values. */
+/** Columns the mapping does not read; money-like ones are the "Columns we will ignore" (listed first). Names only, never values; headers cleaned and cut to 80 characters, at most 50. */
 export function ignoredColumnsOf(headers: string[], mapping: AdjustmentMapping): IgnoredColumn[] {
   const used = new Set(ADJUSTMENT_FIELDS.map((f) => mapping.columns[f]).filter((i): i is number => i !== null));
-  return headers.map((h, i) => ({ index: i, header: h, moneyLike: isMoneyLikeHeader(h) })).filter((c) => !used.has(c.index));
+  return listIgnoredColumns(headers.map((h, i) => ({ index: i, header: h, moneyLike: classifyHeader(h).moneyLike })).filter((c) => !used.has(c.index)));
+}
+
+/**
+ * Folds a repeat of a package into the first row for it (duplicate_handling "sum"), without inventing an amount (review finding F6).
+ * A shipment's original charge is not added to itself, and a corrected charge is not the sum of two corrected charges: what a repeat
+ * adds is its DIFFERENCE. So the first row keeps its original and corrected charge, and the repeat's (corrected charge - original charge)
+ * is added to the corrected charge, when both rows have both charges. If either row lacks one of its two charges, the pair of the merged
+ * record is unknown (both blank, never one from one row and one from another). Separate fees are added only when both rows have one;
+ * otherwise the merged fee is unknown. Returns true when a known amount of either row could not be used because the other side was unknown
+ * (the repeat then carries the information code merged_amounts_unknown); nothing is reported when both sides were unknown anyway.
+ */
+export function mergeAmounts(first: AdjustmentRecord, repeat: AdjustmentRecord): boolean {
+  let lost = false;
+  const firstPair = first.originalCharge !== null && first.correctedCharge !== null;
+  const repeatPair = repeat.originalCharge !== null && repeat.correctedCharge !== null;
+  if (firstPair && repeatPair) {
+    const next = addMoney(first.correctedCharge!, subtractMoney(repeat.correctedCharge!, repeat.originalCharge!));
+    if (isNegativeMoney(next)) {
+      // The repeat's credit is larger than the corrected charge it is added to: no charge can be that low.
+      first.originalCharge = null;
+      first.correctedCharge = null;
+      lost = true;
+    } else first.correctedCharge = next;
+  } else {
+    const anyKnown = first.originalCharge !== null || first.correctedCharge !== null || repeat.originalCharge !== null || repeat.correctedCharge !== null;
+    first.originalCharge = null;
+    first.correctedCharge = null;
+    lost ||= anyKnown;
+  }
+  if (first.separateFee !== null && repeat.separateFee !== null) first.separateFee = addMoney(first.separateFee, repeat.separateFee);
+  else {
+    lost ||= first.separateFee !== null || repeat.separateFee !== null;
+    first.separateFee = null;
+  }
+  return lost;
+}
+
+/** The fictional rows of the downloadable template (a package reference starting EXAMPLE-, the reason "FICTIONAL EXAMPLE ROW", a customer ending "(fictional)"). */
+function isTemplateExampleRow(refCell: string, packageRef: string | null, normalizedReason: string, brandText: string): boolean {
+  if (/^example[-_ ]/i.test(refCell.trim()) || (packageRef !== null && /^EXAMPLE[-_]/.test(packageRef))) return true;
+  if (normalizedReason.includes("fictional example row")) return true;
+  return /\(fictional\)\s*$/i.test(brandText.normalize("NFKC").replace(/\p{Cf}/gu, ""));
 }
 
 export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMapping, ctx: AdjustmentContext): AdjustmentImportResult {
@@ -161,8 +228,9 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
   const headers = table.rows[mapping.headerRow]!;
   const ignoredColumns = ignoredColumnsOf(headers, mapping);
 
-  const dataRows = table.rows.slice(mapping.headerRow + 1);
-  const nonBlank = dataRows.reduce((count, r) => count + (r.every((x) => x === "") ? 0 : 1), 0);
+  // Only rows that are not blank count, and they are numbered in that order: "data row 5" is the fifth row under the column names that holds anything.
+  const dataRows = table.rows.slice(mapping.headerRow + 1).filter((r) => !isBlankRow(r));
+  const nonBlank = dataRows.length;
   if (nonBlank === 0) return { records: [], report: failedReport([{ code: "no_rows", message: "The sheet has no data rows under the header." }], ignoredColumns) };
   if (nonBlank > ADJUSTMENT_MAX_ROWS) {
     return { records: [], report: failedReport([{ code: "too_many_rows", message: `The sheet has more than ${n(ADJUSTMENT_MAX_ROWS)} rows. Split the file by month and import each part.` }], ignoredColumns) };
@@ -172,13 +240,23 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
   const catalogById = new Map(ctx.catalog.map((s) => [s.id, s]));
   const cell = (cells: string[], idx: number | null) => (idx === null ? "" : (cells[idx] ?? "").trim());
   const causeSource = c.cause ?? c.reason;
+  // A row wider than the column names has cells nobody named; a row narrower is missing the cells of the last columns.
+  const width = headers.length;
+  const mappedIndexes = ADJUSTMENT_FIELDS.map((f) => c[f]).filter((i): i is number => i !== null);
 
   const parsed: Parsed[] = [];
   for (let i = 0; i < dataRows.length; i++) {
     const cells = dataRows[i]!;
-    if (cells.every((x) => x === "")) continue;
     const errors = new Set<ErrorCode>();
     const infos = new Set<InformationCode>();
+    let ragged = false;
+    for (let k = width; k < cells.length; k++) {
+      if (cells[k] !== "") {
+        ragged = true;
+        break;
+      }
+    }
+    if (!ragged && cells.length < width && mappedIndexes.some((idx) => idx >= cells.length)) infos.add("short_row");
 
     // Dates.
     const sd = readDateCell(cell(cells, c.shipDate), mapping.dateFormat);
@@ -194,7 +272,7 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
     let adjustmentType: AdjustmentType | null = null;
     if (typeText) {
       const key = normalizeValue(typeText);
-      adjustmentType = Object.hasOwn(mapping.typeMap, key) ? (mapping.typeMap[key] ?? null) : enumValue(ADJUSTMENT_TYPES, key);
+      adjustmentType = key === "" ? null : Object.hasOwn(mapping.typeMap, key) ? (mapping.typeMap[key] ?? null) : enumValue(ADJUSTMENT_TYPES, key);
     } else adjustmentType = mapping.defaults.adjustmentType;
     if (adjustmentType === null) errors.add("invalid_type");
 
@@ -204,13 +282,13 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
     let carrierCode: string | null = null;
     if (carrierText) {
       const key = normalizeValue(carrierText);
-      carrierCode = Object.hasOwn(mapping.carrierMap, key) ? (mapping.carrierMap[key] ?? null) : suggestCarrier(key, ctx.catalog);
+      carrierCode = key === "" ? null : Object.hasOwn(mapping.carrierMap, key) ? (mapping.carrierMap[key] ?? null) : suggestCarrier(key, ctx.catalog);
       if (carrierCode === null) errors.add("unknown_carrier");
     }
     let serviceId: string | null = null;
     if (serviceText) {
       const serviceKey = serviceKeyOf(carrierText || null, serviceText);
-      serviceId = Object.hasOwn(mapping.serviceMap, serviceKey) ? (mapping.serviceMap[serviceKey] ?? null) : null;
+      serviceId = serviceKey !== "" && Object.hasOwn(mapping.serviceMap, serviceKey) ? (mapping.serviceMap[serviceKey] ?? null) : null;
       if (serviceId === null) infos.add("service_unmapped");
     }
     if (serviceId !== null) {
@@ -228,7 +306,8 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
     let brandId: string | null = null;
     if (brandText) {
       const key = normalizeValue(brandText);
-      brandId = Object.hasOwn(mapping.brandMap, key) ? (mapping.brandMap[key] ?? null) : suggestBrand(key, ctx.brands);
+      // A name with no letter or digit we can read has the empty key, which matches no customer: it is an unknown customer, never the one customer whose name also reads as nothing.
+      brandId = key === "" ? null : Object.hasOwn(mapping.brandMap, key) ? (mapping.brandMap[key] ?? null) : suggestBrand(key, ctx.brands);
       if (brandId === null) infos.add("unknown_customer");
     } else brandId = mapping.defaults.brandId;
 
@@ -237,7 +316,7 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
     let cause: AdjustmentCause = mapping.defaults.cause;
     if (causeText) {
       const key = normalizeValue(causeText);
-      const mapped = Object.hasOwn(mapping.causeMap, key) ? mapping.causeMap[key] : enumValue(ADJUSTMENT_CAUSES, key);
+      const mapped = key === "" ? null : Object.hasOwn(mapping.causeMap, key) ? mapping.causeMap[key] : enumValue(ADJUSTMENT_CAUSES, key);
       if (mapped) cause = mapped;
       else infos.add("cause_defaulted");
     } else infos.add("cause_defaulted");
@@ -288,8 +367,16 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
     const handlingRead = recordedHandling(cell(cells, c.handling));
     if (handlingRead === "invalid") infos.add("handling_unreadable");
 
-    // The template's fictional rows must never become history.
-    if ((packageRef !== null && /^example[-_ ]/i.test(packageRef)) || /fictional example row/i.test(reason.text ?? "") || /\(fictional\)\s*$/i.test(brandText)) errors.add("example_row");
+    // The template's fictional rows must never become history. Read in the same normal form as the keys (compatibility normalisation, no invisible characters).
+    const refCell = cell(cells, c.packageRef);
+    if (isTemplateExampleRow(refCell, packageRef, normalizeValue(cell(cells, c.reason)), brandText)) errors.add("example_row");
+
+    // A row wider than the column names is an error row whatever else it says: its cells have moved, so nothing in it can be trusted.
+    if (ragged) {
+      errors.clear();
+      infos.clear();
+      errors.add("ragged_row");
+    }
 
     const record: AdjustmentRecord = {
       rowNo: i + 1,
@@ -313,8 +400,8 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
       separateFee,
       handlingRecorded: handlingRead === "invalid" ? null : handlingRead,
     };
-    const key = packageRef !== null && carrierCode !== null && adjustmentType !== null ? adjustmentRecordKey(brandId, carrierCode, packageRef, adjustmentType) : null;
-    parsed.push({ rowNo: i + 1, errors, infos, record, key, validShipDate: shipDate, brandText, consumed: null });
+    const key = !ragged && packageRef !== null && carrierCode !== null && adjustmentType !== null ? adjustmentRecordKey(brandId, carrierCode, packageRef, adjustmentType) : null;
+    parsed.push({ rowNo: i + 1, errors, infos, record, key, validShipDate: shipDate, brandText, consumed: null, amountsLost: false });
   }
 
   // Repeats within the file: the first row holding a key keeps it.
@@ -330,9 +417,7 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
     else if (r.errors.size === 0) {
       r.consumed = mapping.duplicateHandling === "sum" ? "merged" : "ignored";
       if (r.consumed === "merged") {
-        holder.record.originalCharge = addMoney(holder.record.originalCharge, r.record.originalCharge);
-        holder.record.correctedCharge = addMoney(holder.record.correctedCharge, r.record.correctedCharge);
-        holder.record.separateFee = addMoney(holder.record.separateFee, r.record.separateFee);
+        r.amountsLost = mergeAmounts(holder.record, r.record);
         // Added up, the amounts may no longer fit the column: the row of the first package becomes an error row instead of failing at commit.
         if (![holder.record.originalCharge, holder.record.correctedCharge, holder.record.separateFee].every(moneyFits)) holder.errors.add("invalid_amount");
       }
@@ -366,6 +451,7 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
       if (r.consumed === "merged") merged++;
       else ignored++;
       note(r.consumed === "merged" ? "merged_duplicate" : "ignored_duplicate", r.rowNo);
+      if (r.amountsLost) note("merged_amounts_unknown", r.rowNo);
       continue;
     }
     const rec = r.record;
@@ -400,7 +486,7 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
     byType[rec.adjustmentType] = (byType[rec.adjustmentType] ?? 0) + 1;
     byCarrier[rec.carrierCode] = (byCarrier[rec.carrierCode] ?? 0) + 1;
   }
-  const codes: CodeSummary[] = ALL_CODES.filter((code) => byCode[code] > 0).map((code) => ({ code, severity: isError(code) ? "error" : "information", rows: byCode[code], message: sentenceFor(code, byCode[code]) }));
+  const codes: CodeSummary[] = ALL_CODES.filter((code) => byCode[code] > 0).map((code) => ({ code, severity: isError(code) ? "error" : "information", rows: byCode[code], message: sentenceFor(code, byCode[code], rowNumbers[code]) }));
   const sortedDates = [...dates].sort();
   const total = parsed.length;
 
@@ -428,17 +514,42 @@ export function applyAdjustmentMapping(tables: Table[], mapping: AdjustmentMappi
   };
 }
 
-const STORED_VALIDATION_MAX_BYTES = 30_000;
+/** What a stored report may weigh as a jsonb: the database's limit is 32 KB, and the library stays well under it (measured by `jsonbSizeEstimate`, which rounds up). */
+export const STORED_VALIDATION_MAX_BYTES = 24_000;
+
+/** A text without the characters PostgreSQL's jsonb refuses (NUL, a lone surrogate): they become spaces. Applied to every string of a stored report. */
+function scrubText(s: string): string {
+  return s.replace(/\u0000/g, " ").replace(/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g, " ");
+}
+
+function scrub<T>(value: T): T {
+  if (typeof value === "string") return scrubText(value) as T;
+  if (Array.isArray(value)) return value.map(scrub) as T;
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [scrubText(k), scrub(v)])) as T;
+  return value;
+}
 
 /**
- * The report as stored in adjustment_imports.validation (at most 32 KB in the database). The counts the database reads
- * (counts.rows, counts.accepted) are never trimmed; the row-number and issue lists are, when a pathological file needs it.
+ * The report as stored in adjustment_imports.validation (at most 32 KB in the database; the library stays under 24 KB, measured the way
+ * the database measures a jsonb). Every header and customer name in it is cleaned and cut (80 and 120 characters) and the two lists that
+ * hold them are capped at 50, every string is made safe for jsonb (a NUL character would make the whole report fail), and the counts the
+ * database reads (counts.rows, counts.accepted) are never trimmed. When a pathological file still needs it, the row-number and issue
+ * lists are cut, then the customer and ignored-column lists.
  */
 export function toStoredValidation(report: AdjustmentValidationReport): AdjustmentValidationReport {
-  const size = (r: AdjustmentValidationReport) => new TextEncoder().encode(JSON.stringify(r)).length;
-  let out = report;
-  if (size(out) > STORED_VALIDATION_MAX_BYTES) out = { ...out, issues: out.issues.slice(0, 20), issuesTruncated: true };
-  if (size(out) > STORED_VALIDATION_MAX_BYTES) out = { ...out, rowNumbers: Object.fromEntries(Object.entries(out.rowNumbers).map(([k, v]) => [k, (v ?? []).slice(0, 10)])) };
-  if (size(out) > STORED_VALIDATION_MAX_BYTES) out = { ...out, customers: out.customers.slice(0, 10), ignoredColumns: out.ignoredColumns.slice(0, 20) };
+  const size = (r: AdjustmentValidationReport) => jsonbSizeEstimate(r);
+  let out: AdjustmentValidationReport = scrub({
+    ...report,
+    ignoredColumns: report.ignoredColumns.slice(0, MAX_LISTED_COLUMNS).map((c) => ({ ...c, header: reportedHeader(c.header) })),
+    customers: report.customers.slice(0, MAX_CUSTOMERS_LISTED).map((c) => ({ ...c, text: cleanText(c.text, 120).text ?? "" })),
+  });
+  const cut = (f: (r: AdjustmentValidationReport) => AdjustmentValidationReport) => {
+    if (size(out) > STORED_VALIDATION_MAX_BYTES) out = f(out);
+  };
+  cut((r) => ({ ...r, issues: r.issues.slice(0, 20), issuesTruncated: true }));
+  cut((r) => ({ ...r, rowNumbers: Object.fromEntries(Object.entries(r.rowNumbers).map(([k, v]) => [k, (v ?? []).slice(0, 10)])) }));
+  cut((r) => ({ ...r, customers: r.customers.slice(0, 10), ignoredColumns: r.ignoredColumns.slice(0, 20) }));
+  cut((r) => ({ ...r, issues: [], issuesTruncated: true, rowNumbers: Object.fromEntries(Object.entries(r.rowNumbers).map(([k, v]) => [k, (v ?? []).slice(0, 3)])) }));
+  cut((r) => ({ ...r, customers: [], ignoredColumns: r.ignoredColumns.filter((c) => c.moneyLike).slice(0, 5) }));
   return out;
 }
